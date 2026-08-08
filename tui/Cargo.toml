@@ -1,0 +1,25 @@
+[package]
+name = "kaizen-tui"
+version = "0.1.0"
+edition = "2021"
+description = "The kaizen queue as a terminal UI, over the local API"
+
+[[bin]]
+name = "kaizen-tui"
+path = "src/main.rs"
+
+[dependencies]
+# ratatui re-exports crossterm (ratatui::crossterm) — no direct crossterm dep needed.
+ratatui = "0.29"
+# ponytail: blocking HTTP + std threads over tokio/reqwest — a TUI makes one request
+# at a time, and SSE is a line-read loop on a background thread.
+ureq = { version = "2", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+strip = true
+
+[profile.dev]
+opt-level = 1

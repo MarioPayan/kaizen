@@ -5,3 +5,4 @@ dist/
 .kaizen-cache/
 app/dist/
 *.tsbuildinfo
+tui/target/

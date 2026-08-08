@@ -1,0 +1,312 @@
+//! The local API, as seen from Rust.
+//!
+//! The server already does all of this work — `GET /api/state` returns the whole
+//! scanned world and `GET /api/events` pushes when the files under it change. So
+//! this crate reimplements nothing: it is a second front end to the API the web
+//! app was already using, and `packages/data/src/client.ts` is its sibling.
+//!
+//! Every refusal the server can produce is interesting and specific — a dirty
+//! working tree names the files, a read-only target names itself, a missing patch
+//! says so. `Client` surfaces the server's own `{ error }` message rather than
+//! replacing it with a generic one.
+
+use serde::Deserialize;
+use std::time::Duration;
+
+pub const DEFAULT_BASE: &str = "http://127.0.0.1:7777";
+
+/* ------------------------------------------------------------ wire shapes ---- */
+
+/// Mirrors `packages/data/src/types.ts`. Unknown fields are ignored and missing
+/// ones default, so the server can grow a field without breaking the TUI.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct Suggestion {
+    pub id: String,
+    pub target: String,
+    pub skill: String,
+    pub date: String,
+    pub slug: String,
+    pub severity: String,
+    pub status: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub objective: String,
+    pub scope: String,
+    pub rung: Option<i64>,
+    pub effort: String,
+    #[serde(rename = "clusterPin")]
+    pub cluster_pin: String,
+    #[serde(rename = "appliedSha")]
+    pub applied_sha: String,
+    pub recurrences: u64,
+    pub incidents: u64,
+    pub context: String,
+    pub suggestion: String,
+    pub rationale: String,
+    pub missing: Vec<String>,
+    pub triaged: bool,
+    pub surfaced: bool,
+    pub score: f64,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct Cluster {
+    pub id: String,
+    pub members: Vec<String>,
+    pub size: u64,
+    pub incidents: u64,
+    pub score: f64,
+    pub skills: Vec<String>,
+    pub scopes: Vec<String>,
+    pub first: String,
+    pub last: String,
+    #[serde(rename = "spanDays")]
+    pub span_days: u64,
+    pub promoted: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct Metrics {
+    pub total: u64,
+    pub open: u64,
+    pub untriaged: u64,
+    pub incidents: u64,
+    pub clusters: u64,
+    #[serde(rename = "promotedClusters")]
+    pub promoted_clusters: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct State {
+    #[serde(rename = "generatedAt")]
+    pub generated_at: String,
+    pub warnings: Vec<String>,
+    pub suggestions: Vec<Suggestion>,
+    pub clusters: Vec<Cluster>,
+    pub metrics: Metrics,
+}
+
+impl State {
+    /// What the queue shows: things you asked to see that are not already applied,
+    /// worst first. The server scores them; re-ranking here would invent an order
+    /// the dashboard does not share.
+    pub fn queue(&self) -> Vec<&Suggestion> {
+        let mut out: Vec<&Suggestion> = self
+            .suggestions
+            .iter()
+            .filter(|s| s.surfaced && s.status != "applied")
+            .collect();
+        out.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        out
+    }
+
+    pub fn cluster(&self, id: &str) -> Option<&Cluster> {
+        self.clusters.iter().find(|c| c.id == id)
+    }
+}
+
+/* ------------------------------------------------------------------ stream ---- */
+
+/// Subscribe to `/api/events` on a background thread; each named `event:` line is
+/// sent over `tx`. Reconnects forever with a small backoff, and reports a drop as
+/// `__disconnected` so the header can stop claiming to be live.
+pub fn spawn_stream(base: String, tx: std::sync::mpsc::Sender<String>) {
+    use std::io::BufRead;
+    std::thread::spawn(move || loop {
+        // A plain request, not the timeout-bearing agent: the stream must live
+        // forever, and a read timeout would tear it down every 30 seconds.
+        if let Ok(res) = ureq::get(&format!("{base}/api/events")).call() {
+            let reader = std::io::BufReader::new(res.into_reader());
+            for line in reader.lines() {
+                let Ok(line) = line else { break };
+                if let Some(event) = line.strip_prefix("event: ") {
+                    if tx.send(event.trim().to_string()).is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+        if tx.send("__disconnected".into()).is_err() {
+            return;
+        }
+        std::thread::sleep(Duration::from_secs(3));
+    });
+}
+
+/* ------------------------------------------------------------------ client ---- */
+
+pub struct Client {
+    base: String,
+    agent: ureq::Agent,
+}
+
+impl Client {
+    pub fn new(base: Option<String>) -> Self {
+        let base = base
+            .or_else(|| std::env::var("KAIZEN_API").ok())
+            .unwrap_or_else(|| DEFAULT_BASE.to_string());
+        Self {
+            agent: ureq::AgentBuilder::new().timeout(Duration::from_secs(30)).build(),
+            base,
+        }
+    }
+
+    pub fn base(&self) -> &str {
+        &self.base
+    }
+
+    /// The server's own message, when it sent one. `git apply` failures and dirty
+    /// trees arrive here as prose worth reading verbatim.
+    fn explain(&self, err: ureq::Error, what: &str) -> String {
+        match err {
+            ureq::Error::Status(code, res) => res
+                .into_json::<serde_json::Value>()
+                .ok()
+                .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from))
+                .filter(|m| !m.is_empty())
+                .unwrap_or_else(|| format!("{what} -> {code}")),
+            ureq::Error::Transport(_) => {
+                format!("cannot reach the kaizen server at {} — is it running?", self.base)
+            }
+        }
+    }
+
+    pub fn state(&self) -> Result<State, String> {
+        let url = format!("{}/api/state", self.base);
+        self.agent
+            .get(&url)
+            .call()
+            .map_err(|e| self.explain(e, "GET /api/state"))?
+            .into_json::<State>()
+            .map_err(|e| format!("GET /api/state: bad JSON: {e}"))
+    }
+
+    fn post(&self, path: &str, body: serde_json::Value) -> Result<serde_json::Value, String> {
+        let url = format!("{}{}", self.base, path);
+        self.agent
+            .post(&url)
+            .send_json(body)
+            .map_err(|e| self.explain(e, &format!("POST {path}")))?
+            .into_json::<serde_json::Value>()
+            .map_err(|e| format!("POST {path}: bad JSON: {e}"))
+    }
+
+    pub fn set_status(&self, id: &str, status: &str) -> Result<(), String> {
+        self.post("/api/suggestion", serde_json::json!({ "id": id, "status": status })).map(|_| ())
+    }
+
+    /// Approving a cluster is one decision, so it is one request.
+    pub fn set_cluster_status(&self, id: &str, status: &str) -> Result<u64, String> {
+        let res = self.post("/api/cluster", serde_json::json!({ "id": id, "status": status }))?;
+        Ok(res.get("updated").and_then(|v| v.as_u64()).unwrap_or(0))
+    }
+
+    /// Returns the commit sha. Can refuse three ways — dirty tree, read-only
+    /// target, no patch — and every one of them is worth showing as written.
+    pub fn apply(&self, id: &str) -> Result<String, String> {
+        let res = self.post("/api/apply", serde_json::json!({ "id": id }))?;
+        Ok(res.get("sha").and_then(|v| v.as_str()).unwrap_or_default().to_string())
+    }
+
+    pub fn diff(&self, id: &str) -> Result<Option<String>, String> {
+        let url = format!("{}/api/diff?id={}", self.base, urlencode(id));
+        let res = self
+            .agent
+            .get(&url)
+            .call()
+            .map_err(|e| self.explain(e, "GET /api/diff"))?
+            .into_json::<serde_json::Value>()
+            .map_err(|e| format!("GET /api/diff: bad JSON: {e}"))?;
+        Ok(res.get("patch").and_then(|v| v.as_str()).map(String::from))
+    }
+}
+
+/// Suggestion ids are `<target>/<skill>/<file>.md`, so the slashes and dots have
+/// to survive the query string. Small enough not to justify a dependency.
+fn urlencode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 8);
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/* ------------------------------------------------------------------ tests ---- */
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Trimmed from a live `GET /api/state`, including a field the types file does
+    /// not mention (`outcome`) — the server grows fields and the TUI must not care.
+    const STATE: &str = r#"{
+      "generatedAt": "2026-08-08T22:00:00.000Z",
+      "warnings": [],
+      "suggestions": [
+        { "id": "user/kaizen/a.md", "skill": "kaizen", "severity": "medium",
+          "status": "new", "type": "structural", "score": 10, "surfaced": true,
+          "outcome": "partial", "incidents": 1, "rung": 1 },
+        { "id": "user/kaizen/b.md", "skill": "kaizen", "severity": "high",
+          "status": "approved", "type": "content", "score": 42, "surfaced": true },
+        { "id": "user/kaizen/c.md", "skill": "kaizen", "status": "applied",
+          "score": 99, "surfaced": true },
+        { "id": "user/kaizen/d.md", "skill": "kaizen", "status": "new",
+          "score": 99, "surfaced": false }
+      ],
+      "clusters": [
+        { "id": "origin-local-remote", "members": ["user/kaizen/a.md"], "size": 9,
+          "incidents": 27, "score": 67, "promoted": true, "spanDays": 70 }
+      ],
+      "metrics": { "total": 4, "open": 3, "untriaged": 0, "promotedClusters": 1 }
+    }"#;
+
+    #[test]
+    fn parses_a_real_state_including_unknown_fields() {
+        let state: State = serde_json::from_str(STATE).expect("parses");
+        assert_eq!(state.suggestions.len(), 4);
+        assert_eq!(state.metrics.open, 3);
+        assert_eq!(state.clusters[0].span_days, 70);
+        assert_eq!(state.suggestions[0].rung, Some(1));
+        assert_eq!(state.suggestions[0].kind, "structural");
+    }
+
+    /// The queue is what you asked to see and have not finished: applied items and
+    /// filtered-out ones are both absent, and the worst comes first.
+    #[test]
+    fn queue_drops_applied_and_unsurfaced_then_sorts_by_score() {
+        let state: State = serde_json::from_str(STATE).unwrap();
+        let ids: Vec<&str> = state.queue().iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["user/kaizen/b.md", "user/kaizen/a.md"]);
+    }
+
+    #[test]
+    fn missing_fields_default_rather_than_failing_the_parse() {
+        let state: State = serde_json::from_str(r#"{"suggestions":[{"id":"x"}]}"#).unwrap();
+        assert_eq!(state.suggestions[0].id, "x");
+        assert_eq!(state.suggestions[0].severity, "");
+        assert_eq!(state.suggestions[0].rung, None);
+        assert!(state.clusters.is_empty());
+    }
+
+    #[test]
+    fn ids_survive_the_query_string() {
+        assert_eq!(
+            urlencode("user/kaizen/2026-08-08-a-b.md"),
+            "user%2Fkaizen%2F2026-08-08-a-b.md"
+        );
+    }
+}
