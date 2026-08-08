@@ -1,0 +1,20 @@
+{
+  "name": "@kaizen/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The engine: read skills and suggestions, cluster, score. No UI, no network.",
+  "main": "src/index.mjs",
+  "exports": {
+    ".": "./src/index.mjs",
+    "./config": "./src/config.mjs",
+    "./scan": "./src/scan.mjs",
+    "./suggestion": "./src/suggestion.mjs",
+    "./cluster": "./src/cluster.mjs",
+    "./paths": "./src/paths.mjs"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "lint": "eslint src tests"
+  }
+}

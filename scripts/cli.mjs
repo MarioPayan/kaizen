@@ -13,9 +13,19 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { createInterface } from 'node:readline/promises';
 import { stdin, stdout, argv, exit } from 'node:process';
-import { loadConfig, saveConfig, defaultConfig, TYPES, OBJECTIVES, EFFORTS } from './lib/config.mjs';
-import { buildState } from './lib/scan.mjs';
-import { parseFrontmatter, writeFrontmatter, SEVERITIES, STATUSES } from './lib/suggestion.mjs';
+import {
+  loadConfig,
+  saveConfig,
+  defaultConfig,
+  buildState,
+  parseFrontmatter,
+  writeFrontmatter,
+  TYPES,
+  OBJECTIVES,
+  EFFORTS,
+  SEVERITIES,
+  STATUSES,
+} from '@kaizen/core';
 
 const [, , command = 'status', ...args] = argv;
 const has = (flag) => args.includes(flag);
@@ -153,7 +163,7 @@ async function cmdInit() {
     `\nFound ${state.skills.length} skills and ${state.metrics.total} suggestions ` +
       `(${state.metrics.incidents} incidents, ${state.metrics.clusters} clusters).`,
   );
-  console.log('\nNext: `kaizen serve` to open the app, or run /kaizen in Claude Code to triage.\n');
+  console.log('\nNext: `kaizen serve` to open the app, or run /kaizen:triage in Claude Code.\n');
 }
 
 /* ---------------------------------------------------------- scan/status ---- */
@@ -258,7 +268,7 @@ function cmdValidate() {
 
 async function cmdServe() {
   const config = requireConfig();
-  const { startServer } = await import('../app/server/index.mjs');
+  const { startServer } = await import('@kaizen/server');
   await startServer(config);
 }
 

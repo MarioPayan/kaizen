@@ -22,19 +22,19 @@ A proposal at rung 2 or 3 has to say why the rung below it does not work. That c
 ```bash
 /plugin marketplace add /path/to/kaizen
 /plugin install kaizen
-/kaizen-init
+/kaizen:init
 ```
 
-`kaizen-init` asks what to watch. Nothing is assumed about where skills live on your machine — there are no paths in this repository that name one.
+`/kaizen:init` asks what to watch. Nothing is assumed about where skills live on your machine — there are no paths in this repository that name one.
 
 ## Use
 
-| Command         | Does                                          |
-| --------------- | --------------------------------------------- |
-| `/kaizen`       | triage the backlog, cluster it, propose fixes |
-| `/kaizen drain` | apply what you have already approved          |
-| `/kaizen-app`   | open the dashboard                            |
-| `/kaizen-init`  | change what is watched                        |
+| Command                | Does                                          |
+| ---------------------- | --------------------------------------------- |
+| `/kaizen:triage`       | triage the backlog, cluster it, propose fixes |
+| `/kaizen:triage drain` | apply what you have already approved          |
+| `/kaizen:app`          | open the dashboard                            |
+| `/kaizen:init`         | change what is watched                        |
 
 A `SessionStart` hook prints one line per session — untriaged count, and the cluster that has cost you the most. No model runs, so it costs nothing, and it means the backlog cannot be forgotten. It never opens a browser: `SessionStart` fires for every terminal and scheduled run, and a dashboard that opens itself all day stops being read.
 
@@ -80,13 +80,27 @@ That loopback binding is the security boundary — these routes write files and 
 
 Nothing leaves your machine and nothing user-specific lives in this repository. Config sits in `~/.claude/kaizen/config.json`; suggestions stay in your own feedback directory.
 
+## Layout
+
+npm workspaces, so a change in one package cannot quietly reach into another.
+
+| Package          | Holds                                                                                              | Depends on |
+| ---------------- | -------------------------------------------------------------------------------------------------- | ---------- |
+| `@kaizen/core`   | the engine: parse, cluster, score, discover. Plain Node, no deps                                   | nothing    |
+| `@kaizen/server` | the local API on loopback                                                                          | core       |
+| `@kaizen/data`   | domain types, the API client, query hooks, the rules that hold regardless of how anything is drawn | nothing UI |
+| `@kaizen/ui`     | the design system, built on [Base UI](https://base-ui.com). Presentational only                    | Base UI    |
+| `@kaizen/app`    | routing, layout, and the views that compose the two above                                          | ui + data  |
+
+The boundary that matters: `@kaizen/ui` does not know what a cluster is, and `@kaizen/data` does not know what colour a bug should be. Joining them is the app's job, and it is the only place that mapping lives. Redesigning is then a change to `ui` and the views — the engine, the API and the domain rules are untouched.
+
 ## Development
 
 ```bash
-npm install && npm --prefix app install
-npm run check      # engine: lint, format, 44 tests
-npm run app:check  # app: types, lint, format, 10 tests
-npm run app:build
+npm install
+npm run check    # format, types, lint, tests — every package
+npm run dev      # the app against a running API
+npm run build
 ```
 
 The app reviews itself against the same rubric it applies to skills — type checking, linting, tests and bundle size are rung-1 signals, and the "This app" view records what has been deliberately deferred and why.

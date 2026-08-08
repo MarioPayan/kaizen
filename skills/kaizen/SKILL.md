@@ -1,6 +1,6 @@
 ---
 name: kaizen
-description: Triage the improvement suggestions your skills have filed, group recurring failures, and propose fixes that push instructions down into scripts. Use when the user says "/kaizen", "triage my skills", "what should I fix in my skills", "review the skill backlog", "kaizen pass", or when a session-start line reports untriaged suggestions. Also use to drain approved proposals into applied commits.
+description: Triage the improvement suggestions your skills have filed, group recurring failures, and propose fixes that push instructions down into scripts. Use when the user says "/kaizen:triage", "/kaizen", "triage my skills", "what should I fix in my skills", "review the skill backlog", "kaizen pass", or when a session-start line reports untriaged suggestions. Also use to drain approved proposals into applied commits.
 ---
 
 # kaizen
@@ -45,7 +45,7 @@ Run the scanner rather than walking directories by hand. It parses, scores, clus
 node "${CLAUDE_PLUGIN_ROOT}/scripts/cli.mjs" scan --pretty
 ```
 
-If it reports no config, stop and tell the user to run `/kaizen-init`. Do not guess at paths.
+If it reports no config, stop and tell the user to run `/kaizen:init`. Do not guess at paths.
 
 Note `metrics.untriaged`, the promoted clusters, and `warnings`. Warnings about a missing path are configuration problems — surface them, do not work around them.
 
@@ -132,9 +132,9 @@ Kaizen-Suggestion: <suggestion id>
 
 ## Step 8 — Review this plugin's own app
 
-The app is not exempt. Once per pass, check `app/` against the same rubric and file anything real into the `kaizen-app` feedback folder:
+The app is not exempt. Once per pass, check `packages/app` (and the `ui`/`data` packages it composes) against the same rubric, and file anything real into the `kaizen-app` feedback folder:
 
-- `npm --prefix app run check` — type errors, lint, tests, all rung-1 signals
+- `npm run check` — formatting, types, lint and tests across every package; all rung-1 signals
 - any view that has gone unopened, any number not traceable to a file on disk
 - anything sitting at `proposed` for two weeks, which means the approval flow has friction
 
