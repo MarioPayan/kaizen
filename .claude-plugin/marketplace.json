@@ -1,0 +1,13 @@
+{
+  "name": "kaizen",
+  "owner": {
+    "name": "Mario Payan"
+  },
+  "plugins": [
+    {
+      "name": "kaizen",
+      "source": "./",
+      "description": "Perpetual improvement loop for Claude Code skills."
+    }
+  ]
+}
