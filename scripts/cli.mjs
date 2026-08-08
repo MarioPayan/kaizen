@@ -53,26 +53,39 @@ function candidateTargets() {
   return out;
 }
 
+/** Read a flag's value: `--depth 3` or `--depth=3`. */
+function flag(name) {
+  const eq = args.find((a) => a.startsWith(`--${name}=`));
+  if (eq) return eq.slice(name.length + 3);
+  const i = args.indexOf(`--${name}`);
+  return i !== -1 && args[i + 1] && !args[i + 1].startsWith('--') ? args[i + 1] : undefined;
+}
+
 async function cmdInit() {
-  const rl = createInterface({ input: stdin, output: stdout });
+  // The common way to reach this is a slash command in Claude Code, where stdin
+  // is not a terminal. Prompting there would hang forever, so a non-TTY run
+  // takes the detected defaults and prints exactly what it chose.
+  const interactive = stdin.isTTY && !has('--yes');
+
+  const rl = interactive ? createInterface({ input: stdin, output: stdout }) : null;
   const ask = async (q, dflt = '') => {
+    if (!rl) return dflt;
     const a = (await rl.question(dflt ? `${q} [${dflt}] ` : `${q} `)).trim();
     return a || dflt;
   };
   const yes = async (q, dflt = true) => {
+    if (!rl) return dflt;
     const a = (await ask(q, dflt ? 'Y/n' : 'y/N')).toLowerCase();
-    return a === 'y/n' || a === 'y'
-      ? true
-      : a === 'y/n'
-        ? true
-        : a.startsWith('y')
-          ? true
-          : a.startsWith('n')
-            ? false
-            : dflt;
+    if (a === 'y/n' || a === 'y/n'.toUpperCase()) return dflt;
+    if (a.startsWith('y')) return true;
+    if (a.startsWith('n')) return false;
+    return dflt;
   };
 
   console.log('\nkaizen setup\n');
+  if (!interactive) {
+    console.log('Not a terminal — accepting detected defaults. Flags: --scan <roots> --depth N.\n');
+  }
   const { config: existing, exists, path } = loadConfig();
   const config = exists ? existing : defaultConfig();
   if (exists) console.log(`Updating existing config at ${path}\n`);
@@ -96,15 +109,19 @@ async function cmdInit() {
   config.targets = targets;
 
   console.log('');
-  if (await yes('Also look for skills inside project repositories?', false)) {
-    const rootsRaw = await ask('Directories to search (comma separated):', process.cwd());
+  const scanFlag = flag('scan');
+  const wantScan =
+    scanFlag !== undefined || (await yes('Also look for skills inside project repositories?', false));
+
+  if (wantScan) {
+    const rootsRaw = scanFlag ?? (await ask('Directories to search (comma separated):', process.cwd()));
     config.scan = {
       enabled: true,
       roots: rootsRaw
         .split(',')
         .map((s) => s.trim())
         .filter(Boolean),
-      depth: Number(await ask('How many directory levels deep?', '3')) || 3,
+      depth: Number(flag('depth') ?? (await ask('How many directory levels deep?', '3'))) || 3,
       // Reporting on someone else's repo is safe; patching it is not.
       writable: false,
     };
@@ -120,7 +137,7 @@ async function cmdInit() {
   );
   config.cadence.sessionHook = await yes('Print a one-line backlog status each session?', true);
 
-  rl.close();
+  rl?.close();
 
   try {
     saveConfig(config);

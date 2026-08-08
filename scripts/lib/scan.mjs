@@ -6,7 +6,8 @@
  * copy to drift.
  */
 import { readdirSync, readFileSync, statSync, existsSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, relative, dirname, resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { parseSuggestion } from './suggestion.mjs';
 import { clusterSuggestions } from './cluster.mjs';
 import { resolveTargets, expandPath } from './config.mjs';
@@ -99,25 +100,68 @@ export function discoverSkills(skillsDir, { target = '', kind = 'user' } = {}) {
 }
 
 /**
+ * Identify the repository a directory belongs to, collapsing git worktrees.
+ *
+ * In a worktree `--git-dir` points at `<main>/.git/worktrees/<name>` while
+ * `--git-common-dir` points at the shared `<main>/.git`. Comparing them is how
+ * git itself distinguishes the two, so it is exact rather than a name heuristic.
+ *
+ * This matters a lot in practice: a repo with 24 active worktrees presents the
+ * same ten skills 24 times, and without collapsing them the inventory is almost
+ * entirely duplicates.
+ */
+const repoCache = new Map();
+
+function repoIdentity(dir) {
+  if (repoCache.has(dir)) return repoCache.get(dir);
+  let identity = { repo: dir, isWorktree: false };
+  try {
+    const common = execFileSync(
+      'git',
+      ['-C', dir, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
+      {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      },
+    ).trim();
+    if (common) {
+      identity = { repo: dirname(common), isWorktree: resolve(common) !== resolve(dir, '.git') };
+    }
+  } catch {
+    /* not a git repo — treat the directory as its own identity */
+  }
+  repoCache.set(dir, identity);
+  return identity;
+}
+
+/**
  * Bounded, opt-in discovery of project-level `.claude/skills`.
- * Depth-limited and cached by the caller: walking a repo root blindly is slow and
- * mostly rediscovers worktree duplicates.
+ *
+ * Depth-limited because walking a repo root blindly is slow, and worktree-aware
+ * because otherwise it is mostly slow for nothing.
  */
 export function discoverProjectSkills({ roots = [], depth = 3 } = {}) {
   const out = [];
-  const seen = new Set();
+  const seenDirs = new Set();
+  const seenSkills = new Set();
+  const worktreeCount = new Map();
 
   const walk = (dir, level) => {
     if (level > depth) return;
     const candidate = join(dir, '.claude', 'skills');
-    if (existsSync(candidate) && !seen.has(candidate)) {
-      seen.add(candidate);
-      out.push(
-        ...discoverSkills(candidate, { target: `project:${dir}`, kind: 'project' }).map((s) => ({
-          ...s,
-          project: dir,
-        })),
-      );
+    if (existsSync(candidate) && !seenDirs.has(candidate)) {
+      seenDirs.add(candidate);
+      const { repo, isWorktree } = repoIdentity(dir);
+      if (isWorktree) worktreeCount.set(repo, (worktreeCount.get(repo) ?? 0) + 1);
+
+      for (const skill of discoverSkills(candidate, { target: `project:${repo}`, kind: 'project' })) {
+        // One entry per skill per repository. A worktree holds the same file,
+        // and listing it again says nothing new.
+        const key = `${repo}::${skill.name}`;
+        if (seenSkills.has(key)) continue;
+        seenSkills.add(key);
+        out.push({ ...skill, project: repo, foundIn: dir });
+      }
     }
     for (const entry of safeReaddir(dir, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
@@ -134,7 +178,8 @@ export function discoverProjectSkills({ roots = [], depth = 3 } = {}) {
       /* configured root does not exist — reported by the caller, not fatal */
     }
   }
-  return out;
+
+  return out.map((s) => ({ ...s, worktrees: worktreeCount.get(s.project) ?? 0 }));
 }
 
 /** Read every suggestion filed under a feedback directory. */

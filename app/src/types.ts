@@ -53,6 +53,9 @@ export interface Skill {
   path: string;
   dir?: string;
   project?: string;
+  foundIn?: string;
+  /** Worktrees of this repo collapsed into this entry. */
+  worktrees?: number;
   lines: number;
   scripts: number;
   suggestions: number;

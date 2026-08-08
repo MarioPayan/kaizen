@@ -32,6 +32,11 @@ function Viewer({ skill }: { skill: Skill }) {
         <h3 className="font-mono text-sm font-bold">{skill.name}</h3>
         <Chip>{skill.kind}</Chip>
         {skill.scripts > 0 && <Chip tone="accent">{skill.scripts} scripts</Chip>}
+        {(skill.worktrees ?? 0) > 0 && (
+          <Chip title="Worktrees of this repo hold the same file; they are counted once">
+            {skill.worktrees} worktrees collapsed
+          </Chip>
+        )}
         <span className="font-mono text-xs text-ink-3">{skill.lines} lines</span>
       </div>
       <div className="min-h-0 flex-1 overflow-auto px-4 py-3">
@@ -53,6 +58,10 @@ function Viewer({ skill }: { skill: Skill }) {
 export default function Skills({ state }: { state: State }) {
   const [selected, setSelected] = useState<string | null>(state.skills[0]?.path ?? null);
   const skill = state.skills.find((s) => s.path === selected) ?? state.skills[0];
+  const collapsed = [...new Set(state.skills.filter((s) => s.worktrees).map((s) => s.project))].reduce(
+    (sum, p) => sum + (state.skills.find((s) => s.project === p)?.worktrees ?? 0),
+    0,
+  );
 
   if (state.skills.length === 0) {
     return <Empty>No skills found in any configured target. Check Settings.</Empty>;
@@ -113,6 +122,13 @@ export default function Skills({ state }: { state: State }) {
       </div>
 
       <div className="max-h-[32rem] border border-line bg-surface">{skill && <Viewer skill={skill} />}</div>
+
+      {collapsed > 0 && (
+        <p className="text-xs text-ink-3 lg:col-span-2">
+          {collapsed} git worktrees were collapsed into their main repository — they hold the same files, so
+          listing them again would say nothing new.
+        </p>
+      )}
 
       {state.orphans.length > 0 && (
         <p className="text-xs text-ink-3 lg:col-span-2">
