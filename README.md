@@ -8,14 +8,14 @@ Kaizen is the consumer. It reads your skills where they live, groups suggestions
 
 The bias throughout: **a fix belongs at the lowest rung that works.**
 
-| Rung | Mechanism | Cost | Use when |
-| ---- | --------- | ---- | -------- |
-| 0 | Harness — a hook, a permission rule, a `CLAUDE.md` line | 0 tokens, cannot be skipped | the rule must hold across every skill |
-| 1 | A script returning a verdict | one Bash call | inputs are fixed, the verdict is mechanical |
-| 2 | A written rule in `SKILL.md` | tokens every run, re-interpreted each time | the input genuinely varies and needs judgement |
-| 3 | Left to reasoning | tokens plus full drift | genuinely novel every time |
+| Rung | Mechanism                                               | Cost                                       | Use when                                       |
+| ---- | ------------------------------------------------------- | ------------------------------------------ | ---------------------------------------------- |
+| 0    | Harness — a hook, a permission rule, a `CLAUDE.md` line | 0 tokens, cannot be skipped                | the rule must hold across every skill          |
+| 1    | A script returning a verdict                            | one Bash call                              | inputs are fixed, the verdict is mechanical    |
+| 2    | A written rule in `SKILL.md`                            | tokens every run, re-interpreted each time | the input genuinely varies and needs judgement |
+| 3    | Left to reasoning                                       | tokens plus full drift                     | genuinely novel every time                     |
 
-A proposal at rung 2 or 3 has to say why the rung below it does not work. That constraint is what makes the loop bend toward *faster* over time instead of accumulating more instructions.
+A proposal at rung 2 or 3 has to say why the rung below it does not work. That constraint is what makes the loop bend toward _faster_ over time instead of accumulating more instructions.
 
 ## Install
 
@@ -29,12 +29,12 @@ A proposal at rung 2 or 3 has to say why the rung below it does not work. That c
 
 ## Use
 
-| Command | Does |
-| ------- | ---- |
-| `/kaizen` | triage the backlog, cluster it, propose fixes |
-| `/kaizen drain` | apply what you have already approved |
-| `/kaizen-app` | open the dashboard |
-| `/kaizen-init` | change what is watched |
+| Command         | Does                                          |
+| --------------- | --------------------------------------------- |
+| `/kaizen`       | triage the backlog, cluster it, propose fixes |
+| `/kaizen drain` | apply what you have already approved          |
+| `/kaizen-app`   | open the dashboard                            |
+| `/kaizen-init`  | change what is watched                        |
 
 A `SessionStart` hook prints one line per session — untriaged count, and the cluster that has cost you the most. No model runs, so it costs nothing, and it means the backlog cannot be forgotten. It never opens a browser: `SessionStart` fires for every terminal and scheduled run, and a dashboard that opens itself all day stops being read.
 
@@ -56,7 +56,7 @@ Recurrence is the honest signal. A suggestion filed six times is six incidents, 
 
 Nothing applies without you. `autoApply` exists in the config and ships empty.
 
-Approval happens per *cluster*, not per suggestion. Seven suggestions that share one fix are one decision. Requiring a click per row is how a backlog stops being drained, which is the exact failure this tool exists to correct.
+Approval happens per _cluster_, not per suggestion. Seven suggestions that share one fix are one decision. Requiring a click per row is how a backlog stops being drained, which is the exact failure this tool exists to correct.
 
 Your approval is the authorisation — what happens after it can be automatic. A proposal that is already a validated patch is applied by the server with no model involved. One that still needs authoring waits for the next `/kaizen` run.
 
