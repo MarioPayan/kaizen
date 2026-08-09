@@ -98,7 +98,7 @@ impl State {
         let mut out: Vec<&Suggestion> = self
             .suggestions
             .iter()
-            .filter(|s| s.surfaced && s.status != "applied")
+            .filter(|s| s.surfaced && !crate::lifecycle::is_terminal(&s.status))
             .collect();
         out.sort_by(|a, b| {
             b.score
@@ -350,7 +350,11 @@ mod tests {
         { "id": "user/kaizen/c.md", "skill": "kaizen", "status": "applied",
           "score": 99, "surfaced": true },
         { "id": "user/kaizen/d.md", "skill": "kaizen", "status": "new",
-          "score": 99, "surfaced": false }
+          "score": 99, "surfaced": false },
+        { "id": "user/kaizen/e.md", "skill": "kaizen", "status": "verified",
+          "score": 98, "surfaced": true },
+        { "id": "user/kaizen/f.md", "skill": "kaizen", "status": "superseded",
+          "score": 97, "surfaced": true }
       ],
       "clusters": [
         { "id": "origin-local-remote", "members": ["user/kaizen/a.md"], "size": 9,
@@ -362,20 +366,24 @@ mod tests {
     #[test]
     fn parses_a_real_state_including_unknown_fields() {
         let state: State = serde_json::from_str(STATE).expect("parses");
-        assert_eq!(state.suggestions.len(), 4);
+        assert_eq!(state.suggestions.len(), 6);
         assert_eq!(state.metrics.open, 3);
         assert_eq!(state.clusters[0].span_days, 70);
         assert_eq!(state.suggestions[0].rung, Some(1));
         assert_eq!(state.suggestions[0].kind, "structural");
     }
 
-    /// The queue is what you asked to see and have not finished: applied items and
-    /// filtered-out ones are both absent, and the worst comes first.
+    /// The queue is what you asked to see and have not finished: terminal items
+    /// and filtered-out ones are both absent, and the worst comes first.
+    ///
+    /// `applied` stays. It used to be dropped, and that is precisely how a landed
+    /// change with no verification came to read as finished — the spec now calls
+    /// it non-terminal and this list is derived from the spec.
     #[test]
-    fn queue_drops_applied_and_unsurfaced_then_sorts_by_score() {
+    fn queue_keeps_applied_drops_terminal_and_unsurfaced_then_sorts_by_score() {
         let state: State = serde_json::from_str(STATE).unwrap();
         let ids: Vec<&str> = state.queue().iter().map(|s| s.id.as_str()).collect();
-        assert_eq!(ids, ["user/kaizen/b.md", "user/kaizen/a.md"]);
+        assert_eq!(ids, ["user/kaizen/c.md", "user/kaizen/b.md", "user/kaizen/a.md"]);
     }
 
     #[test]

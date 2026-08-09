@@ -9,6 +9,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, resolve, sep } from 'node:path';
+import { TYPES, OBJECTIVES, EFFORTS, SEVERITIES, defaultSurface } from './taxonomy.mjs';
 
 export const CONFIG_VERSION = 1;
 
@@ -34,11 +35,14 @@ export function defaultConfig() {
     // Project-level `.claude/skills` discovery. Opt-in — never scan blindly.
     scan: { enabled: false, roots: [], depth: 3, writable: false },
     cadence: { weekly: 'SUN 09:00', sessionHook: true },
+    // Which suggestions the queue and the session line put in front of you. A
+    // view preference, not a filter on what gets filed — muted work stays on
+    // disk and stays one click away.
+    surface: defaultSurface(),
     models: {
       triage: 'claude-opus-5',
       proposal: 'claude-opus-5',
       validate: 'claude-haiku-4-5-20251001',
-      appReview: 'claude-sonnet-5',
     },
     // Which {type}:{effort} pairs may apply without a human. Empty = nothing does.
     autoApply: [],
@@ -48,10 +52,8 @@ export function defaultConfig() {
   };
 }
 
-const TYPES = ['determinism', 'structural', 'behavioral', 'content', 'tooling', 'hygiene'];
-const OBJECTIVES = ['bug', 'guardrail', 'feature', 'performance', 'clarity', 'debt'];
-const EFFORTS = ['S', 'M', 'L'];
-
+// Re-exported from their new home in taxonomy.mjs so existing importers of this
+// module keep working unchanged.
 export { TYPES, OBJECTIVES, EFFORTS };
 
 /** Returns a list of human-readable problems. Empty list means valid. */
@@ -90,6 +92,28 @@ export function validateConfig(cfg) {
     if (!Number.isInteger(incidents) || incidents < 2) errs.push('clusterPromotion.incidents must be >= 2');
   }
 
+  if (cfg.surface) {
+    for (const [key, allowed] of [
+      ['types', TYPES],
+      ['objectives', OBJECTIVES],
+    ]) {
+      const values = cfg.surface[key];
+      if (!Array.isArray(values) || values.length === 0) {
+        // Empty is not "show nothing", it is a config that hides its own queue.
+        // Same reasoning as `scan.enabled` with no roots: a contradiction, not
+        // a preference.
+        errs.push(`surface.${key} must be a non-empty array`);
+        continue;
+      }
+      for (const v of values) {
+        if (!allowed.includes(v)) errs.push(`surface.${key}: unknown value "${v}"`);
+      }
+    }
+    if (!SEVERITIES.includes(cfg.surface.minSeverity)) {
+      errs.push(`surface.minSeverity must be one of ${SEVERITIES}`);
+    }
+  }
+
   if (!Array.isArray(cfg.autoApply)) {
     errs.push('autoApply must be an array');
   } else {
@@ -118,6 +142,18 @@ function merge(base, over) {
     out[k] = v && typeof v === 'object' && !Array.isArray(v) ? { ...base[k], ...v } : v;
   }
   return out;
+}
+
+/**
+ * Fill in anything a config does not mention.
+ *
+ * `loadConfig` does this on the way in, but a config can reach the server without
+ * passing through it — posted from the raw JSON editor, or handed straight to
+ * `createApp`. A block that is merely absent should behave like its default, not
+ * like an undefined the first reader trips over.
+ */
+export function withDefaults(config) {
+  return merge(defaultConfig(), config);
 }
 
 export function loadConfig(path = configPath()) {

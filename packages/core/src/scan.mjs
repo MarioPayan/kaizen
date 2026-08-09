@@ -11,7 +11,9 @@ import { execFileSync } from 'node:child_process';
 import { parseSuggestion } from './suggestion.mjs';
 import { clusterSuggestions } from './cluster.mjs';
 import { resolveTargets, expandPath } from './config.mjs';
+import { surfaceOf, passesSurface } from './taxonomy.mjs';
 import { suggestionId } from './paths.mjs';
+import { isTerminal } from './lifecycle.mjs';
 
 const SCRIPT_EXT = /\.(sh|py|mjs|js|ts|bash|zsh)$/i;
 
@@ -188,7 +190,11 @@ export function discoverSuggestions(feedbackDir, targetName) {
   if (!existsSync(feedbackDir)) return out;
 
   for (const entry of safeReaddir(feedbackDir, { withFileTypes: true })) {
-    if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+    // `_`-prefixed is "not a skill", the same convention `_lib` already uses in
+    // a skills tree. It is what makes the documented `_archive/` escape hatch
+    // work: without it, archiving an orphan just renames the orphan to
+    // `_archive` and the warning never clears.
+    if (!entry.isDirectory() || entry.name.startsWith('.') || entry.name.startsWith('_')) continue;
     const skillDir = join(feedbackDir, entry.name);
     for (const file of safeReaddir(skillDir)) {
       if (!file.endsWith('.md')) continue;
@@ -248,6 +254,14 @@ export function buildState(config) {
     skills.push(...discoverProjectSkills({ roots: config.scan.roots, depth: config.scan.depth }));
   }
 
+  // `surface` is a view preference, not a filter on what exists. Every suggestion
+  // is still returned and still counted in `metrics`; each is only tagged with
+  // whether the user asked to have it put in front of them. Applying it once here
+  // means the app and the session line share one implementation without either
+  // importing this package.
+  const surface = surfaceOf(config);
+  for (const s of suggestions) s.surfaced = passesSurface(s, surface);
+
   const clusters = clusterSuggestions(suggestions, { promotion: config.clusterPromotion });
 
   // A feedback folder whose skill no longer exists still holds real findings —
@@ -257,7 +271,11 @@ export function buildState(config) {
     .filter((name) => !liveSkills.has(name))
     .sort();
 
-  const open = suggestions.filter((s) => !['applied', 'rejected', 'superseded'].includes(s.status));
+  // Terminal comes from the spec, so this list cannot drift from the model the
+  // app and the TUI draw. Note `applied` is *not* terminal any more: a landed
+  // change whose validation plan has not run is unfinished, and saying so is
+  // the entire reason the verify phase exists.
+  const open = suggestions.filter((s) => !isTerminal(s.status));
   const byName = new Map();
   for (const s of suggestions) byName.set(s.skill, (byName.get(s.skill) ?? 0) + 1);
 

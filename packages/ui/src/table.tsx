@@ -44,19 +44,37 @@ export function Td({
 
 export function Tr({
   children,
-  onClick,
+  selectable,
   selected,
 }: {
   children: ReactNode;
-  onClick?: () => void;
+  selectable?: boolean;
   selected?: boolean;
 }) {
   return (
     <tr
-      onClick={onClick}
-      className={`last:[&>td]:border-b-0 ${onClick ? 'cursor-pointer' : ''} ${selected ? 'bg-surface-2' : 'hover:bg-surface-2'}`}
+      className={`last:[&>td]:border-b-0 ${selectable ? 'cursor-pointer' : ''} ${selected ? 'bg-surface-2' : 'hover:bg-surface-2'}`}
     >
       {children}
     </tr>
+  );
+}
+
+/**
+ * The clickable part of a selectable row.
+ *
+ * A handler on the `<tr>` itself works with a mouse and is unreachable by
+ * keyboard — the row is not focusable and never will be. A real button filling
+ * the cell is the whole fix.
+ */
+export function RowTrigger({ onClick, children }: { onClick: () => void; children: ReactNode }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="-mx-3 -my-2 block w-[calc(100%+1.5rem)] cursor-pointer px-3 py-2 text-left focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-accent"
+    >
+      {children}
+    </button>
   );
 }

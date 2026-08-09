@@ -4,7 +4,7 @@
  * target, and applying into a tree with uncommitted work in it.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -48,7 +48,10 @@ beforeAll(async () => {
   writeFileSync(join(skills, 'demo', 'SKILL.md'), '---\nname: demo\n---\n# demo\n');
   writeFileSync(
     join(feedback, 'demo', '2026-01-01-a-thing.md'),
-    '---\nskill: demo\ndate: 2026-01-01\nseverity: medium\neffort: S\n---\n\n## Context\n\nc\n\n## Suggestion\n\ns\n',
+    // `planned` on purpose: approval is reachable only from there, so a fixture
+    // sitting at the entry state could not be approved and every apply test
+    // below would fail on the transition rather than the guard it is testing.
+    '---\nskill: demo\ndate: 2026-01-01\nseverity: medium\neffort: S\nstatus: planned\n---\n\n## Context\n\nc\n\n## Suggestion\n\ns\n',
   );
 
   git(root, 'init', '-q');
@@ -120,6 +123,55 @@ describe('api', () => {
     expect(body.error).toMatch(/status must be one of/);
   });
 
+  /**
+   * The refusal that makes the model load-bearing. A queue of 39 approvals with
+   * no patch behind any of them is the state this prevents, and the message has
+   * to say where the item is and where it may go — a bare 409 on a button press
+   * is indistinguishable from a bug.
+   */
+  it('refuses a transition the model does not allow, and names the legal ones', async () => {
+    const { status, body } = await api('POST', '/api/suggestion', {
+      id: 'user/demo/2026-01-01-a-thing.md',
+      status: 'verified',
+    });
+    expect(status).toBe(409);
+    expect(body.error).toMatch(/is "planned"/);
+    expect(body.error).toMatch(/cannot become "verified"/);
+    expect(body.error).toMatch(/approved, rejected/);
+  });
+
+  /**
+   * The three-hop bypass. Checking only the transition graph let a caller walk
+   * `recorded → triaged → planned → approved` and arrive at an approval with no
+   * patch and no validation plan behind it — the exact state the model exists to
+   * prevent, reached the long way round. A phase's `requires` is now a gate.
+   */
+  it('refuses a move whose phase has produced nothing, and says what is missing', async () => {
+    const id = 'user/demo/2026-01-01-a-thing.md';
+    const feedback = config.targets[0].feedback;
+    const file = join(feedback, 'demo', '2026-01-01-a-thing.md');
+    const original = readFileSync(file, 'utf8');
+    writeFileSync(file, original.replace('status: planned', 'status: triaged'));
+
+    const { status, body } = await api('POST', '/api/suggestion', { id, status: 'planned' });
+    expect(status).toBe(409);
+    expect(body.error).toMatch(/requires/);
+    expect(body.error).toMatch(/plan \(a "## Plan" section\)/);
+    expect(body.error).toMatch(/validation/);
+    expect(body.error).toMatch(/patch \(a sibling \.patch file\)/);
+
+    writeFileSync(file, original);
+  });
+
+  it('refuses to let a caller claim something landed', async () => {
+    const { status, body } = await api('POST', '/api/suggestion', {
+      id: 'user/demo/2026-01-01-a-thing.md',
+      status: 'applied',
+    });
+    expect(status).toBe(403);
+    expect(body.error).toMatch(/set by the server/);
+  });
+
   it('records an approval without acting on it', async () => {
     const id = 'user/demo/2026-01-01-a-thing.md';
     const { status } = await api('POST', '/api/suggestion', { id, status: 'approved' });
@@ -150,6 +202,10 @@ describe('api', () => {
     const { status, body } = await api('POST', '/api/apply', { id: 'user/demo/2026-01-01-a-thing.md' });
     expect(status).toBe(409);
     expect(body.error).toMatch(/working tree is not clean/);
+    // The filename has to be intact. Naming the dirty file is the entire value
+    // of this refusal, and a path with its first character shaved off sends the
+    // reader looking for something that does not exist.
+    expect(body.error).toContain('demo/SKILL.md');
     git(skills, 'checkout', '--', '.');
   });
 

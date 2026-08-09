@@ -1,15 +1,15 @@
 /**
- * Covers the two things a broken render would hide: that approving a cluster is
- * one action rather than one per member, and that an untriaged suggestion is
- * shown as untriaged rather than quietly given defaults.
+ * Covers what a broken render would hide: that approving a cluster is one action
+ * rather than one per member, that an untriaged suggestion is shown as untriaged
+ * rather than quietly given defaults, and that a refused decision rolls back
+ * carrying the server's own words.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { MemoryRouter } from 'react-router-dom';
-import { ToastProvider, TooltipProvider } from '@kaizen/ui';
-import Clusters from '../src/views/Clusters';
+import { MemoryRouter, useLocation } from 'react-router-dom';
+import { HelpProvider, ToastProvider, TooltipProvider } from '@kaizen/ui';
 import Queue from '../src/views/Queue';
 import type { State, Suggestion } from '@kaizen/data';
 
@@ -21,7 +21,7 @@ const suggestion = (over: Partial<Suggestion>): Suggestion => ({
   date: '2026-01-01',
   slug: 'a-thing',
   severity: 'medium',
-  status: 'new',
+  status: 'planned',
   type: 'determinism',
   objective: 'bug',
   scope: '_lib/x.md',
@@ -36,6 +36,7 @@ const suggestion = (over: Partial<Suggestion>): Suggestion => ({
   rationale: '',
   missing: [],
   triaged: true,
+  surfaced: true,
   score: 3,
   ...over,
 });
@@ -64,18 +65,39 @@ const state = (over: Partial<State> = {}): State => ({
   ...over,
 });
 
-const wrap = (ui: React.ReactNode) => {
+/** Reads back the query string so URL-backed filters can be asserted on. */
+function LocationProbe() {
+  return <span data-testid="search">{useLocation().search}</span>;
+}
+
+const wrap = (ui: React.ReactNode, path = '/queue') => {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
       <ToastProvider>
         <TooltipProvider>
-          <MemoryRouter>{ui}</MemoryRouter>
+          {/* Without HelpProvider every chip popover silently no-ops. */}
+          <HelpProvider>
+            <MemoryRouter initialEntries={[path]}>
+              {ui}
+              <LocationProbe />
+            </MemoryRouter>
+          </HelpProvider>
         </TooltipProvider>
       </ToastProvider>
     </QueryClientProvider>,
   );
 };
+
+/**
+ * The row's expand trigger, by name.
+ *
+ * Not by position: chips explain themselves through a popover, and a popover
+ * trigger is also a button carrying aria-expanded, so "the first collapsed
+ * button" is no longer the first row.
+ */
+const allRows = () => screen.getAllByRole('button', { name: /demo/ });
+const row = (slug: RegExp) => screen.getByRole('button', { name: slug });
 
 beforeEach(() => {
   vi.stubGlobal(
@@ -91,35 +113,35 @@ beforeEach(() => {
   );
 });
 
-describe('Clusters', () => {
-  const members = ['a', 'b', 'c'].map((k) =>
-    suggestion({ id: `user/demo/${k}.md`, slug: `slug-${k}`, incidents: 2, recurrences: 1 }),
-  );
-  const withCluster = state({
-    suggestions: members,
-    clusters: [
-      {
-        id: 'origin-remote',
-        pinned: false,
-        members: members.map((m) => m.id),
-        size: 3,
-        incidents: 6,
-        score: 18,
-        skills: ['demo'],
-        scopes: ['_lib/x.md'],
-        first: '2026-01-01',
-        last: '2026-03-01',
-        spanDays: 59,
-        promoted: true,
-      },
-    ],
-  });
+const members = ['a', 'b', 'c'].map((k) =>
+  suggestion({ id: `user/demo/${k}.md`, slug: `slug-${k}`, incidents: 2, recurrences: 1 }),
+);
+const withCluster = state({
+  suggestions: members,
+  clusters: [
+    {
+      id: 'origin-remote',
+      pinned: false,
+      members: members.map((m) => m.id),
+      size: 3,
+      incidents: 6,
+      score: 18,
+      skills: ['demo'],
+      scopes: ['_lib/x.md'],
+      first: '2026-01-01',
+      last: '2026-03-01',
+      spanDays: 59,
+      promoted: true,
+    },
+  ],
+});
 
+describe('Queue, grouped by cluster', () => {
   it('approves every member in one action', async () => {
     const user = userEvent.setup();
-    wrap(<Clusters state={withCluster} />);
+    wrap(<Queue state={withCluster} />, '/queue?group=cluster');
 
-    await user.click(screen.getByRole('button', { name: /approve cluster \(3\)/i }));
+    await user.click(screen.getByRole('button', { name: /approve all \(3\)/i }));
 
     const calls = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls as [string, RequestInit][];
     const clusterCalls = calls.filter((c) => String(c[0]).includes('/api/cluster'));
@@ -133,12 +155,12 @@ describe('Clusters', () => {
   });
 
   it('marks a promoted cluster as needing a low-rung fix', () => {
-    wrap(<Clusters state={withCluster} />);
+    wrap(<Queue state={withCluster} />, '/queue?group=cluster');
     expect(screen.getByText(/fix at rung 0\/1/i)).toBeInTheDocument();
   });
 
   it('says so plainly when nothing has recurred', () => {
-    wrap(<Clusters state={state()} />);
+    wrap(<Queue state={state({ suggestions: [suggestion({})] })} />, '/queue?group=cluster');
     expect(screen.getByText(/no suggestion has been filed twice/i)).toBeInTheDocument();
   });
 });
@@ -158,9 +180,46 @@ describe('Queue', () => {
     });
     wrap(<Queue state={state({ suggestions: [untriaged] })} />);
 
-    await user.click(screen.getAllByRole('button', { expanded: false })[0]!);
+    await user.click(row(/a-thing/));
     expect(screen.getByText(/missing severity, type, objective/i)).toBeInTheDocument();
-    expect(screen.getByText(/unrated/i)).toBeInTheDocument();
+    // Severity is a dot now, not a word — but an unrated item still has to say
+    // so to anything that cannot see the colour.
+    expect(screen.getAllByRole('img', { name: 'unrated' })).not.toHaveLength(0);
+  });
+
+  /**
+   * A button whose only outcome is a 409 reads as a broken app rather than as a
+   * plan that is still owed. `recorded` is where 22 real suggestions sit, and
+   * approving one is not a legal move until a plan exists behind it.
+   */
+  it('will not offer a decision the model does not allow', async () => {
+    const user = userEvent.setup();
+    wrap(<Queue state={state({ suggestions: [suggestion({ status: 'recorded' })] })} />);
+
+    await user.click(row(/a-thing/));
+    const approve = screen.getByRole('button', { name: /^approve$/i });
+
+    // `aria-disabled`, not the native attribute: Button sets
+    // `focusableWhenDisabled` on purpose so the explanation in `title` stays
+    // reachable by keyboard. Asserted on behaviour too, since that is the part
+    // that matters — the click must not reach the server.
+    expect(approve).toHaveAttribute('aria-disabled', 'true');
+    expect(approve).toHaveAttribute('title', expect.stringContaining('recorded cannot become approved'));
+    expect(approve).toHaveAttribute('title', expect.stringContaining('triaged'));
+
+    await user.click(approve);
+    const calls = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls as [string, RequestInit][];
+    expect(calls.filter((c) => String(c[0]).includes('/api/suggestion'))).toHaveLength(0);
+
+    // Rejecting is legal from anywhere before the decision, and stays offered.
+    expect(screen.getByRole('button', { name: /^reject$/i })).not.toHaveAttribute('aria-disabled', 'true');
+  });
+
+  it('offers the decision once a plan is behind it', async () => {
+    const user = userEvent.setup();
+    wrap(<Queue state={state({ suggestions: [suggestion({ status: 'planned' })] })} />);
+    await user.click(row(/a-thing/));
+    expect(screen.getByRole('button', { name: /^approve$/i })).not.toBeDisabled();
   });
 
   it('ranks by score, highest first', () => {
@@ -169,11 +228,10 @@ describe('Queue', () => {
       suggestion({ id: 'user/demo/high.md', slug: 'high-value', score: 21, incidents: 7 }),
     ];
     wrap(<Queue state={state({ suggestions: rows })} />);
-    const buttons = screen.getAllByRole('button', { expanded: false });
-    expect(within(buttons[0]!).getByText(/high-value/)).toBeInTheDocument();
+    expect(within(allRows()[0]!).getByText(/high-value/)).toBeInTheDocument();
   });
 
-  it('filters by type', async () => {
+  it('filters by type, and the filter lands in the URL', async () => {
     const user = userEvent.setup();
     const rows = [
       suggestion({ id: 'user/demo/1.md', slug: 'det-one', type: 'determinism' }),
@@ -187,5 +245,52 @@ describe('Queue', () => {
 
     await waitFor(() => expect(screen.queryByText(/det-one/)).not.toBeInTheDocument());
     expect(screen.getByText(/hyg-two/)).toBeInTheDocument();
+    // Shareable and reload-proof, which is the point of putting it there.
+    expect(screen.getByTestId('search').textContent).toContain('type=hygiene');
+  });
+
+  it('opens on what you asked to see, and offers the rest', async () => {
+    const user = userEvent.setup();
+    const rows = [
+      suggestion({ id: 'user/demo/1.md', slug: 'wanted' }),
+      suggestion({ id: 'user/demo/2.md', slug: 'muted-one', surfaced: false }),
+      suggestion({ id: 'user/demo/3.md', slug: 'muted-two', surfaced: false }),
+    ];
+    wrap(<Queue state={state({ suggestions: rows })} />);
+
+    expect(screen.queryByText(/muted-one/)).not.toBeInTheDocument();
+    expect(screen.getByText(/2 muted by your surface settings/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /show everything/i }));
+    // Nothing was deleted — it was one click away the whole time.
+    expect(await screen.findByText(/muted-one/)).toBeInTheDocument();
+    expect(screen.getByTestId('search').textContent).toContain('all=1');
+  });
+
+  it('rolls a refused decision back and shows what the server said', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (String(url).includes('/api/suggestion')) {
+          return new Response(
+            JSON.stringify({ error: 'working tree is not clean — commit or stash first: a.md' }),
+            { status: 409 },
+          );
+        }
+        return new Response(JSON.stringify({ id: 'x', patch: null }), { status: 200 });
+      }),
+    );
+    wrap(<Queue state={state({ suggestions: [suggestion({})] })} />);
+
+    await user.click(row(/a-thing/));
+    await user.click(screen.getByRole('button', { name: /^approve$/i }));
+
+    // The optimistic flip is rolled back...
+    await waitFor(() => expect(screen.getByText(/^planned$/)).toBeInTheDocument());
+    // ...and the server's own wording survives the rollback, which is the part
+    // that tells you what to do next. It lands in two places on purpose: the
+    // toast catches your eye, the note stays put while you fix it.
+    expect(await screen.findAllByText(/commit or stash first: a\.md/i)).not.toHaveLength(0);
   });
 });

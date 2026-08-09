@@ -6,11 +6,17 @@
  *   scan      emit the full state as JSON
  *   status    one line, for the session hook
  *   validate  check suggestion frontmatter against the schema (--fix normalises)
+ *   triage    apply a batch of triage decisions to frontmatter (--self-check)
+ *   doctor    run kaizen's own rubric against kaizen (--file queues findings)
+ *   docs      regenerate what lifecycle.json implies (--check fails on drift)
+ *   migrate   rewrite legacy status names in suggestion files (--apply)
  *   serve     start the local app + API
+ *   tui       the queue in the terminal (starts `serve` if the port is dead)
  */
-import { readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
-import { homedir } from 'node:os';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, cpSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { homedir, tmpdir } from 'node:os';
 import { createInterface } from 'node:readline/promises';
 import { stdin, stdout, argv, exit } from 'node:process';
 import {
@@ -25,10 +31,23 @@ import {
   EFFORTS,
   SEVERITIES,
   STATUSES,
+  resolveTargets,
+  runDoctor,
+  findingToMarkdown,
+  loadLifecycle,
+  validateLifecycle,
+  awaitingDecision,
+  entryStatus,
+  canonicalStatus,
+  canTransition,
+  missingRequirements,
+  renderMarkdown,
+  renderTypes,
 } from '@kaizen/core';
 
 const [, , command = 'status', ...args] = argv;
 const has = (flag) => args.includes(flag);
+const here = dirname(fileURLToPath(import.meta.url));
 
 /* ---------------------------------------------------------------- init ---- */
 
@@ -193,6 +212,10 @@ function cmdScan() {
 function cmdStatus() {
   const { config, exists, errors } = loadConfig();
   if (!exists) return;
+  // The Settings toggle has to mean something, and this is its only reader. It
+  // sits above the invalid-config branch on purpose: off means off, including
+  // when the config is broken. `kaizen scan` stays the way to see everything.
+  if (config.cadence?.sessionHook === false) return;
   if (errors.length) {
     console.log(`kaizen: config invalid — ${errors[0]}`);
     return;
@@ -203,14 +226,33 @@ function cmdStatus() {
   } catch {
     return;
   }
-  const { metrics, clusters } = state;
-  if (metrics.total === 0) return;
+  const { clusters } = state;
+
+  // Counted over what the user asked to see, not over everything on disk. The
+  // dashboard's header still reports the full totals; this line is the one that
+  // interrupts, so it obeys the filter.
+  const surfaced = state.suggestions.filter((s) => s.surfaced);
+  if (surfaced.length === 0) return;
 
   const parts = [];
-  if (metrics.untriaged) parts.push(`${metrics.untriaged} untriaged`);
-  const ready = state.suggestions.filter((s) => s.status === 'proposed' || s.status === 'approved').length;
+  const untriaged = surfaced.filter((s) => !s.triaged).length;
+  if (untriaged) parts.push(`${untriaged} untriaged`);
+  // The pile at the entry, which a triage pass consumes. Distinct from
+  // `untriaged`: that means "has no labels", this means "nobody has confirmed
+  // the problem is still real". A file can be fully labelled and still sit here.
+  const entry = entryStatus();
+  const toTriage = surfaced.filter((s) => s.status === entry).length;
+  if (toTriage) parts.push(`${toTriage} to triage`);
+  // Only the pile at the door of the attended phase actually wants Mario. This
+  // used to count `approved` too, which waits on the server — that is how the
+  // line came to report 39 items needing nothing from anyone.
+  const wants = awaitingDecision();
+  const ready = surfaced.filter((s) => wants.includes(s.status)).length;
   if (ready) parts.push(`${ready} awaiting you`);
-  const top = clusters.find((c) => c.promoted);
+  // A cluster is worth naming if any part of it is something you asked to see —
+  // re-clustering the filtered set would invent groups that do not exist on disk.
+  const ids = new Set(surfaced.map((s) => s.id));
+  const top = clusters.find((c) => c.promoted && c.members.some((m) => ids.has(m)));
   if (top) parts.push(`top: ${top.id} (${top.incidents})`);
   if (parts.length === 0) return;
   console.log(`kaizen: ${parts.join(' · ')}`);
@@ -218,14 +260,23 @@ function cmdStatus() {
 
 /* ------------------------------------------------------------ validate ---- */
 
-const REQUIRED = ['skill', 'date', 'severity'];
+/**
+ * What the *capture* step owes us. Not the taxonomy — that is triage's job — but
+ * `scope` is here on purpose: the skill that just ran is the only thing that
+ * knows which file it would have fixed, and without it clustering runs on slug
+ * vocabulary alone. It went unwritten 66 times while being merely requested.
+ */
+const REQUIRED = ['skill', 'date', 'severity', 'scope'];
 
 function cmdValidate() {
   const config = requireConfig();
   const state = buildState(config);
   const fix = has('--fix');
+  const strict = has('--strict');
   let problems = 0;
   let fixed = 0;
+  /** Spec-conformance gaps, grouped by what is missing rather than by file. */
+  const gaps = {};
 
   for (const s of state.suggestions) {
     const issues = [];
@@ -244,7 +295,7 @@ function cmdValidate() {
       const patch = {};
       if (!data.skill) patch.skill = s.skill;
       if (!data.date && s.date) patch.date = s.date;
-      if (!data.status) patch.status = 'new';
+      if (!data.status) patch.status = 'recorded';
       if (Object.keys(patch).length) {
         writeFrontmatter(s.file, patch);
         fixed++;
@@ -254,6 +305,20 @@ function cmdValidate() {
       problems++;
       console.log(`${s.id}\n  ${issues.join('\n  ')}`);
     }
+
+    // Separately: does the file carry what its own phase is supposed to have
+    // produced? This is conformance to the lifecycle spec rather than to the
+    // frontmatter schema, and it is deliberately not fatal by default. Every
+    // file written before the spec existed is missing `evidence`, and turning
+    // the whole corpus red would train everyone to ignore the command — which
+    // is exactly how the old green ("0 with problems") came to mean nothing.
+    for (const field of missingRequirements(s.status, {
+      data,
+      body: readFileSync(s.file, 'utf8'),
+      hasPatch: existsSync(s.file.replace(/\.md$/, '.patch')),
+    })) {
+      (gaps[`${s.status} is missing ${field}`] ??= []).push(s.slug);
+    }
   }
 
   console.log(
@@ -261,7 +326,362 @@ function cmdValidate() {
       (fix ? ` · ${fixed} normalised` : '') +
       `\n${state.metrics.untriaged} untriaged (missing taxonomy — that is triage work, not a schema error)`,
   );
+
+  const gapEntries = Object.entries(gaps).sort((a, b) => b[1].length - a[1].length);
+  if (gapEntries.length) {
+    console.log('\nlifecycle conformance (what each phase was supposed to leave behind):');
+    for (const [what, slugs] of gapEntries) {
+      console.log(
+        `  ${String(slugs.length).padStart(4)}  ${what}` +
+          (slugs.length <= 3 ? ` — ${slugs.join(', ')}` : ''),
+      );
+    }
+    console.log('  A file written before the spec cannot grow these retroactively; --strict fails on them.');
+  }
+
   if (problems && !fix) exit(1);
+  if (strict && gapEntries.length) exit(1);
+}
+
+/* -------------------------------------------------------------- triage ---- */
+
+/** Fields a triage pass is allowed to set, and what each accepts. */
+const TRIAGE_FIELDS = {
+  type: TYPES,
+  objective: OBJECTIVES,
+  effort: EFFORTS,
+  severity: SEVERITIES,
+  status: STATUSES,
+  rung: ['0', '1', '2', '3'],
+  scope: null, // free text: a path, checked for being non-empty only
+  cluster: null,
+  // The triage phase's own output: which commit the problem was last confirmed
+  // to still exist at. Without it a pass cannot legally reach `triaged`, and the
+  // 27 already-fixed suggestions this check exists for stay invisible.
+  confirmed_at: null,
+  // Remapping an orphan onto its successor is a triage decision, and the
+  // edge-case list already calls for it. The folder is the scanner's signal, so
+  // a remap is a move plus this field.
+  skill: null,
+};
+
+/** Turn a decision list into writes, or into every reason it cannot be one. */
+function validateDecisions(decisions, byId) {
+  const errors = [];
+  const writes = [];
+
+  for (const [n, d] of decisions.entries()) {
+    const where = `decisions[${n}]`;
+    const found = byId.get(d?.id);
+    if (!found) {
+      errors.push(`${where}: no suggestion with id "${d?.id}"`);
+      continue;
+    }
+    const patch = {};
+    for (const [key, value] of Object.entries(d)) {
+      if (key === 'id') continue;
+      if (!(key in TRIAGE_FIELDS)) {
+        errors.push(`${where}: "${key}" is not a triage field`);
+        continue;
+      }
+      const allowed = TRIAGE_FIELDS[key];
+      const text = String(value);
+      if (allowed && !allowed.includes(text)) {
+        errors.push(`${where}.${key}: "${text}" must be one of ${allowed.join(', ')}`);
+        continue;
+      }
+      if (!allowed && !text.trim()) {
+        errors.push(`${where}.${key}: must not be empty`);
+        continue;
+      }
+      patch[key] = text;
+    }
+    if (Object.keys(patch).length) writes.push({ file: found.file, id: found.id, patch });
+  }
+  return { errors, writes };
+}
+
+/**
+ * Apply a batch of triage decisions to suggestion frontmatter.
+ *
+ * The judgement — which label fits this suggestion — is genuinely rung 2 and
+ * stays with the model. Turning a decision into a correct frontmatter edit is
+ * rung 1: it is the same five keys every time, the vocabularies are closed, and
+ * doing it by hand across sixty files is exactly the mechanical work this tool
+ * exists to remove. Without this the skill asked its own core loop to be done at
+ * rung 3.
+ *
+ *   kaizen triage --apply decisions.json      # [{ id, type, objective, ... }]
+ *   kaizen triage --apply - < decisions.json
+ *   kaizen triage --self-check
+ */
+function cmdTriage() {
+  if (has('--self-check')) return triageSelfCheck();
+
+  const i = args.indexOf('--apply');
+  const source = i === -1 ? null : args[i + 1];
+  if (!source) {
+    console.error('usage: kaizen triage --apply <file.json|-> [--dry-run]');
+    exit(1);
+  }
+
+  let decisions;
+  try {
+    decisions = JSON.parse(source === '-' ? readFileSync(0, 'utf8') : readFileSync(source, 'utf8'));
+  } catch (e) {
+    console.error(`could not read decisions: ${e.message}`);
+    exit(1);
+  }
+  if (!Array.isArray(decisions)) {
+    console.error('decisions must be a JSON array of { id, ...fields }');
+    exit(1);
+  }
+
+  const config = requireConfig();
+  const byId = new Map(buildState(config).suggestions.map((s) => [s.id, s]));
+  const dry = has('--dry-run');
+  const { errors, writes } = validateDecisions(decisions, byId);
+
+  // All or nothing. A batch that half-applies leaves the queue in a state nobody
+  // planned, and the whole point is that the next scan is trustworthy.
+  if (errors.length) {
+    console.error(`refusing to write — ${errors.length} problem(s):\n  ${errors.join('\n  ')}`);
+    exit(1);
+  }
+
+  for (const w of writes) if (!dry) writeFrontmatter(w.file, w.patch);
+
+  const after = dry ? null : buildState(loadConfig().config).metrics;
+  console.log(
+    `${dry ? 'would update' : 'updated'} ${writes.length} suggestion(s)` +
+      (after ? ` · ${after.untriaged} still untriaged of ${after.total}` : ''),
+  );
+}
+
+/**
+ * Proves the two things that would silently corrupt a queue: that a valid batch
+ * lands on disk, and that an invalid one writes nothing at all.
+ */
+function triageSelfCheck() {
+  const root = mkdtempSync(join(tmpdir(), 'kaizen-triage-check-'));
+  const file = join(root, 'a.md');
+  const original = '---\nskill: demo\ndate: 2026-01-01\nseverity: low\n---\n\n## Suggestion\n\nx\n';
+  writeFileSync(file, original);
+
+  let failed = 0;
+  const assert = (ok, what) => {
+    console.log(`${ok ? 'ok  ' : 'FAIL'} ${what}`);
+    if (!ok) failed++;
+  };
+
+  writeFrontmatter(file, { type: 'determinism', rung: '1' });
+  const { data, body } = parseFrontmatter(readFileSync(file, 'utf8'));
+  assert(data.type === 'determinism' && data.rung === '1', 'a decision reaches the file');
+  assert(data.severity === 'low' && data.skill === 'demo', 'existing keys survive the write');
+  assert(body.includes('## Suggestion'), 'the body is left alone');
+
+  // The guard that matters: a batch with one bad value must write nothing, or a
+  // half-applied pass leaves a queue nobody planned.
+  writeFileSync(file, original);
+  const before = readFileSync(file, 'utf8');
+  const bad = validateDecisions(
+    [
+      { id: 'x', type: 'determinism' },
+      { id: 'x', type: 'nonsense' },
+    ],
+    new Map(),
+  );
+  assert(bad.errors.length > 0, 'an unknown vocabulary value is rejected');
+  assert(readFileSync(file, 'utf8') === before, 'a rejected batch leaves every file untouched');
+
+  rmSync(root, { recursive: true, force: true });
+  if (failed) exit(1);
+}
+
+/* -------------------------------------------------------------- doctor ---- */
+
+/**
+ * Kaizen's self-review, as a check rather than a checklist.
+ *
+ * Step 8 used to be prose a human had to remember to walk. Every defect it was
+ * meant to catch was in fact caught by hand, once, by someone who happened to
+ * look — which is the definition of rung 3 and exactly what this tool exists to
+ * argue against. Running the rubric is now one command, and `--file` puts what
+ * it finds into the same queue as everything else so it competes on score
+ * instead of on whoever remembered.
+ *
+ *   kaizen doctor            # report
+ *   kaizen doctor --file     # report, and file anything new as a suggestion
+ */
+function cmdDoctor() {
+  const config = requireConfig();
+  const state = buildState(config);
+  const today = new Date().toISOString().slice(0, 10);
+  const findings = runDoctor({ config, state, today });
+
+  if (findings.length === 0) {
+    console.log('kaizen doctor: nothing to report. That is a good outcome, not a failed run.');
+    return;
+  }
+
+  for (const f of findings) {
+    console.log(`\n[${f.severity}] ${f.slug}  (${f.check})`);
+    console.log(`  scope: ${f.scope}`);
+    console.log(`  ${f.context}`);
+  }
+  console.log(`\n${findings.length} finding(s).`);
+
+  if (!has('--file')) {
+    console.log('Re-run with --file to queue these as suggestions.');
+    return;
+  }
+
+  // Kaizen files against itself into the target that owns its feedback. Without
+  // one configured there is nowhere honest to put them, so say that rather than
+  // inventing a path.
+  const target = resolveTargets(config).find((t) => t.writable);
+  if (!target) {
+    console.error('No writable target configured — nowhere to file. Run `kaizen init`.');
+    exit(1);
+  }
+  const dir = join(target.feedback, 'kaizen');
+  mkdirSync(dir, { recursive: true });
+
+  let filed = 0;
+  for (const f of findings) {
+    const path = join(dir, `${today}-${f.slug}.md`);
+    // Re-filing the same finding every run would bury the queue it is meant to
+    // clear. One file per finding per day; a recurrence is a real recurrence.
+    if (existsSync(path)) continue;
+    writeFileSync(path, findingToMarkdown(f, today));
+    filed++;
+  }
+  console.log(`filed ${filed} new · ${findings.length - filed} already on disk`);
+}
+
+/* ---------------------------------------------------------------- docs ---- */
+
+/** Where each generated artifact lands, relative to the repo root. */
+const GENERATED = [
+  ['docs/LIFECYCLE.md', renderMarkdown, 'markdown'],
+  ['packages/data/src/lifecycle.generated.ts', renderTypes, 'typescript'],
+];
+
+/**
+ * Regenerate what `lifecycle.json` implies, or prove it is already current.
+ *
+ * The output goes through prettier before it is compared or written. Without
+ * that, `npm run check` would fail on its own generated files the moment the
+ * formatter disagreed with the renderer about a line break — and the fix people
+ * would reach for is a `.prettierignore` entry, which puts the artifacts back
+ * outside the checks.
+ */
+async function cmdDocs() {
+  const root = join(here, '..');
+  const lifecycle = loadLifecycle();
+
+  const errors = validateLifecycle(lifecycle);
+  if (errors.length) {
+    console.error(`lifecycle.json is not coherent:\n  ${errors.join('\n  ')}`);
+    exit(1);
+  }
+  if (has('--self-check')) {
+    const { statuses, phases, fields } = lifecycle;
+    console.log(
+      `lifecycle.json is coherent · ${phases.length} phases · ` +
+        `${statuses.length} statuses · ${fields.length} fields`,
+    );
+    return;
+  }
+
+  const prettier = await import('prettier');
+  const check = has('--check');
+  const stale = [];
+
+  for (const [rel, render, parser] of GENERATED) {
+    const path = join(root, rel);
+    // `format` does not read .prettierrc on its own — without resolving it the
+    // generator writes 80-column double-quoted output that `format:check` then
+    // rejects, and the generated files fail the very check they belong to.
+    const options = (await prettier.resolveConfig(path)) ?? {};
+    const next = await prettier.format(render(lifecycle), { ...options, parser, filepath: path });
+    const current = existsSync(path) ? readFileSync(path, 'utf8') : null;
+    if (current === next) continue;
+    if (check) {
+      stale.push(current === null ? `${rel} (missing)` : rel);
+      continue;
+    }
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, next);
+    console.log(`wrote ${rel}`);
+  }
+
+  if (!check) return;
+  if (stale.length) {
+    console.error(
+      `generated files are out of date:\n  ${stale.join('\n  ')}\n\nRun: node scripts/cli.mjs docs`,
+    );
+    exit(1);
+  }
+  console.log(`generated files are current (${GENERATED.map(([r]) => r).join(', ')})`);
+}
+
+/* ------------------------------------------------------------- migrate ---- */
+
+/**
+ * Rewrite legacy status names to the ids the spec uses now.
+ *
+ * Strictly cosmetic: `parseSuggestion` canonicalises on read, so a file saying
+ * `new` already behaves as `recorded` everywhere. This exists so the files match
+ * what every screen shows, and so the aliases can eventually be retired.
+ *
+ * Dry by default, and `--apply` copies the feedback directory first. That is not
+ * belt-and-braces: unlike the skills tree, **the feedback directory is not a git
+ * repository**, so there is no `git checkout` to undo a bad pass over 73 files.
+ */
+async function cmdMigrate() {
+  const config = requireConfig();
+  const write = has('--apply');
+  const state = buildState(config);
+
+  const changes = [];
+  for (const s of state.suggestions) {
+    const { data } = parseFrontmatter(readFileSync(s.file, 'utf8'));
+    const raw = data.status ?? '';
+    const canonical = canonicalStatus(raw);
+    // A blank status is a file that predates the field entirely; it reads as the
+    // entry state and writing that in is part of the point.
+    if (canonical && canonical === raw) continue;
+    changes.push({ file: s.file, id: s.id, from: raw || '(none)', to: canonical ?? 'recorded' });
+  }
+
+  if (changes.length === 0) {
+    console.log(`nothing to migrate — all ${state.suggestions.length} files use canonical statuses`);
+    return;
+  }
+
+  const tally = {};
+  for (const c of changes) tally[`${c.from} → ${c.to}`] = (tally[`${c.from} → ${c.to}`] ?? 0) + 1;
+  for (const [move, n] of Object.entries(tally).sort((a, b) => b[1] - a[1])) {
+    console.log(`  ${String(n).padStart(4)}  ${move}`);
+  }
+  console.log(`${changes.length} of ${state.suggestions.length} files`);
+
+  if (!write) {
+    console.log('\nDry run. Re-run with --apply to write (a backup is taken first).');
+    return;
+  }
+
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').slice(0, 15);
+  for (const t of resolveTargets(config)) {
+    if (!existsSync(t.feedback)) continue;
+    const backup = `${t.feedback}.backup-${stamp}`;
+    cpSync(t.feedback, backup, { recursive: true });
+    console.log(`backed up ${t.feedback} -> ${backup}`);
+  }
+
+  for (const c of changes) writeFrontmatter(c.file, { status: c.to });
+  console.log(`migrated ${changes.length} files`);
 }
 
 /* --------------------------------------------------------------- serve ---- */
@@ -272,6 +692,34 @@ async function cmdServe() {
   await startServer(config);
 }
 
+/* ----------------------------------------------------------------- tui ---- */
+
+const TUI_BIN = join(here, '..', 'tui', 'target', 'release', 'kaizen-tui');
+
+/**
+ * A convenience alias for the binary, not a launcher.
+ *
+ * `kaizen-tui` starts the server itself when the port is dead — it has to, since
+ * it is normally run directly off the PATH rather than through here. Repeating
+ * that check in this file would be a second implementation of the same rule,
+ * and the two would drift.
+ */
+async function cmdTui() {
+  const config = requireConfig();
+  const { host, port } = config.server ?? { host: '127.0.0.1', port: 7777 };
+
+  if (!existsSync(TUI_BIN)) {
+    console.error(
+      `kaizen: the TUI is not built yet.\n  cd ${join(here, '..', 'tui')} && cargo build --release`,
+    );
+    exit(1);
+  }
+
+  const { spawn } = await import('node:child_process');
+  const child = spawn(TUI_BIN, ['--base', `http://${host}:${port}`], { stdio: 'inherit' });
+  await new Promise((resolve) => child.on('exit', (code) => resolve(exit(code ?? 0))));
+}
+
 /* ----------------------------------------------------------------------- */
 
 const commands = {
@@ -279,8 +727,22 @@ const commands = {
   scan: cmdScan,
   status: cmdStatus,
   validate: cmdValidate,
+  triage: cmdTriage,
+  doctor: cmdDoctor,
+  docs: cmdDocs,
+  migrate: cmdMigrate,
   serve: cmdServe,
-  help: () => console.log('usage: kaizen <init|scan|status|validate|serve> [--fix] [--pretty]'),
+  tui: cmdTui,
+  help: () =>
+    console.log(
+      'usage: kaizen <init|scan|status|validate|triage|doctor|docs|migrate|serve|tui> [--fix] [--pretty]\n' +
+        '       kaizen doctor [--file]\n' +
+        '       kaizen triage --apply <file.json|-> [--dry-run]\n' +
+        '       kaizen triage --self-check\n' +
+        '       kaizen validate [--fix] [--strict]\n' +
+        '       kaizen docs [--check] [--self-check]\n' +
+        '       kaizen migrate [--apply]',
+    ),
 };
 
 const run = commands[command];

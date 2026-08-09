@@ -8,10 +8,18 @@
  */
 import { basename } from 'node:path';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { TYPES, OBJECTIVES, EFFORTS } from './config.mjs';
+import { TYPES, OBJECTIVES, EFFORTS, SEVERITIES } from './taxonomy.mjs';
+import { canonicalStatus, statusIds, acceptedStatuses, section } from './lifecycle.mjs';
 
-export const STATUSES = ['new', 'proposed', 'approved', 'applied', 'rejected', 'superseded'];
-export const SEVERITIES = ['low', 'medium', 'high'];
+/**
+ * What a status may be *written as*, which includes the names used before the
+ * lifecycle spec renamed them. Validation accepts these; everything downstream
+ * sees the canonical id, because `parseSuggestion` resolves it on the way in.
+ */
+export const STATUSES = acceptedStatuses();
+
+/** Just the canonical ids — what a writer should be choosing between. */
+export const CANONICAL_STATUSES = statusIds();
 
 const IMPACT = { low: 1, medium: 3, high: 8 };
 const EFFORT_COST = { S: 1, M: 3, L: 8 };
@@ -42,12 +50,6 @@ export function parseFrontmatter(text) {
     data[key] = value;
   }
   return { data, body: match[2] };
-}
-
-/** Pull a `## Heading` section out of the body. */
-function section(body, heading) {
-  const re = new RegExp(`^##\\s+${heading}\\s*$([\\s\\S]*?)(?=^##\\s|\\Z)`, 'im');
-  return re.exec(body)?.[1]?.trim() ?? '';
 }
 
 /** `2026-05-21-push-remote-not-always-origin.md` → `2026-05-21`, `push-remote-…`. */
@@ -83,7 +85,10 @@ export function parseSuggestion({ id, file, skill, target, text }) {
     date: data.date || fromName.date,
     slug: fromName.slug,
     severity,
-    status: STATUSES.includes(data.status) ? data.status : 'new',
+    // Resolved here, once, so nothing above the parser has to know that `new`
+    // and `recorded` are the same thing. An unrecognised status reads as the
+    // entry state rather than propagating a typo through the queue.
+    status: canonicalStatus(data.status) ?? 'recorded',
     type: TYPES.includes(data.type) ? data.type : '',
     objective: OBJECTIVES.includes(data.objective) ? data.objective : '',
     scope: data.scope || '',

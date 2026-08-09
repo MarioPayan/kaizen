@@ -6,6 +6,7 @@
  * a rung means. A second view must not be able to disagree with the first.
  */
 import type { Cluster, Skill, State, Suggestion } from './types';
+import { LIFECYCLE } from './lifecycle.generated';
 
 export const RUNGS = [
   {
@@ -34,16 +35,42 @@ export const RUNGS = [
   },
 ] as const;
 
-/** Terminal statuses: the item is out of the queue for good. */
-const CLOSED = new Set(['applied', 'rejected', 'superseded']);
+/**
+ * Terminal statuses: the item is out of the pipeline for good.
+ *
+ * From the spec, not a list kept here. Note what that changed — `applied` used
+ * to be on this list and is not terminal any more. A landed change whose
+ * validation plan has not run is unfinished, and the verify phase exists to say
+ * so; counting it as closed is what let "applied" mean nothing more than "the
+ * diff did not conflict".
+ */
+const CLOSED = new Set<string>(LIFECYCLE.statuses.filter((s) => s.terminal).map((s) => s.id));
 
 export const isOpen = (s: Suggestion) => !CLOSED.has(s.status);
+
+const NEXT = new Map<string, readonly string[]>(LIFECYCLE.statuses.map((s) => [s.id, s.next]));
+
+/** Where a status may legally go. Empty for a terminal one. */
+export const nextStatuses = (from: string): readonly string[] => NEXT.get(from) ?? [];
+
+/**
+ * Is this move legal?
+ *
+ * The server refuses an illegal one, so this is not the guard — it is what stops
+ * the UI *offering* the move in the first place. Showing an approve action on a
+ * `recorded` item means every click is a 409, which reads as a broken app rather
+ * than as a pipeline with a step still to do.
+ */
+export const canTransition = (from: string, to: string) => nextStatuses(from).includes(to);
+
+/** What the one attended phase produces — "you said yes", whatever it is called. */
+const DECIDED = LIFECYCLE.phases.find((p) => p.attended)?.produces ?? 'approved';
 
 /**
  * A suggestion is ready to apply only when someone approved it *and* a real
  * patch exists. Approval alone is a record of intent, not an instruction.
  */
-export const isApplyable = (s: Suggestion, hasPatch: boolean) => s.status === 'approved' && hasPatch;
+export const isApplyable = (s: Suggestion, hasPatch: boolean) => s.status === DECIDED && hasPatch;
 
 export function rankSuggestions(list: Suggestion[]): Suggestion[] {
   return [...list].sort((a, b) => b.score - a.score || b.incidents - a.incidents);

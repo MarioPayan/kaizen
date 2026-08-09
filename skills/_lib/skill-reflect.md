@@ -63,18 +63,26 @@ The slug is 3–5 words capturing the topic, lowercased and dash-separated: `cwd
 
 ## File structure
 
+Two sets of fields, and the split is the point. **You write the six you observed.
+Triage assigns the four that are judgement calls about the fix.** Earlier versions
+of this file listed them all together and invited you to leave any of them blank;
+across 66 filed suggestions that produced `scope` 0 times and a taxonomy 5 times.
+Do not treat the second block as yours to fill.
+
+The full contract — every field, which phase needs it, and whether it is
+frontmatter or a `## Heading` — is generated from `lifecycle.json` into
+`docs/LIFECYCLE.md`. This template is that contract's capture half; if the two
+ever disagree, the spec is right.
+
 ```markdown
 ---
+# You write these. You just ran; you observed all five.
 skill: <SKILL_NAME>
 date: <YYYY-MM-DD>
 outcome: <OUTCOME>
 severity: low | medium | high
-status: new
-type: determinism | structural | behavioral | content | tooling | hygiene
-objective: bug | guardrail | feature | performance | clarity | debt
 scope: <the file the fix lands in>
-rung: 0 | 1 | 2 | 3
-effort: S | M | L
+status: recorded
 ---
 
 ## Context
@@ -88,16 +96,33 @@ effort: S | M | L
 ## Why it matters
 
 <1–2 sentences: time saved, errors avoided, clarity gained, blast radius reduced.>
+
+## Evidence
+
+<The receipts. The command and its actual output, a file:line, a PR or run URL.
+Paste, do not paraphrase.>
 ```
 
-Field guidance:
+`type`, `objective`, `rung` and `effort` are **not yours to write.** They are
+assigned by `/kaizen:triage`, which reads the whole corpus and can see which
+suggestions share a fix. Omit them entirely.
+
+Field guidance for the five that are yours:
 
 - `severity` — `high` caused an error, wrong output, or needed the user to step in; `medium` slowed the run or forced a workaround; `low` is polish. Bias low; `high` should mean something actually broke.
-- `type` — `determinism` whenever the fix moves a step down the ladder. That label is what surfaces it as a conversion candidate, so use it rather than `behavioral` when both would fit.
-- `scope` — the file the fix lands in. Fill this in even when it seems obvious: it is the strongest signal for grouping this with the others like it.
-- `rung` — where the fix belongs, not where the problem currently lives.
+- `scope` — **required, and the one worth slowing down for.** The single file the fix lands in. If the fix is a script that does not exist yet, name the path it would live at. This is the strongest grouping signal there is: it is what turns nine separate "the remote isn't always origin" reports into one decision instead of nine.
+- `outcome` — how *this run* ended, not how bad the finding is.
+- `evidence` — the receipts, pasted rather than described. Triage re-reads the
+  scope file at HEAD months later to decide whether the problem is still real,
+  and it cannot do that from a summary. "the call 404s" needs the call and the
+  404; "the flag is unsupported" needs the error text. This is the field that
+  makes a suggestion still auditable when nobody remembers the run.
 
-Leave a field blank rather than guessing. Blank reads as "needs triage"; wrong reads as "already assessed" and floats a bad entry up the queue.
+`severity` is the only one you may leave blank, and only when the Context genuinely
+does not say. Blank reads as "needs triage"; wrong reads as "already assessed" and
+floats a bad entry up the queue. `scope` blank is not an acceptable outcome —
+`kaizen validate` reports it as a problem, because a suggestion nobody can group
+is a suggestion nobody will fix.
 
 ---
 

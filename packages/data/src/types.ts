@@ -1,7 +1,17 @@
 /** Mirrors what `scripts/lib/scan.mjs` emits. The scanner is the single source. */
 
 export type Severity = 'low' | 'medium' | 'high' | '';
-export type Status = 'new' | 'proposed' | 'approved' | 'applied' | 'rejected' | 'superseded';
+
+/**
+ * Generated from `lifecycle.json`, not written here.
+ *
+ * The scanner canonicalises on read, so a `new` on disk arrives as `recorded`
+ * and this union only ever needs the canonical ids. Adding a status to the spec
+ * makes every exhaustive switch in the app fail to compile until it is handled,
+ * which is the point of generating it rather than importing the JSON directly.
+ */
+import type { LifecycleStatus } from './lifecycle.generated';
+export type Status = LifecycleStatus;
 export type ChangeType = 'determinism' | 'structural' | 'behavioral' | 'content' | 'tooling' | 'hygiene' | '';
 export type Objective = 'bug' | 'guardrail' | 'feature' | 'performance' | 'clarity' | 'debt' | '';
 
@@ -28,6 +38,8 @@ export interface Suggestion {
   rationale: string;
   missing: string[];
   triaged: boolean;
+  /** Did this pass the user's `surface` preference? Untriaged always does. */
+  surfaced: boolean;
   score: number;
 }
 
@@ -99,7 +111,12 @@ export interface Config {
   targets: Target[];
   scan: { enabled: boolean; roots: string[]; depth: number; writable: boolean };
   cadence: { weekly: string; sessionHook: boolean };
-  models: { triage: string; proposal: string; validate: string; appReview: string };
+  surface: {
+    types: Exclude<ChangeType, ''>[];
+    objectives: Exclude<Objective, ''>[];
+    minSeverity: Exclude<Severity, ''>;
+  };
+  models: { triage: string; proposal: string; validate: string };
   autoApply: string[];
   clusterPromotion: { members: number; incidents: number };
   applyGuards: { requireCleanTree: boolean; requireDiffApplies: boolean };

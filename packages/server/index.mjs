@@ -23,11 +23,20 @@ import {
   resolveTargets,
   saveConfig,
   validateConfig,
+  withDefaults,
   loadConfig,
   assertInside,
   parseSuggestionId,
   writeFrontmatter,
+  parseFrontmatter,
+  canonicalStatus,
+  canTransition,
+  nextStatuses,
+  statusIds,
+  missingRequirements,
+  requirementsFor,
 } from '@kaizen/core';
+import { createEventStream } from './events.mjs';
 
 const run = promisify(execFile);
 const here = dirname(fileURLToPath(import.meta.url));
@@ -43,9 +52,12 @@ const MIME = {
 };
 
 class HttpError extends Error {
-  constructor(status, message) {
+  constructor(status, message, fields) {
     super(message);
     this.status = status;
+    // Per-field messages, when the failure has them. The Settings form reads
+    // these; everything else reads `message`.
+    this.fields = fields;
   }
 }
 
@@ -99,6 +111,83 @@ function suggestionFile(config, id) {
   return { path: candidate, target: t };
 }
 
+/* ------------------------------------------------------------ transitions -- */
+
+/**
+ * `applied` is a statement that git returned a commit sha. Only the code that
+ * saw the sha may write it, or the queue can claim work landed that did not.
+ */
+const SERVER_OWNED = new Set(['applied']);
+
+/** What a suggestion is at right now, canonically. One file read, no full scan. */
+function currentStatus(config, id) {
+  const { path } = suggestionFile(config, id);
+  const { data } = parseFrontmatter(readFileSync(path, 'utf8'));
+  return canonicalStatus(data.status) ?? 'recorded';
+}
+
+/** A status a caller is allowed to name at all. Aliases resolve, so `new` works. */
+function assertSettable(status) {
+  const to = canonicalStatus(status);
+  if (!to) throw new HttpError(400, `status must be one of ${statusIds().join(', ')}`);
+  if (SERVER_OWNED.has(to)) throw new HttpError(403, `"${to}" is set by the server, not by hand`);
+  return to;
+}
+
+/**
+ * The move has to be one the model allows.
+ *
+ * This is the whole reason the transitions are data. `approved` is reachable
+ * only from `planned`, and `planned` is unreachable without a patch and a
+ * validation plan — so the state that produced a 39-item queue of approvals
+ * with nothing behind them cannot be written any more. The refusal names where
+ * the suggestion actually is and where it may legally go, because a bare 409
+ * on a button press is indistinguishable from a bug.
+ */
+function assertTransition(from, to, id) {
+  if (canTransition(from, to)) return;
+  const onward = nextStatuses(from);
+  throw new HttpError(
+    409,
+    `${id.split('/').at(-1)} is "${from}" — it cannot become "${to}". ` +
+      (onward.length
+        ? `From "${from}" it can only become: ${onward.join(', ')}.`
+        : `"${from}" is terminal; nothing follows it.`),
+  );
+}
+
+/**
+ * The other half of the gate, and the half that was missing.
+ *
+ * Checking only the transition graph left the model bypassable in three hops:
+ * `recorded → triaged → planned → approved` reached an approval with no patch
+ * and no validation plan, which is precisely the state the whole spec exists to
+ * prevent. A phase declares what it produces; you may not leave it until it has.
+ */
+function assertRequirements(config, id, to) {
+  const { path } = suggestionFile(config, id);
+  const { data, body } = parseFrontmatter(readFileSync(path, 'utf8'));
+  const missing = missingRequirements(to, {
+    data,
+    body,
+    hasPatch: existsSync(path.replace(/\.md$/, '.patch')),
+  });
+  if (missing.length === 0) return;
+  const how = requirementsFor(to)
+    .filter((f) => missing.includes(f.id))
+    .map((f) =>
+      f.where === 'body'
+        ? `${f.id} (a "## ${f.heading}" section)`
+        : f.where === 'sibling'
+          ? `${f.id} (a sibling ${f.suffix} file)`
+          : `${f.id}`,
+    );
+  throw new HttpError(
+    409,
+    `${id.split('/').at(-1)} cannot become "${to}" yet — that phase requires ${how.join(', ')}.`,
+  );
+}
+
 async function git(cwd, args) {
   try {
     const { stdout } = await run('git', ['-C', cwd, ...args], { maxBuffer: 10 * 1024 * 1024 });
@@ -115,9 +204,13 @@ async function git(cwd, args) {
 async function assertCleanTree(cwd) {
   const status = await git(cwd, ['status', '--porcelain']);
   if (status.trim()) {
+    // Split the raw output, not a trimmed copy. Porcelain lines are `XY PATH`
+    // with a two-column status, so an unstaged change starts with a space —
+    // trimming first ate that space on the first line only, and slice(3) then
+    // took a character off the filename. The one this refusal exists to name.
     const files = status
-      .trim()
       .split('\n')
+      .filter((l) => l.trim())
       .map((l) => l.slice(3))
       .join(', ');
     throw new HttpError(409, `working tree is not clean — commit or stash first: ${files}`);
@@ -140,9 +233,13 @@ const routes = {
   'POST /api/config': async (req, _res, ctx) => {
     const next = await readBody(req);
     const errors = validateConfig(next);
-    if (errors.length) throw new HttpError(400, errors.join('; '));
+    // The array, not a joined string: the form puts each message under the field
+    // its config path names, and re-splitting prose to get there is worse.
+    if (errors.length) throw new HttpError(400, `invalid config: ${errors.join('; ')}`, errors);
     saveConfig(next);
-    ctx.config = next;
+    ctx.config = withDefaults(next);
+    // The target list may have changed, and with it what is worth watching.
+    ctx.events?.restart();
     return { config: next };
   },
 
@@ -175,30 +272,65 @@ const routes = {
   // Status changes are the approval gate. They are recorded, never acted on here.
   'POST /api/suggestion': async (req, _res, ctx) => {
     const { id, status, notes } = await readBody(req);
-    const allowed = ['new', 'proposed', 'approved', 'rejected', 'superseded'];
-    if (!allowed.includes(status)) throw new HttpError(400, `status must be one of ${allowed.join(', ')}`);
+    const to = assertSettable(status);
     const { path } = suggestionFile(ctx.config, id);
-    writeFrontmatter(path, notes ? { status, notes } : { status });
-    return { id, status };
+    const from = currentStatus(ctx.config, id);
+    // Setting a status to what it already is is a double-click, not an illegal
+    // move. Notes still land, so a re-decision can add its reason.
+    if (from !== to) {
+      assertTransition(from, to, id);
+      assertRequirements(ctx.config, id, to);
+    }
+    writeFrontmatter(path, notes ? { status: to, notes } : { status: to });
+    return { id, status: to };
   },
 
-  /** Approving a cluster is one decision, so applying one is one call. */
+  /**
+   * Approving a cluster is one decision, so applying one is one call.
+   *
+   * Every member is checked before any member is written. A cluster where one
+   * suggestion is further along than the rest would otherwise be half-moved,
+   * and there is no transaction to roll back a partial write of eleven files.
+   */
   'POST /api/cluster': async (req, _res, ctx) => {
     const { id, status } = await readBody(req);
+    const to = assertSettable(status);
     const state = buildState(ctx.config);
     const cluster = state.clusters.find((c) => c.id === id);
     if (!cluster) throw new HttpError(404, `no such cluster: ${id}`);
-    for (const member of cluster.members) {
-      const { path } = suggestionFile(ctx.config, member);
-      writeFrontmatter(path, { status, cluster: cluster.id });
+
+    const members = cluster.members.map((m) => ({
+      member: m,
+      from: state.suggestions.find((s) => s.id === m)?.status,
+    }));
+    const refused = members.filter((m) => !canTransition(m.from, to));
+    if (refused.length) {
+      throw new HttpError(
+        409,
+        `${refused.length} of ${members.length} in "${id}" cannot become ${to}: ` +
+          refused.map((m) => `${m.member.split('/').at(-1)} is ${m.from}`).join(', '),
+      );
     }
-    return { id, status, updated: cluster.members.length };
+    for (const { member } of members) assertRequirements(ctx.config, member, to);
+    for (const { member } of members) {
+      const { path } = suggestionFile(ctx.config, member);
+      writeFrontmatter(path, { status: to, cluster: cluster.id });
+    }
+    return { id, status: to, updated: members.length };
   },
 
   'POST /api/apply': async (req, _res, ctx) => {
     const { id } = await readBody(req);
     const { path, target } = suggestionFile(ctx.config, id);
     if (!target.writable) throw new HttpError(403, `target "${target.name}" is read-only`);
+    // The same gate as any other move. Applying is the one transition the server
+    // performs on its own, which is exactly why it should not be the one that
+    // skips the check.
+    assertTransition(currentStatus(ctx.config, id), 'applied', id);
+    // No requirements check here. `requires` lists what a phase *produces*, and
+    // the apply phase produces `applied_sha` — which this handler writes a few
+    // lines below, once git has returned one. Demanding it up front is a gate
+    // that can never open. The patch check further down is the real precondition.
 
     const patch = path.replace(/\.md$/, '.patch');
     if (!existsSync(patch)) throw new HttpError(422, 'no proposal patch for this suggestion yet');
@@ -260,11 +392,20 @@ async function serveStatic(req, res) {
 
 export function createApp(config) {
   const pkg = JSON.parse(readFileSync(resolve(here, '..', '..', 'package.json'), 'utf8'));
-  const ctx = { config, version: pkg.version };
+  // Normalised once here so no route has to guard against a block the caller
+  // simply did not mention.
+  const ctx = { config: withDefaults(config), version: pkg.version };
+  ctx.events = createEventStream(ctx);
 
   return createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     const key = `${req.method} ${url.pathname}`;
+
+    // The one route the table cannot hold: every handler in it returns a body
+    // that json() writes with a content-length and ends, and this response has
+    // to stay open. One special case beats teaching seven routes about streaming.
+    if (key === 'GET /api/events') return ctx.events.subscribe(req, res);
+
     const handler = routes[key];
 
     if (!handler) {
@@ -276,7 +417,7 @@ export function createApp(config) {
     } catch (e) {
       const status = e.status ?? 500;
       if (status >= 500) console.error(e);
-      json(res, status, { error: e.message });
+      json(res, status, e.fields ? { error: e.message, errors: e.fields } : { error: e.message });
     }
   });
 }

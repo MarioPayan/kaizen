@@ -1,13 +1,32 @@
 import { useState } from 'react';
 import { useConfig, useSaveConfig, type Config } from '@kaizen/data';
-import { Button, Chip, ErrorNote, Note, Panel, Select, useToast } from '@kaizen/ui';
+import {
+  Button,
+  CheckboxGroup,
+  Chip,
+  ErrorNote,
+  Field,
+  Fieldset,
+  Form,
+  Input,
+  Note,
+  NumberField,
+  SegmentedControl,
+  Select,
+  Switch,
+  TextField,
+  useToast,
+} from '@kaizen/ui';
+import { OBJECTIVE_HELP, SEVERITY_HELP, TYPE_HELP } from '../lib/taxonomy';
 
 /**
  * A typed form over the config file, validated server-side before it lands.
  *
  * The config is the contract the skill reads at runtime, not a mirror of settings
  * held elsewhere — a change here changes behaviour, and a bad value is refused
- * loudly rather than ignored on the next run.
+ * loudly rather than ignored on the next run. Every control is named for the
+ * config path it writes, which is also the key the server's rejection arrives
+ * under, so a refusal lands under the control that caused it.
  */
 
 const MODELS = [
@@ -20,7 +39,6 @@ const STAGES: { key: keyof Config['models']; label: string; hint: string }[] = [
   { key: 'triage', label: 'triage', hint: 'assigns taxonomy and rung — judgement-heavy' },
   { key: 'proposal', label: 'proposals', hint: 'writes the actual patches' },
   { key: 'validate', label: 'validate', hint: 'mechanical checks; cheap is right here' },
-  { key: 'appReview', label: 'app review', hint: 'reviews this app against its own rubric' },
 ];
 
 const AUTO_APPLY = [
@@ -28,24 +46,29 @@ const AUTO_APPLY = [
   { value: 'content:S,hygiene:S', label: 'typos and stale paths only' },
 ];
 
-const ONOFF = [
-  { value: 'on', label: 'on' },
-  { value: 'off', label: 'off' },
-];
+const TYPE_OPTIONS = Object.entries(TYPE_HELP).map(([value, hint]) => ({ value, label: value, hint }));
+const OBJECTIVE_OPTIONS = Object.entries(OBJECTIVE_HELP).map(([value, hint]) => ({
+  value,
+  label: value,
+  hint,
+}));
+const SEVERITY_OPTIONS = Object.keys(SEVERITY_HELP)
+  .reverse()
+  .map((value) => ({ value, label: value }));
 
-function Row({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
-  return (
-    <div className="grid items-baseline gap-1 border-b border-line-soft py-2.5 last:border-b-0 sm:grid-cols-[minmax(0,11rem)_minmax(0,1fr)] sm:gap-4">
-      <div>
-        <span className="font-mono text-xs text-ink-2">{label}</span>
-        {hint && <span className="mt-0.5 block text-[0.7rem] text-ink-3">{hint}</span>}
-      </div>
-      <div>{children}</div>
-    </div>
-  );
+/**
+ * The server prefixes every validation message with the config path it failed
+ * on. Splitting on that prefix is all it takes to put each message under its own
+ * control instead of in one pile at the bottom.
+ */
+function byField(errors: string[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const message of errors) {
+    const key = (message.split(' ')[0] ?? '').replace(/[:,]$/, '');
+    out[key] = out[key] ? `${out[key]} ${message}` : message;
+  }
+  return out;
 }
-
-const input = 'w-full max-w-sm border border-line bg-surface px-2 py-1 font-mono text-xs text-ink';
 
 export default function Settings() {
   const { data, isLoading } = useConfig();
@@ -57,6 +80,7 @@ export default function Settings() {
   const [raw, setRaw] = useState(false);
   const [rawEdit, setRawEdit] = useState<string | null>(null);
   const [rawError, setRawError] = useState<string | null>(null);
+  const [serverErrors, setServerErrors] = useState<Record<string, string>>({});
 
   if (isLoading || !data?.config) return <p className="text-sm text-ink-3">loading…</p>;
 
@@ -65,21 +89,39 @@ export default function Settings() {
   const patch = (next: Partial<Config>) => setEdited({ ...draft, ...next });
   const dirty = edited !== null && JSON.stringify(edited) !== JSON.stringify(data.config);
 
+  const persist = (config: Config) =>
+    save.mutate(config, {
+      onSuccess: () => {
+        setServerErrors({});
+        toast.ok('Settings saved');
+      },
+      onError: (e) => setServerErrors(byField((e as Error & { fields?: string[] }).fields ?? [e.message])),
+    });
+
   const commit = () => {
-    const done = { onSuccess: () => toast.ok('Settings saved') };
-    if (!raw) return save.mutate(draft, done);
+    if (!raw) return persist(draft);
     try {
       const parsed = JSON.parse(rawText) as Config;
       setRawError(null);
       setEdited(parsed);
-      save.mutate(parsed, done);
+      persist(parsed);
     } catch (e) {
       setRawError((e as Error).message);
     }
   };
 
+  const roots = draft.scan.roots;
+  const setRoots = (next: string[]) => patch({ scan: { ...draft.scan, roots: next } });
+
   return (
-    <div className="flex max-w-3xl flex-col gap-4">
+    <Form
+      errors={serverErrors}
+      onSubmit={(e) => {
+        e.preventDefault();
+        commit();
+      }}
+      className="flex max-w-3xl flex-col gap-4"
+    >
       <div className="flex items-center justify-between gap-4">
         <p className="text-sm text-ink-2">
           Stored in <code className="font-mono text-xs">~/.claude/kaizen/config.json</code>.
@@ -103,11 +145,10 @@ export default function Settings() {
         </>
       ) : (
         <>
-          <Panel>
-            <h3 className="mb-1 font-mono text-sm font-bold">Targets</h3>
-            <p className="mb-2 text-xs text-ink-3">
-              Read in place. Nothing is copied, so a skill edited elsewhere is current here.
-            </p>
+          <Fieldset
+            legend="Targets"
+            hint="Read in place. Nothing is copied, so a skill edited elsewhere is current here."
+          >
             {draft.targets.length === 0 ? (
               <p className="text-xs text-ink-3">
                 None configured — run <code className="font-mono">/kaizen:init</code>.
@@ -126,133 +167,183 @@ export default function Settings() {
               </ul>
             )}
             <div className="mt-3 border-t border-line-soft">
-              <Row label="scan projects" hint="find .claude/skills inside repositories">
-                <Select
+              <Field name="scan" label="scan projects" hint="find .claude/skills inside repositories">
+                <Switch
                   label="scan projects"
-                  value={draft.scan.enabled ? 'on' : 'off'}
-                  onValueChange={(v) => patch({ scan: { ...draft.scan, enabled: v === 'on' } })}
-                  options={[
-                    { value: 'off', label: 'off' },
-                    { value: 'on', label: 'on — read-only' },
-                  ]}
+                  checked={draft.scan.enabled}
+                  onCheckedChange={(on) => patch({ scan: { ...draft.scan, enabled: on } })}
                 />
-              </Row>
+              </Field>
               {draft.scan.enabled && (
-                <Row label="scan roots" hint="comma separated; git worktrees are collapsed">
-                  <input
-                    aria-label="scan roots"
-                    className={input}
-                    value={draft.scan.roots.join(', ')}
-                    onChange={(e) =>
-                      patch({
-                        scan: {
-                          ...draft.scan,
-                          roots: e.target.value
-                            .split(',')
-                            .map((s) => s.trim())
-                            .filter(Boolean),
-                        },
-                      })
-                    }
-                  />
-                </Row>
+                <Field
+                  name="scan.roots"
+                  label="scan roots"
+                  hint="one path per row; git worktrees are collapsed"
+                >
+                  {/*
+                    A list, not a comma-joined string. The single text box this
+                    replaces destroyed any path containing a comma and gave no
+                    way to tell which of five roots was the broken one.
+                  */}
+                  <ul className="flex flex-col gap-1.5">
+                    {roots.map((root, i) => (
+                      <li key={i} className="flex items-center gap-1.5">
+                        <Input
+                          label={`scan root ${i + 1}`}
+                          value={root}
+                          placeholder="/absolute/path"
+                          onValueChange={(v) => setRoots(roots.map((r, j) => (j === i ? v : r)))}
+                        />
+                        <Button
+                          variant="ghost"
+                          title={`Remove ${root || 'this root'}`}
+                          onClick={() => setRoots(roots.filter((_, j) => j !== i))}
+                        >
+                          remove
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                  <Button variant="ghost" onClick={() => setRoots([...roots, ''])}>
+                    add root
+                  </Button>
+                </Field>
               )}
             </div>
-          </Panel>
+          </Fieldset>
 
-          <Panel>
-            <h3 className="mb-1 font-mono text-sm font-bold">Cadence</h3>
-            <Row label="weekly pass" hint="when a full triage runs">
-              <input
-                aria-label="weekly pass"
-                className={input}
-                value={draft.cadence.weekly}
-                onChange={(e) => patch({ cadence: { ...draft.cadence, weekly: e.target.value } })}
+          <Fieldset
+            legend="What you want to see"
+            hint="Sets what the queue opens on and what the session line counts. Nothing is deleted — muted suggestions stay on disk and stay one click away. Untriaged items always show, whatever this says."
+          >
+            <Field name="surface.types" label="change types">
+              <CheckboxGroup
+                label="change types"
+                allLabel="all types"
+                value={draft.surface.types}
+                onValueChange={(v) =>
+                  patch({ surface: { ...draft.surface, types: v as Config['surface']['types'] } })
+                }
+                options={TYPE_OPTIONS}
               />
-            </Row>
-            <Row label="session line" hint="one line at session start; costs nothing">
-              <Select
+            </Field>
+            <Field name="surface.objectives" label="objectives">
+              <CheckboxGroup
+                label="objectives"
+                allLabel="all objectives"
+                value={draft.surface.objectives}
+                onValueChange={(v) =>
+                  patch({
+                    surface: { ...draft.surface, objectives: v as Config['surface']['objectives'] },
+                  })
+                }
+                options={OBJECTIVE_OPTIONS}
+              />
+            </Field>
+            <Field
+              name="surface.minSeverity"
+              label="at least"
+              hint={SEVERITY_HELP[draft.surface.minSeverity]}
+            >
+              <SegmentedControl
+                label="minimum severity"
+                value={draft.surface.minSeverity}
+                onValueChange={(v) =>
+                  patch({
+                    surface: { ...draft.surface, minSeverity: v as Config['surface']['minSeverity'] },
+                  })
+                }
+                options={SEVERITY_OPTIONS}
+              />
+            </Field>
+          </Fieldset>
+
+          <Fieldset legend="Cadence">
+            <TextField
+              name="cadence.weekly"
+              label="weekly pass"
+              hint="when a full triage runs"
+              value={draft.cadence.weekly}
+              onValueChange={(v) => patch({ cadence: { ...draft.cadence, weekly: v } })}
+            />
+            <Field
+              name="cadence.sessionHook"
+              label="session line"
+              hint="one line at session start; costs nothing"
+            >
+              <Switch
                 label="session line"
-                value={draft.cadence.sessionHook ? 'on' : 'off'}
-                onValueChange={(v) => patch({ cadence: { ...draft.cadence, sessionHook: v === 'on' } })}
-                options={ONOFF}
+                checked={draft.cadence.sessionHook}
+                onCheckedChange={(on) => patch({ cadence: { ...draft.cadence, sessionHook: on } })}
               />
-            </Row>
-          </Panel>
+            </Field>
+          </Fieldset>
 
-          <Panel>
-            <h3 className="mb-1 font-mono text-sm font-bold">Models</h3>
-            <p className="mb-2 text-xs text-ink-3">
-              Which model each stage uses. Mechanical stages do not need the deepest one.
-            </p>
+          <Fieldset
+            legend="Models"
+            hint="Which model each stage uses. Mechanical stages do not need the deepest one."
+          >
             {STAGES.map((s) => (
-              <Row key={s.key} label={s.label} hint={s.hint}>
+              <Field key={s.key} name={`models.${s.key}`} label={s.label} hint={s.hint}>
                 <Select
                   label={s.label}
                   value={draft.models[s.key]}
                   onValueChange={(v) => patch({ models: { ...draft.models, [s.key]: v } })}
                   options={MODELS}
                 />
-              </Row>
+              </Field>
             ))}
-          </Panel>
+          </Fieldset>
 
-          <Panel>
-            <h3 className="mb-1 font-mono text-sm font-bold">Guards</h3>
-            <Row label="auto-apply" hint="what may land without you approving it">
+          <Fieldset legend="Guards">
+            <Field name="autoApply" label="auto-apply" hint="what may land without you approving it">
               <Select
                 label="auto-apply"
                 value={draft.autoApply.join(',')}
                 onValueChange={(v) => patch({ autoApply: v ? v.split(',') : [] })}
                 options={AUTO_APPLY}
               />
-            </Row>
-            <Row label="clean tree" hint="refuse to apply over uncommitted work">
-              <Select
+            </Field>
+            <Field
+              name="applyGuards"
+              label="clean tree"
+              hint="refuse to apply over uncommitted work, so git revert stays a clean undo"
+            >
+              <Switch
                 label="clean tree"
-                value={draft.applyGuards.requireCleanTree ? 'on' : 'off'}
-                onValueChange={(v) =>
-                  patch({
-                    applyGuards: { ...draft.applyGuards, requireCleanTree: v === 'on' },
-                  })
+                checked={draft.applyGuards.requireCleanTree}
+                onCheckedChange={(on) =>
+                  patch({ applyGuards: { ...draft.applyGuards, requireCleanTree: on } })
                 }
-                options={[
-                  { value: 'on', label: 'required' },
-                  { value: 'off', label: 'not required' },
-                ]}
               />
-            </Row>
-            <Row label="cluster promotion" hint="above this, a fix must be a hook or a script">
-              <span className="flex items-center gap-2">
-                <input
-                  aria-label="promotion members"
-                  type="number"
+            </Field>
+            <Field
+              name="clusterPromotion"
+              label="cluster promotion"
+              hint="above this, a fix must be a hook or a script"
+            >
+              <span className="flex flex-wrap items-center gap-2">
+                <NumberField
+                  label="promotion members"
                   min={2}
-                  className="w-20 border border-line bg-surface px-2 py-1 font-mono text-xs text-ink"
                   value={draft.clusterPromotion.members}
-                  onChange={(e) =>
-                    patch({
-                      clusterPromotion: { ...draft.clusterPromotion, members: Number(e.target.value) },
-                    })
+                  onValueChange={(v) =>
+                    patch({ clusterPromotion: { ...draft.clusterPromotion, members: v ?? 2 } })
                   }
                 />
                 <span className="text-xs text-ink-3">members, or</span>
-                <input
-                  aria-label="promotion incidents"
-                  type="number"
+                <NumberField
+                  label="promotion incidents"
                   min={2}
-                  className="w-20 border border-line bg-surface px-2 py-1 font-mono text-xs text-ink"
                   value={draft.clusterPromotion.incidents}
-                  onChange={(e) =>
-                    patch({
-                      clusterPromotion: { ...draft.clusterPromotion, incidents: Number(e.target.value) },
-                    })
+                  onValueChange={(v) =>
+                    patch({ clusterPromotion: { ...draft.clusterPromotion, incidents: v ?? 2 } })
                   }
                 />
                 <span className="text-xs text-ink-3">incidents</span>
               </span>
-            </Row>
-          </Panel>
+            </Field>
+          </Fieldset>
 
           {data.errors.length > 0 && <Note tone="rust">{data.errors.join('; ')}</Note>}
         </>
@@ -261,11 +352,11 @@ export default function Settings() {
       <ErrorNote error={save.error} />
 
       <div className="flex items-center gap-3">
-        <Button onClick={commit} disabled={save.isPending || (!dirty && !raw)}>
+        <Button type="submit" disabled={save.isPending || (!dirty && !raw)}>
           {save.isPending ? 'saving…' : 'Save'}
         </Button>
         {dirty && <span className="font-mono text-xs text-brass">unsaved changes</span>}
       </div>
-    </div>
+    </Form>
   );
 }

@@ -19,6 +19,7 @@ export type {
 
 export {
   useKaizenState,
+  useLiveUpdates,
   useConfig,
   useSkillFile,
   useDiff,
@@ -28,9 +29,19 @@ export {
   useSaveConfig,
 } from './client';
 
+/**
+ * The lifecycle spec, generated from `lifecycle.json`. Everything the app knows
+ * about phases, statuses and the item format comes through here — there is no
+ * second list to keep in step.
+ */
+export { LIFECYCLE } from './lifecycle.generated';
+export type { Phase, LifecycleStatus, LifecycleField, StatusTone } from './lifecycle.generated';
+
 export {
   RUNGS,
   isOpen,
+  canTransition,
+  nextStatuses,
   isApplyable,
   rankSuggestions,
   clusterMembers,

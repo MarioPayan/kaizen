@@ -5,6 +5,7 @@
 //! still owns the writes and their guards.
 
 mod api;
+mod lifecycle;
 mod tui;
 
 const HELP: &str = "\

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { collapsedWorktrees, skillHealth, useSkillFile, type Skill, type State } from '@kaizen/data';
-import { Chip, Empty, Table, Td, Th, Tr, type Tone } from '@kaizen/ui';
+import { Chip, Empty, Help, RowTrigger, Table, Td, Th, Tr, type Tone } from '@kaizen/ui';
 
 /**
  * A browser over the skills as they are on disk. Nothing is imported or copied —
@@ -74,14 +74,16 @@ export default function Skills({ state }: { state: State }) {
             {state.skills.map((s) => {
               const health = HEALTH[skillHealth(s)];
               return (
-                <Tr key={s.path} onClick={() => setSelected(s.path)} selected={s.path === skill?.path}>
+                <Tr key={s.path} selectable selected={s.path === skill?.path}>
                   <Td>
-                    <span className="font-mono text-xs">{s.name}</span>
-                    {s.kind !== 'library' && health && (
-                      <span className="ml-1.5">
-                        <Chip tone={health.tone}>{health.label}</Chip>
-                      </span>
-                    )}
+                    <RowTrigger onClick={() => setSelected(s.path)}>
+                      <span className="font-mono text-xs">{s.name}</span>
+                      {s.kind !== 'library' && health && (
+                        <span className="ml-1.5">
+                          <Chip tone={health.tone}>{health.label}</Chip>
+                        </span>
+                      )}
+                    </RowTrigger>
                   </Td>
                   <Td numeric>{s.lines}</Td>
                   <Td numeric className={s.scripts ? 'font-bold text-accent' : ''}>
@@ -95,6 +97,35 @@ export default function Skills({ state }: { state: State }) {
               );
             })}
           </tbody>
+          {/*
+            The ratio the whole system exists to move, sitting under the column it
+            is the total of — the only place it is directly comparable with each
+            skill's own number.
+          */}
+          <tfoot>
+            <Tr>
+              <Td className="font-mono text-xs text-ink-3">
+                {state.metrics.proseLines.toLocaleString()} lines of instruction · {state.metrics.scriptCount}{' '}
+                scripts
+              </Td>
+              <Td numeric>{state.metrics.proseLines}</Td>
+              <Td numeric>{state.metrics.scriptCount}</Td>
+              <Td numeric>{state.metrics.total}</Td>
+              <Td numeric className="font-bold">
+                <Help
+                  content={
+                    <>
+                      Incidents per 100 lines of prose, across every skill. It should fall as fixes move down
+                      the ladder. With project scanning on this counts skills that have never filed anything,
+                      which dilutes it — reported rather than argued.
+                    </>
+                  }
+                >
+                  {state.metrics.incidentsPer100Lines}
+                </Help>
+              </Td>
+            </Tr>
+          </tfoot>
         </Table>
       </div>
 

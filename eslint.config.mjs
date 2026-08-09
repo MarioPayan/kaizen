@@ -42,4 +42,24 @@ export default ts.config(
       'no-undef': 'off',
     },
   },
+
+  // "The app never touches Base UI directly" was prose with nothing behind it.
+  // The whole thesis of this project is that a rule which keeps needing to be
+  // remembered belongs in a check instead, so here it is as one.
+  {
+    files: ['packages/app/**/*.{ts,tsx}'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['@base-ui/react', '@base-ui/react/*'],
+              message: 'Wrap it in @kaizen/ui first — the app composes the design system, not Base UI.',
+            },
+          ],
+        },
+      ],
+    },
+  },
 );

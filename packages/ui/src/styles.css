@@ -5,83 +5,108 @@
 @source '../../ui/src';
 
 /*
- * Instrument-panel palette: enamelled grey-green ground, verdigris accent, brass
- * for attention, rust for damage. Semantic colours stay distinct from the accent
- * so "needs attention" never reads as "this is the brand colour".
+ * "Quiet" — the register of a tool you keep open, not one you visit.
+ *
+ * Dark first, because this sits beside a terminal all day and a bright panel in
+ * that context is a lamp pointed at you. Density is deliberate: 13.5px base,
+ * 28px rows. Colour is almost absent — it is spent on one dot per row and the
+ * selection marker, so that when something is rust-coloured it means something.
+ *
+ * The palette is the one this project already had. The failure was never the
+ * colours; it was thirteen font sizes with sixty-seven of eighty-eight usages
+ * crammed into the two smallest. Hence the scale below, which is short on
+ * purpose — five steps, each visibly different from its neighbours.
  */
 @theme {
-  --color-ground: #e9ebe6;
-  --color-surface: #f6f7f3;
-  --color-surface-2: #eff1eb;
-  --color-sunk: #e1e4dc;
-  --color-ink: #161a17;
-  --color-ink-2: #5a6259;
-  --color-ink-3: #828c80;
-  --color-line: #c9cec4;
-  --color-line-soft: #dbdfd6;
-  --color-accent: #1b6e5f;
-  --color-accent-soft: #dce9e4;
-  --color-accent-ink: #0e4a3f;
-  --color-brass: #8a6110;
-  --color-brass-soft: #f0e7d2;
-  --color-rust: #9e2c1c;
-  --color-rust-soft: #f3dfdb;
+  /* ── dark: the designed-for case ───────────────────────────────── */
+  --color-ground: #0c0d0e;
+  --color-surface: #101213;
+  --color-surface-2: #141617;
+  --color-sunk: #0a0b0c;
+  --color-ink: #edeeef;
+  --color-ink-2: #9a9fa3;
+  --color-ink-3: #6a6f73;
+  --color-line: #1f2224;
+  --color-line-soft: #17191b;
+  --color-accent: #7fd8c2;
+  --color-accent-soft: #14211f;
+  --color-accent-ink: #a6e6d5;
+  --color-brass: #dcb068;
+  --color-brass-soft: #241f14;
+  --color-rust: #e28e7c;
+  --color-rust-soft: #241816;
+  --color-selected: #16191a;
+
+  /*
+   * Five steps and no arbitrary values. `row` is the reading size — a suggestion
+   * is a sentence and it is what you are here for. Everything else is smaller
+   * than it, which is what makes it read as the content rather than one fragment
+   * among eleven.
+   */
+  --text-display: 1.4rem;
+  --text-title: 1.02rem;
+  --text-row: 0.845rem;
+  --text-meta: 0.78rem;
+  --text-micro: 0.7rem;
 
   --font-mono: ui-monospace, 'JetBrains Mono', 'SFMono-Regular', 'DejaVu Sans Mono', Menlo, monospace;
-  --font-sans: system-ui, -apple-system, 'Segoe UI', Cantarell, Ubuntu, sans-serif;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
 }
 
 /*
- * Dark is redefined at token level only, so every component keeps working through
- * the same variable names. A colour defined solely inside this block would never
- * apply in light mode — hence nothing here but overrides.
+ * Light exists and is legible, but it is the fallback rather than the design.
+ * Same density, same structure, inverted ground — nothing here changes a layout.
  */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']) {
-    --color-ground: #101310;
-    --color-surface: #191d19;
-    --color-surface-2: #1f241f;
-    --color-sunk: #141814;
-    --color-ink: #e7eae4;
-    --color-ink-2: #9aa398;
-    --color-ink-3: #6f786e;
-    --color-line: #2d332d;
-    --color-line-soft: #242a24;
-    --color-accent: #5ac4ab;
-    --color-accent-soft: #16302b;
-    --color-accent-ink: #8fdcc8;
-    --color-brass: #d3a247;
-    --color-brass-soft: #2e2717;
-    --color-rust: #e08573;
-    --color-rust-soft: #33201c;
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme='dark']) {
+    --color-ground: #f7f8f7;
+    --color-surface: #ffffff;
+    --color-surface-2: #f1f3f2;
+    --color-sunk: #eaecea;
+    --color-ink: #16191a;
+    --color-ink-2: #575d60;
+    --color-ink-3: #868c90;
+    --color-line: #e0e3e1;
+    --color-line-soft: #eceeed;
+    --color-accent: #17705f;
+    --color-accent-soft: #e3efeb;
+    --color-accent-ink: #0d4c40;
+    --color-brass: #8a6110;
+    --color-brass-soft: #f3ecdb;
+    --color-rust: #9e2c1c;
+    --color-rust-soft: #f6e3df;
+    --color-selected: #eef1f0;
   }
 }
 
-:root[data-theme='dark'] {
-  --color-ground: #101310;
-  --color-surface: #191d19;
-  --color-surface-2: #1f241f;
-  --color-sunk: #141814;
-  --color-ink: #e7eae4;
-  --color-ink-2: #9aa398;
-  --color-ink-3: #6f786e;
-  --color-line: #2d332d;
-  --color-line-soft: #242a24;
-  --color-accent: #5ac4ab;
-  --color-accent-soft: #16302b;
-  --color-accent-ink: #8fdcc8;
-  --color-brass: #d3a247;
-  --color-brass-soft: #2e2717;
-  --color-rust: #e08573;
-  --color-rust-soft: #33201c;
+:root[data-theme='light'] {
+  --color-ground: #f7f8f7;
+  --color-surface: #ffffff;
+  --color-surface-2: #f1f3f2;
+  --color-sunk: #eaecea;
+  --color-ink: #16191a;
+  --color-ink-2: #575d60;
+  --color-ink-3: #868c90;
+  --color-line: #e0e3e1;
+  --color-line-soft: #eceeed;
+  --color-accent: #17705f;
+  --color-accent-soft: #e3efeb;
+  --color-accent-ink: #0d4c40;
+  --color-brass: #8a6110;
+  --color-brass-soft: #f3ecdb;
+  --color-rust: #9e2c1c;
+  --color-rust-soft: #f6e3df;
+  --color-selected: #eef1f0;
 }
 
 html {
-  color-scheme: light dark;
+  color-scheme: dark light;
+  font-size: 16px;
 }
 
 body {
   background: var(--color-ground);
+  font-size: var(--text-row);
   color: var(--color-ink);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;

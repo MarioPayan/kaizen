@@ -1,0 +1,434 @@
+/**
+ * The lifecycle spec, and the two renderings of it that get checked in.
+ *
+ * `lifecycle.json` at the repo root is the only place the phases, statuses and
+ * item format are written down. Three consumers read it and they read it three
+ * different ways, which is not an accident:
+ *
+ *   - Rust embeds the JSON directly (`include_str!`), so the TUI needs no
+ *     generated artifact and no server to draw its docs.
+ *   - TypeScript cannot: a `.json` import widens every string to `string`, so
+ *     `Status` would stop being a union and start being "any text". The
+ *     generated module below re-emits the same data `as const`, which restores
+ *     the literal types.
+ *   - Markdown cannot import anything at all, so the document is generated too.
+ *
+ * Two of the three are therefore copies, and a copy that nothing checks is the
+ * problem this file exists to solve. `kaizen docs --check` regenerates both and
+ * fails on any difference; it runs first in `npm run check`.
+ *
+ * Both renderers must be pure functions of the spec — no clock, no cwd, no
+ * ordering that depends on anything but the file. A generator whose output
+ * moves on its own turns the check into noise people learn to skip.
+ */
+
+import { readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+
+/** The repo root, from `packages/core/src/`. */
+export const LIFECYCLE_PATH = join(HERE, '..', '..', '..', 'lifecycle.json');
+
+export function loadLifecycle(path = LIFECYCLE_PATH) {
+  return JSON.parse(readFileSync(path, 'utf8'));
+}
+
+/* ------------------------------------------------------------ validate ---- */
+
+/**
+ * Every way the spec can be internally wrong, as a list of sentences.
+ *
+ * This is the check that earns the single-source claim. A spec that names a
+ * status nothing can reach, or a transition to something that does not exist,
+ * would generate documentation that reads fine and describes a machine that
+ * cannot run.
+ */
+export function validateLifecycle(l) {
+  const errors = [];
+  const statuses = l.statuses ?? [];
+  const phases = l.phases ?? [];
+  const ids = new Set(statuses.map((s) => s.id));
+  const phaseIds = new Set(phases.map((p) => p.id));
+
+  if (!statuses.length) errors.push('no statuses defined');
+  if (!phases.length) errors.push('no phases defined');
+
+  const seenAbbrev = new Map();
+  const seenAlias = new Map();
+  for (const s of statuses) {
+    if (!phaseIds.has(s.phase)) errors.push(`status "${s.id}": phase "${s.phase}" does not exist`);
+    if (typeof s.abbrev !== 'string' || s.abbrev.length !== 3) {
+      errors.push(`status "${s.id}": abbrev must be exactly 3 characters (got "${s.abbrev}")`);
+    }
+    if (seenAbbrev.has(s.abbrev)) {
+      errors.push(`status "${s.id}": abbrev "${s.abbrev}" already used by "${seenAbbrev.get(s.abbrev)}"`);
+    }
+    seenAbbrev.set(s.abbrev, s.id);
+
+    for (const target of s.next ?? []) {
+      if (!ids.has(target)) errors.push(`status "${s.id}": next "${target}" does not exist`);
+      if (target === s.id) errors.push(`status "${s.id}": transitions to itself`);
+    }
+    // `terminal` is the property "has no exit". Letting it disagree with `next`
+    // is how a preview of this very spec ended up calling `failed` terminal
+    // while also routing it back to `planned`.
+    const hasNext = (s.next ?? []).length > 0;
+    if (s.terminal && hasNext) errors.push(`status "${s.id}": terminal but has next`);
+    if (!s.terminal && !hasNext) errors.push(`status "${s.id}": not terminal but has nowhere to go`);
+
+    for (const a of s.aliases ?? []) {
+      if (ids.has(a)) errors.push(`status "${s.id}": alias "${a}" collides with a status id`);
+      if (seenAlias.has(a)) {
+        errors.push(`status "${s.id}": alias "${a}" already used by "${seenAlias.get(a)}"`);
+      }
+      seenAlias.set(a, s.id);
+    }
+  }
+
+  const fieldIds = new Set((l.fields ?? []).map((f) => f.id));
+  for (const p of phases) {
+    if (!ids.has(p.produces)) errors.push(`phase "${p.id}": produces "${p.produces}" does not exist`);
+    for (const r of p.requires ?? []) {
+      if (!fieldIds.has(r)) errors.push(`phase "${p.id}": requires unknown field "${r}"`);
+    }
+  }
+  for (const f of l.fields ?? []) {
+    if (!phaseIds.has(f.phase)) errors.push(`field "${f.id}": phase "${f.phase}" does not exist`);
+    // Where a field lives is what makes "is it present" answerable. A body field
+    // needs its heading spelled out because it is not derivable from the id —
+    // `rationale` is written under "Why it matters".
+    if (!['frontmatter', 'body', 'sibling'].includes(f.where)) {
+      errors.push(`field "${f.id}": where must be frontmatter, body or sibling (got "${f.where}")`);
+    }
+    if (f.where === 'body' && !f.heading) errors.push(`field "${f.id}": body field needs a heading`);
+    if (f.where === 'sibling' && !f.suffix) errors.push(`field "${f.id}": sibling field needs a suffix`);
+  }
+
+  // Anything unreachable from the entry status is dead vocabulary.
+  const entry = phases[0]?.produces;
+  if (entry && ids.has(entry)) {
+    const seen = new Set([entry]);
+    const queue = [entry];
+    while (queue.length) {
+      // Shift once into a name. Calling it inside a `find` predicate runs it per
+      // element and drains the queue looking for a single match.
+      const id = queue.shift();
+      const cur = statuses.find((s) => s.id === id);
+      for (const n of cur?.next ?? []) {
+        if (!seen.has(n)) {
+          seen.add(n);
+          queue.push(n);
+        }
+      }
+    }
+    for (const s of statuses) {
+      if (!seen.has(s.id)) errors.push(`status "${s.id}": unreachable from "${entry}"`);
+    }
+  }
+
+  return errors;
+}
+
+/* --------------------------------------------------------------- query ---- */
+
+/**
+ * The spec, read once.
+ *
+ * Everything below takes an optional `l` so the tests can ask these questions of
+ * a spec they made up, and everything in the running system leaves it out.
+ */
+let cached;
+export function spec() {
+  return (cached ??= loadLifecycle());
+}
+
+/** Canonical ids, in the order the spec lists them. */
+export const statusIds = (l = spec()) => l.statuses.map((s) => s.id);
+
+/** Ids plus every legacy name, which is what a file on disk may actually say. */
+export const acceptedStatuses = (l = spec()) => l.statuses.flatMap((s) => [s.id, ...(s.aliases ?? [])]);
+
+/**
+ * The status a file means, whatever it happens to say.
+ *
+ * Resolving on read is what let the rename happen without touching 73 files:
+ * a `new` on disk *is* `recorded`, everywhere above the parser. Returns null for
+ * anything the spec does not know, so callers can fall back deliberately rather
+ * than propagate a typo.
+ */
+export function canonicalStatus(value, l = spec()) {
+  const found = l.statuses.find((s) => s.id === value || (s.aliases ?? []).includes(value));
+  return found ? found.id : null;
+}
+
+/** No exit: the item has left the pipeline for good. */
+export function isTerminal(value, l = spec()) {
+  const id = canonicalStatus(value, l);
+  return !!l.statuses.find((s) => s.id === id)?.terminal;
+}
+
+/** Is this move legal? Both sides are canonicalised, so legacy names work. */
+export function canTransition(from, to, l = spec()) {
+  const a = canonicalStatus(from, l);
+  const b = canonicalStatus(to, l);
+  if (!a || !b) return false;
+  return (l.statuses.find((s) => s.id === a)?.next ?? []).includes(b);
+}
+
+/** Where a status is allowed to go next, canonically. */
+export function nextStatuses(from, l = spec()) {
+  const id = canonicalStatus(from, l);
+  return l.statuses.find((s) => s.id === id)?.next ?? [];
+}
+
+/** What capture produces — the pile a triage pass consumes. */
+export const entryStatus = (l = spec()) => l.phases[0]?.produces ?? 'recorded';
+
+/**
+ * The one status that is genuinely waiting on a person.
+ *
+ * Derived rather than named: find the attended phase, and take what the phase
+ * before it produces. That is the pile sitting at the door of the only phase
+ * that stops. `approved` is *past* that door — it waits on the server, and
+ * counting it as "awaiting you" is what made the session line report 39 items
+ * that needed nothing from anyone.
+ */
+export function awaitingDecision(l = spec()) {
+  const at = l.phases.findIndex((p) => p.attended);
+  if (at <= 0) return [];
+  return [l.phases[at - 1].produces];
+}
+
+/**
+ * Pull a `## Heading` section out of a suggestion body.
+ *
+ * Lives here because the spec is what says which headings exist and which field
+ * each one carries — `rationale` is written under "Why it matters", and that
+ * mapping is data now.
+ *
+ * Scanned line by line rather than matched with one regex. The regex this
+ * replaces ended its lookahead with `\Z`, which is a Perl anchor that JavaScript
+ * does not have: it compiled to a literal `Z`, so a section with no `##` after
+ * it never matched. Rationale is the last heading in almost every file, and 34
+ * of 73 suggestions were silently reading as having none.
+ */
+export function section(body, heading) {
+  const lines = String(body ?? '').split(/\r?\n/);
+  const wanted = String(heading).toLowerCase();
+  const isHeading = (line) => /^##\s/.test(line);
+  const start = lines.findIndex((l) => {
+    const m = /^##\s+(.*?)\s*$/.exec(l);
+    return !!m && m[1].toLowerCase() === wanted;
+  });
+  if (start === -1) return '';
+  const out = [];
+  for (let i = start + 1; i < lines.length && !isHeading(lines[i]); i++) out.push(lines[i]);
+  return out.join('\n').trim();
+}
+
+/** What the phase producing this status insists on before you may leave it. */
+export function requirementsFor(status, l = spec()) {
+  const id = canonicalStatus(status, l);
+  const phase = l.phases.find((p) => p.produces === id);
+  if (!phase) return [];
+  return (phase.requires ?? []).map((f) => l.fields.find((x) => x.id === f)).filter(Boolean);
+}
+
+/**
+ * Which of a status's required fields the file does not actually have.
+ *
+ * Pure, so it can be tested without a filesystem: the caller supplies the
+ * parsed frontmatter, the raw body, and whether the sibling patch exists.
+ *
+ * This is the half of the model that was declared and then not enforced. With
+ * only the transition graph checked, `recorded → triaged → planned → approved`
+ * walked straight to an approval with no patch behind it — the exact state the
+ * spec exists to prevent, reached in three hops instead of one.
+ */
+export function missingRequirements(status, { data = {}, body = '', hasPatch = false } = {}, l = spec()) {
+  const missing = [];
+  for (const f of requirementsFor(status, l)) {
+    if (f.where === 'frontmatter') {
+      if (!String(data[f.id] ?? '').trim()) missing.push(f.id);
+    } else if (f.where === 'body') {
+      // Present means present *with content*: an empty heading someone left as a
+      // placeholder is exactly the thing this is meant to catch.
+      if (!section(body, f.heading)) missing.push(f.id);
+    } else if (f.where === 'sibling') {
+      if (!hasPatch) missing.push(f.id);
+    }
+  }
+  return missing;
+}
+
+/** Which phase produces this status, by position. -1 when unknown. */
+function phaseIndexOf(id, l) {
+  return l.phases.findIndex((p) => p.produces === id);
+}
+
+/** The phase that first demands a given field, by position. -1 when none does. */
+function phaseRequiring(field, l) {
+  return l.phases.findIndex((p) => (p.requires ?? []).includes(field));
+}
+
+/**
+ * The window in which a patch is owed but no commit exists yet.
+ *
+ * Derived from the fields rather than named: it is every status from the phase
+ * that first requires `patch` up to the one that produces a commit. Today that
+ * is `planned` and `approved`. Writing those two down instead would be the
+ * seventh copy of the vocabulary, and the one most likely to be forgotten when
+ * a phase is inserted.
+ */
+export function patchWindow(l = spec()) {
+  const from = phaseRequiring('patch', l);
+  const to = phaseRequiring('applied_sha', l);
+  if (from < 0 || to < 0) return [];
+  return l.phases.slice(from, to).map((p) => p.produces);
+}
+
+/**
+ * Is this status in that window? Canonicalises first, so a caller holding a raw
+ * frontmatter value — `proposed` straight off disk — gets the right answer
+ * without having to know the aliases exist.
+ */
+export function inPatchWindow(value, l = spec()) {
+  return patchWindow(l).includes(canonicalStatus(value, l));
+}
+
+/** Has a commit already come out of this status? */
+export function hasLanded(value, l = spec()) {
+  const at = phaseRequiring('applied_sha', l);
+  const mine = phaseIndexOf(canonicalStatus(value, l), l);
+  return at >= 0 && mine >= at;
+}
+
+/* -------------------------------------------------------------- render ---- */
+
+const BANNER = (what) =>
+  `${what} Generated from lifecycle.json by \`kaizen docs\`. Edit that file, not this one — ` +
+  `\`kaizen docs --check\` fails when this drifts.`;
+
+const statusById = (l, id) => l.statuses.find((s) => s.id === id);
+
+/** How a field is written down, in words. */
+const whereOf = (f) =>
+  f.where === 'body'
+    ? `a \`## ${f.heading}\` section`
+    : f.where === 'sibling'
+      ? `a sibling \`${f.suffix}\` file`
+      : 'frontmatter';
+
+/** The document a human reads in the repo or on GitHub. */
+export function renderMarkdown(l) {
+  const out = [];
+  const push = (...lines) => out.push(...lines);
+
+  push(`<!-- ${BANNER('DO NOT EDIT.')} -->`, '', '# The suggestion lifecycle', '');
+  push(
+    'A suggestion moves through six phases. It rests in exactly one status between',
+    'each, so "where is this" always has one answer.',
+    '',
+  );
+
+  push('## Phases', '');
+  push('| # | Phase | Who runs it | Attended | Comes to rest at |', '|---|---|---|---|---|');
+  l.phases.forEach((p, i) => {
+    const s = statusById(l, p.produces);
+    push(`| ${i + 1} | **${p.title}** | ${p.actor} | ${p.attended ? 'yes' : 'no'} | \`${s.id}\` |`);
+  });
+  push('');
+  for (const p of l.phases) {
+    push(`### ${p.title}`, '', p.summary, '');
+    if (p.requires?.length) {
+      const names = p.requires.map((r) => `\`${r}\``).join(', ');
+      push(`Cannot be left until these are present: ${names}.`, '');
+    }
+  }
+
+  push('## Statuses', '');
+  push('| Status | Short | Phase | Also written as | What it means |', '|---|---|---|---|---|');
+  for (const s of l.statuses) {
+    const alias = s.aliases?.length ? s.aliases.map((a) => `\`${a}\``).join(', ') : '—';
+    push(`| \`${s.id}\` | \`${s.abbrev}\` | ${s.phase} | ${alias} | ${s.help} |`);
+  }
+  push('');
+  push(
+    'The "also written as" column is the previous vocabulary. Files recorded before',
+    'this spec still carry those names and are read as the status they map to.',
+    '',
+  );
+
+  push('## Transitions', '');
+  push('```');
+  const width = Math.max(...l.statuses.map((s) => s.id.length));
+  for (const s of l.statuses) {
+    const to = s.next?.length ? s.next.join(' | ') : '(terminal)';
+    push(`${s.id.padEnd(width)} → ${to}`);
+  }
+  push('```', '');
+
+  // State the consequence, derived rather than asserted: if the spec changes so
+  // that approval becomes reachable from somewhere else, this sentence changes
+  // with it instead of quietly becoming a lie.
+  const intoApproved = l.statuses.filter((s) => (s.next ?? []).includes('approved')).map((s) => s.id);
+  if (intoApproved.length) {
+    const from = intoApproved.map((s) => `\`${s}\``).join(', ');
+    push(
+      `\`approved\` is reachable only from ${from}, so an approval with no plan behind it`,
+      'cannot be written down.',
+      '',
+    );
+  }
+
+  push('## The item format', '');
+  push('| Field | Required by | Where it lives | What goes in it |', '|---|---|---|---|');
+  for (const f of l.fields) {
+    const phase = l.phases.find((p) => p.id === f.phase);
+    push(`| \`${f.id}\` | ${phase ? phase.title : f.phase} | ${whereOf(f)} | ${f.help} |`);
+  }
+  push('');
+
+  // A real template, split by where each field actually goes. The previous one
+  // listed every required field as frontmatter, including the four that are
+  // `## Heading` sections — so following it produced a file the parser could
+  // not read.
+  const capture = l.phases[0];
+  const required = (capture.requires ?? []).map((id) => l.fields.find((f) => f.id === id)).filter(Boolean);
+  push(`### What ${capture.title.toLowerCase()} writes`, '');
+  push('```markdown', '---');
+  for (const f of required.filter((f) => f.where === 'frontmatter')) push(`${f.id}:`);
+  push('---');
+  for (const f of required.filter((f) => f.where === 'body')) push('', `## ${f.heading}`, '');
+  push('```', '');
+
+  return out.join('\n');
+}
+
+/** The module the app and data layer import, where the unions come from. */
+export function renderTypes(l) {
+  // `$comment` is a note to whoever edits the JSON. Shipping it into the app
+  // bundle helps nobody and makes the diff on every wording tweak enormous.
+  const { $comment, ...data } = l;
+  void $comment;
+  const json = JSON.stringify(data, null, 2);
+  return [
+    `/* ${BANNER('DO NOT EDIT.')} */`,
+    '',
+    '/**',
+    ' * Why this is generated rather than an import of the JSON: TypeScript widens',
+    ' * every string in a `.json` module to `string`, so `Status` would accept any',
+    ' * text at all. Re-emitting the same data `as const` is what keeps the unions',
+    ' * below real — a wrong status is a compile error, which is the whole point.',
+    ' */',
+    `export const LIFECYCLE = ${json} as const;`,
+    '',
+    'export type Phase = (typeof LIFECYCLE.phases)[number]["id"];',
+    'export type LifecycleStatus = (typeof LIFECYCLE.statuses)[number]["id"];',
+    'export type LifecycleField = (typeof LIFECYCLE.fields)[number]["id"];',
+    'export type StatusTone = (typeof LIFECYCLE.statuses)[number]["tone"];',
+    '',
+  ].join('\n');
+}

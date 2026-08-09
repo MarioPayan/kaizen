@@ -70,9 +70,16 @@ Every apply is one commit carrying a `Kaizen-Suggestion:` trailer, so `git log -
 
 ## The app
 
-React 19 + Vite + Tailwind, served by a `node:http` API bound to `127.0.0.1`. Six views: Queue, Clusters, Skills, Determinism, Settings, and one where the app reviews itself.
+React 19 + Vite + Tailwind on Base UI, served by a `node:http` API bound to `127.0.0.1`. Four views:
 
-Skills are **read in place and never copied**, so a file edited in your editor is current here with no sync step and no second copy to drift.
+| View         | What it is                                                                                                                                                               |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Queue**    | Every suggestion, ranked. Group by cluster, skill or type; a cluster is one row you approve once. Filters live in the URL, so a view is shareable and survives a reload. |
+| **Skills**   | What exists on disk, how much prose each carries, and how often it has failed per 100 lines.                                                                             |
+| **Docs**     | What each label means and what stops a bad change landing. Rendered from the same constants the chips are, so the two cannot disagree.                                   |
+| **Settings** | The config file as a form, including which kinds of suggestion you want put in front of you.                                                                             |
+
+Skills are **read in place and never copied**, so a file edited in your editor is current here with no sync step and no second copy to drift. The server watches each feedback directory and pushes over SSE, so a suggestion filed while the page is open appears on its own — `fs.watch` is not polling, so an idle watcher costs nothing.
 
 That loopback binding is the security boundary — these routes write files and shell out to git. Every caller-supplied path is resolved (through symlinks) and asserted inside a configured target before being touched.
 
@@ -103,7 +110,7 @@ npm run dev      # the app against a running API
 npm run build
 ```
 
-The app reviews itself against the same rubric it applies to skills — type checking, linting, tests and bundle size are rung-1 signals, and the "This app" view records what has been deliberately deferred and why.
+The app reviews itself against the same rubric it applies to skills — type checking, linting, tests and bundle size are rung-1 signals. What it has deliberately deferred is filed into the `kaizen-app` feedback folder like any other suggestion, so it queues, scores and ages alongside everything else rather than living in a page of its own.
 
 ## Licence
 

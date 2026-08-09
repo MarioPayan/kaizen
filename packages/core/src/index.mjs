@@ -4,6 +4,7 @@ export {
   saveConfig,
   defaultConfig,
   validateConfig,
+  withDefaults,
   resolveTargets,
   expandPath,
   configPath,
@@ -19,7 +20,30 @@ export {
   score,
   splitFilename,
   STATUSES,
-  SEVERITIES,
 } from './suggestion.mjs';
+export { SEVERITIES, defaultSurface, surfaceOf, passesSurface } from './taxonomy.mjs';
+export { runDoctor, findingToMarkdown, CHECKS } from './doctor.mjs';
+export {
+  loadLifecycle,
+  validateLifecycle,
+  renderMarkdown,
+  renderTypes,
+  LIFECYCLE_PATH,
+  spec,
+  statusIds,
+  acceptedStatuses,
+  canonicalStatus,
+  isTerminal,
+  canTransition,
+  nextStatuses,
+  awaitingDecision,
+  entryStatus,
+  section,
+  requirementsFor,
+  missingRequirements,
+  patchWindow,
+  inPatchWindow,
+  hasLanded,
+} from './lifecycle.mjs';
 export { clusterSuggestions, DEFAULT_THRESHOLD } from './cluster.mjs';
 export { assertInside, isInside, parseSuggestionId, suggestionId } from './paths.mjs';
