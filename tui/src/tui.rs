@@ -19,7 +19,8 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Clear, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
+    Clear, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Tabs,
+    Wrap,
 };
 use ratatui::Frame;
 use std::sync::mpsc;
@@ -28,6 +29,7 @@ use std::time::Duration;
 use crate::api::{Client, Config, State, Suggestion};
 use crate::theme::{self, severity_colour, severity_letter, status_colour, tone_colour};
 use crate::ui::{badge, fit_parts, titled, truncate, wrapped};
+use crate::keys::{self, Action, Tab};
 use crate::views::{clusters, settings, skills};
 use crate::lifecycle::{
     can_transition, decision_status, is_before_decision, lifecycle, next_statuses, status_abbrev,
@@ -75,29 +77,6 @@ impl Filter {
             Filter::All => true,
             Filter::Undecided => s.status.is_empty() || is_before_decision(&s.status),
             Filter::Approved => status_spec(&s.status).is_some_and(|x| x.id == decision_status()),
-        }
-    }
-}
-
-/// The four places you work. Overlays (help, docs, a diff, a file) are things
-/// you consult and sit on top of whichever tab you are on.
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum Tab {
-    Queue,
-    Clusters,
-    Skills,
-    Settings,
-}
-
-impl Tab {
-    const ALL: [Tab; 4] = [Tab::Queue, Tab::Clusters, Tab::Skills, Tab::Settings];
-
-    fn label(self) -> &'static str {
-        match self {
-            Tab::Queue => "queue",
-            Tab::Clusters => "clusters",
-            Tab::Skills => "skills",
-            Tab::Settings => "settings",
         }
     }
 }
@@ -192,9 +171,14 @@ fn title_of(s: &Suggestion) -> String {
 
 /* ------------------------------------------------------------------- state ---- */
 
+/// Things you consult, drawn on top of whichever tab you are on.
+///
+/// Help carries both halves rather than being two overlays: the keys and the
+/// model are the two questions you have while looking at a queue, and making
+/// them one overlay with a switch means you never have to remember which key
+/// opened which.
 enum Overlay {
-    Help { scroll: u16 },
-    Docs { scroll: u16 },
+    Help { guide: bool, scroll: u16 },
     Diff { id: String, body: String, scroll: u16 },
     File { path: String, body: String, scroll: u16 },
 }
@@ -214,6 +198,9 @@ struct App {
     live: bool,
     busy: bool,
     filter: Filter,
+    /// Set by opening a cluster. Membership, not text — the cluster id is built
+    /// from its members' shared vocabulary and is frequently in none of them.
+    cluster_filter: Option<String>,
     query: String,
     searching: bool,
     focus: Focus,
@@ -221,10 +208,11 @@ struct App {
     /// One cursor per list, so switching tabs does not move the other one.
     cluster_sel: usize,
     skill_sel: usize,
-    settings_scroll: u16,
-    config: Option<Config>,
-    /// The raw JSON, kept so an edit round-trips keys this build does not know.
-    config_raw: Option<serde_json::Value>,
+    setting_sel: u16,
+    /// The config being edited. Edits land here and are POSTed on `s`, so a
+    /// half-made change is never saved and the file on disk stays whole.
+    config: Option<serde_json::Value>,
+    config_saved: Option<serde_json::Value>,
     config_errors: Vec<String>,
 }
 
@@ -240,15 +228,16 @@ impl App {
             live: false,
             busy: true,
             filter: Filter::All,
+            cluster_filter: None,
             query: String::new(),
             searching: false,
             focus: Focus::Queue,
             tab: Tab::Queue,
             cluster_sel: 0,
             skill_sel: 0,
-            settings_scroll: 0,
+            setting_sel: 0,
             config: None,
-            config_raw: None,
+            config_saved: None,
             config_errors: Vec::new(),
         }
     }
@@ -258,9 +247,18 @@ impl App {
     fn visible(&self) -> Vec<&Suggestion> {
         let Some(state) = self.state.as_ref() else { return Vec::new() };
         let needle = self.query.to_lowercase();
+        let members: Option<std::collections::HashSet<&str>> = self.cluster_filter.as_ref().map(|id| {
+            state
+                .clusters
+                .iter()
+                .find(|c| &c.id == id)
+                .map(|c| c.members.iter().map(String::as_str).collect())
+                .unwrap_or_default()
+        });
         state
             .queue()
             .into_iter()
+            .filter(|s| members.as_ref().is_none_or(|m| m.contains(s.id.as_str())))
             .filter(|s| self.filter.keeps(s))
             .filter(|s| {
                 needle.is_empty()
@@ -327,7 +325,12 @@ impl App {
                 self.skill_sel = step(self.skill_sel, self.skills().len());
             }
             Tab::Settings => {
-                self.settings_scroll = self.settings_scroll.saturating_add_signed(delta as i16)
+                let len = self
+                    .config
+                    .as_ref()
+                    .map(|c| settings::editable(&settings::rows(c)).len())
+                    .unwrap_or(0);
+                self.setting_sel = step(self.setting_sel as usize, len) as u16;
             }
         }
     }
@@ -336,6 +339,41 @@ impl App {
     /// cursor index means the same thing here and there.
     fn clusters(&self) -> Vec<&crate::api::Cluster> {
         self.state.as_ref().map(|s| clusters::actionable(&s.clusters)).unwrap_or_default()
+    }
+
+    /// Space on the selected settings row: flip, step, or join a list.
+    fn edit_setting(&mut self) {
+        let Some(cfg) = self.config.as_mut() else { return };
+        let all = settings::rows(cfg);
+        let Some(&i) = settings::editable(&all).get(self.setting_sel as usize) else { return };
+        settings::apply(cfg, &all[i]);
+    }
+
+    /// The draft, if it differs from what the server last gave us. Nothing is
+    /// pending before the first load, however the two Options happen to sit.
+    fn pending_config(&self) -> Option<serde_json::Value> {
+        let cfg = self.config.as_ref()?;
+        let saved = self.config_saved.as_ref()?;
+        (cfg != saved).then(|| cfg.clone())
+    }
+
+    fn config_dirty(&self) -> bool {
+        self.pending_config().is_some()
+    }
+
+    /// How many of a cluster's members could actually become approved, and how
+    /// many there are. The server's cluster write is all-or-nothing, so the pair
+    /// is what decides whether asking is worth a round trip.
+    fn cluster_readiness(&self, id: &str) -> (usize, usize) {
+        let Some(state) = self.state.as_ref() else { return (0, 0) };
+        let Some(cluster) = state.clusters.iter().find(|c| c.id == id) else { return (0, 0) };
+        let ready = cluster
+            .members
+            .iter()
+            .filter_map(|m| state.suggestions.iter().find(|s| &s.id == m))
+            .filter(|s| can_transition(&s.status, "approved"))
+            .count();
+        (ready, cluster.members.len())
     }
 
     fn skills(&self) -> Vec<&crate::api::Skill> {
@@ -545,57 +583,31 @@ fn draw_detail(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
     );
 }
 
+/// The keys, from the one table that also dispatches them.
+///
+/// Nothing is written twice: a binding that applies to one tab says so here,
+/// and the same field is what stops the key firing anywhere else.
 fn help_lines() -> Vec<Line<'static>> {
-    let head = |t: &str| {
-        Line::styled(format!("  {t}"), Style::new().fg(theme::accent()).add_modifier(Modifier::BOLD))
-    };
-    let dim = |t: &str| Line::styled(format!("  {t}"), Style::new().fg(theme::dim()));
-    vec![
-        head("tabs"),
-        Line::raw("    1  queue       decide, one suggestion at a time"),
-        Line::raw("    2  clusters    one fix closes all of them — A approves the lot"),
-        Line::raw("    3  skills      worst failures-per-hundred-lines first"),
-        Line::raw("    4  settings    read-only · e opens $EDITOR"),
-        Line::raw(""),
-        head("navigate"),
-        Line::raw("    j / k · ↓ ↑    move the list, or scroll the pane"),
-        Line::raw("    J / K          scroll the detail from the queue"),
-        Line::raw("    tab            go to the detail, and back"),
-        Line::raw("    esc            back to the queue"),
-        Line::raw("    pgup / pgdn    jump ten rows"),
-        Line::raw("    enter          apply · open a cluster · open a skill file"),
-        Line::raw(""),
-        head("find"),
-        Line::raw("    f              filter: all / undecided / approved"),
-        Line::raw("    /              search slug and skill · esc clears"),
-        Line::raw(""),
-        head("decide"),
-        Line::raw("    a              approve"),
-        Line::raw("    r              reject"),
-        Line::raw("    A              approve the whole cluster"),
-        Line::raw("    d              show the patch"),
-        Line::raw("    enter          apply the patch and commit"),
-        Line::raw(""),
-        head("other"),
-        Line::raw("    D              the lifecycle: phases, statuses, item format"),
-        Line::raw("    g  refresh     t  theme     h  help     q  quit"),
-        Line::raw(""),
-        head("columns"),
-        dim("    score · severity · status · skill · slug"),
-        dim("    H high  M medium  L low"),
-        // Built from the spec so the legend cannot outlive the vocabulary.
-        dim(&format!(
-            "    {}",
-            lifecycle()
-                .statuses
-                .iter()
-                .map(|s| format!("{} {}", s.abbrev, s.id))
-                .collect::<Vec<_>>()
-                .join(" · ")
-        )),
-        Line::raw(""),
-        dim("  applying needs a clean tree and a patch on disk"),
-    ]
+    let mut out = Vec::new();
+    for (section, bindings) in keys::sections() {
+        out.push(Line::styled(
+            format!("  {section}"),
+            Style::new().fg(theme::accent()).add_modifier(Modifier::BOLD),
+        ));
+        for b in bindings {
+            out.push(Line::from(vec![
+                Span::styled(format!("    {:<8}", b.hint), Style::new().fg(theme::ok())),
+                Span::raw(format!("{:<18}", b.label)),
+                Span::styled(keys::where_of(b), Style::new().fg(theme::dim())),
+            ]));
+        }
+        out.push(Line::raw(""));
+    }
+    out.push(Line::styled(
+        "  applying needs a clean tree and a patch on disk",
+        Style::new().fg(theme::dim()),
+    ));
+    out
 }
 
 /// The lifecycle, drawn from the embedded spec.
@@ -659,13 +671,10 @@ fn docs_lines(width: usize) -> Vec<Line<'static>> {
 
     out.push(head("statuses"));
     for s in &l.statuses {
-        let alias =
-            if s.aliases.is_empty() { String::new() } else { format!("  (was {})", s.aliases.join(", ")) };
         out.push(Line::from(vec![
             Span::styled(format!("    {:<4} ", s.abbrev), Style::new().fg(tone_colour(&s.tone))),
             Span::styled(format!("{:<11}", s.id), Style::new().fg(tone_colour(&s.tone))),
             Span::styled(format!("{:<9}", s.phase), Style::new().fg(theme::dim())),
-            Span::styled(alias, Style::new().fg(theme::dim())),
         ]));
         out.extend(prose(&s.help, "      "));
     }
@@ -708,10 +717,17 @@ fn draw_overlay(frame: &mut Frame, area: Rect, overlay: &Overlay) {
     let inner_w = w.saturating_sub(2) as usize;
 
     let (title, body, scroll) = match overlay {
-        Overlay::Help { scroll } => ("kaizen — keys".to_string(), help_lines(), *scroll),
-        Overlay::Docs { scroll } => {
-            ("kaizen — lifecycle".to_string(), docs_lines(inner_w), *scroll)
-        }
+        Overlay::Help { guide, scroll } => (
+            // Both halves named in the title, the current one marked, so the
+            // switch is discoverable without being explained.
+            format!(
+                "help — {} keys {} guide   (tab switches)",
+                if *guide { " " } else { "▸" },
+                if *guide { "▸" } else { " " },
+            ),
+            if *guide { docs_lines(inner_w) } else { help_lines() },
+            *scroll,
+        ),
         Overlay::File { path, body, scroll } => (
             format!("file — {}", path.rsplit('/').next().unwrap_or(path)),
             body.lines().map(|l| Line::raw(l.to_string())).collect(),
@@ -743,11 +759,10 @@ fn draw_overlay(frame: &mut Frame, area: Rect, overlay: &Overlay) {
     );
 }
 
-fn draw(frame: &mut Frame, app: &App, base: &str) {
+fn draw(frame: &mut Frame, app: &App) {
     let [header, body, footer] =
         Layout::vertical([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)])
             .areas(frame.area());
-    let width = frame.area().width as usize;
     let wide = frame.area().width >= WIDE;
     // Nothing to focus when nothing is listed — otherwise a narrow terminal shows
     // an empty detail box and no way to learn why.
@@ -764,35 +779,40 @@ fn draw(frame: &mut Frame, app: &App, base: &str) {
         m.promoted_clusters,
         if m.promoted_clusters == 1 { "" } else { "s" }
     ));
-    let live = if app.live { "●" } else { "○" };
-    let mut spans = vec![
-        Span::styled(" kaizen ", Style::new().fg(theme::accent()).add_modifier(Modifier::BOLD)),
-        Span::styled(
-            format!("{live} "),
-            Style::new().fg(if app.live { theme::ok() } else { theme::dim() }),
-        ),
-    ];
     // The tab bar doubles as its own legend: the number beside each name is the
-    // key that gets there, so there is nothing to look up.
-    let mut used = 10;
-    for (i, tab) in Tab::ALL.iter().enumerate() {
-        let on = *tab == app.tab;
-        let label = format!("{} {}  ", i + 1, tab.label());
-        used += label.chars().count();
-        spans.push(Span::styled(
-            label,
-            if on {
-                Style::new().fg(theme::accent()).add_modifier(Modifier::BOLD)
-            } else {
-                Style::new().fg(theme::dim())
-            },
-        ));
-    }
-    spans.push(Span::styled(
-        fit_parts(&parts, width.saturating_sub(used + 1)),
-        Style::new().fg(theme::dim()),
-    ));
-    frame.render_widget(Paragraph::new(Line::from(spans)), header);
+    // key that gets there, so there is nothing to look up. `Tabs` owns the
+    // divider and the selected styling, which is three fewer things to align.
+    let titles: Vec<String> =
+        Tab::ALL.iter().enumerate().map(|(i, t)| format!("{} {}", i + 1, t.label())).collect();
+    let bar_w: usize = titles.iter().map(|s| s.chars().count() + 3).sum::<usize>() + 10;
+    let [brand, bar, metrics] = Layout::horizontal([
+        Constraint::Length(9),
+        Constraint::Length(bar_w as u16),
+        Constraint::Min(0),
+    ])
+    .areas(header);
+
+    let live = if app.live { "●" } else { "○" };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" kaizen ", Style::new().fg(theme::accent()).add_modifier(Modifier::BOLD)),
+            Span::styled(live, Style::new().fg(if app.live { theme::ok() } else { theme::dim() })),
+        ])),
+        brand,
+    );
+    frame.render_widget(
+        Tabs::new(titles)
+            .select(Tab::ALL.iter().position(|t| *t == app.tab).unwrap_or(0))
+            .style(Style::new().fg(theme::dim()))
+            .highlight_style(Style::new().fg(theme::accent()).add_modifier(Modifier::BOLD))
+            .divider("·"),
+        bar,
+    );
+    frame.render_widget(
+        Paragraph::new(fit_parts(&parts, metrics.width as usize))
+            .style(Style::new().fg(theme::dim())),
+        metrics,
+    );
 
     if let Some(err) = &app.error {
         frame.render_widget(
@@ -814,175 +834,50 @@ fn draw(frame: &mut Frame, app: &App, base: &str) {
             Tab::Queue => draw_queue(frame, body, app, true),
             Tab::Clusters => {
                 let list = app.state.as_ref().map(|s| s.clusters.as_slice()).unwrap_or(&[]);
-                clusters::draw(frame, body, list, app.cluster_sel, true);
+                clusters::draw(frame, body, list, app.cluster_sel, true, &|id| {
+                    app.cluster_readiness(id).0
+                });
             }
             Tab::Skills => {
                 let list = app.state.as_ref().map(|s| s.skills.as_slice()).unwrap_or(&[]);
                 skills::draw(frame, body, list, app.skill_sel, true);
             }
-            Tab::Settings => {
-                settings::draw(frame, body, app.config.as_ref(), &app.config_errors, app.settings_scroll)
-            }
+            Tab::Settings => settings::draw(
+                frame,
+                body,
+                app.config.as_ref(),
+                app.config_dirty(),
+                &app.config_errors,
+                app.setting_sel as usize,
+            ),
         }
     }
 
-    draw_footer(frame, footer, app, base, wide, focus);
+    draw_footer(frame, footer, app);
 
     if let Some(overlay) = &app.overlay {
         draw_overlay(frame, frame.area(), overlay);
     }
 }
 
-fn draw_footer(frame: &mut Frame, footer: Rect, app: &App, base: &str, wide: bool, focus: Focus) {
-    // Two paragraphs side by side, not one with a bottom-titled block: on a
-    // one-row area the block's title row *is* its only row, so the title paints
-    // over the hint and the inner area has zero height.
-    let meta = format!("{base} [{}] ", theme::name());
-    let meta_w = meta.chars().count() + 1;
-    // The keys are the point of the footer and the base URL is not, so the URL
-    // only gets its corner once the keys have a workable row — and never while a
-    // refusal or the search line is using it.
-    let show_meta = app.notice.is_none()
-        && !app.searching
-        && footer.width as usize >= meta_w + 60;
-    let hint_w = footer.width as usize - if show_meta { meta_w } else { 0 };
-
+fn draw_footer(frame: &mut Frame, footer: Rect, app: &App) {
+    // Whole hints or none: a truncated key name reads as a rendering bug. The
+    // base URL used to sit on the right; it was never something anyone needed
+    // mid-decision, and it was taking the room the keys wanted.
+    let width = footer.width as usize;
     let (text, colour) = if app.searching {
         (format!(" /{}▏", app.query), theme::accent())
     } else if let Some(n) = &app.notice {
-        (format!(" {}", truncate(&n.text, hint_w.saturating_sub(1))), if n.error {
-            theme::err()
-        } else {
-            theme::ok()
-        })
+        (
+            format!(" {}", truncate(&n.text, width.saturating_sub(1))),
+            if n.error { theme::err() } else { theme::ok() },
+        )
     } else {
-        let keys: &[(&str, &str)] = match app.tab {
-            Tab::Clusters => &[
-                ("j/k", "move"),
-                ("A", "approve all"),
-                ("enter", "show members"),
-                ("1", "queue"),
-                ("h", "help"),
-            ],
-            Tab::Skills => &[
-                ("j/k", "move"),
-                ("enter", "open file"),
-                ("1", "queue"),
-                ("h", "help"),
-            ],
-            Tab::Settings => &[
-                ("e", "edit in $EDITOR"),
-                ("j/k", "scroll"),
-                ("g", "reload"),
-                ("1", "queue"),
-                ("h", "help"),
-            ],
-            Tab::Queue => queue_keys(focus, wide),
-        };
-        let parts: Vec<String> = keys.iter().map(|(k, v)| format!("{k} {v}")).collect();
-        (format!(" {}", fit_parts(&parts, hint_w.saturating_sub(1))), theme::dim())
+        let parts: Vec<String> =
+            keys::hints(app.tab).iter().map(|(k, v)| format!("{k} {v}")).collect();
+        (format!(" {}", fit_parts(&parts, width.saturating_sub(1))), theme::dim())
     };
-
-    let [hint_area, meta_area] = Layout::horizontal([
-        Constraint::Min(0),
-        Constraint::Length(if show_meta { meta_w as u16 } else { 0 }),
-    ])
-    .areas(footer);
-    frame.render_widget(Paragraph::new(text).style(Style::new().fg(colour)), hint_area);
-    if show_meta {
-        frame.render_widget(
-            Paragraph::new(meta).style(Style::new().fg(theme::dim())).right_aligned(),
-            meta_area,
-        );
-    }
-}
-
-/// The queue's hints depend on which pane has focus and whether both are drawn.
-fn queue_keys(focus: Focus, wide: bool) -> &'static [(&'static str, &'static str)] {
-    match (focus, wide) {
-        (Focus::Detail, false) => &[
-                ("j/k", "scroll"),
-                ("esc", "back"),
-                ("a", "approve"),
-                ("r", "reject"),
-                ("enter", "apply"),
-                ("d", "diff"),
-                ("h", "help"),
-            ],
-            (Focus::Detail, true) => &[
-                ("j/k", "scroll"),
-                ("tab", "queue"),
-                ("a", "approve"),
-                ("r", "reject"),
-                ("enter", "apply"),
-                ("d", "diff"),
-                ("h", "help"),
-            ],
-            (Focus::Queue, _) => &[
-                ("j/k", "move"),
-                ("tab", "detail"),
-                ("a", "approve"),
-                ("r", "reject"),
-                ("A", "cluster"),
-                ("enter", "apply"),
-                ("d", "diff"),
-                ("f", "filter"),
-                ("/", "search"),
-                ("h", "help"),
-            ],
-        }
-}
-
-/* ------------------------------------------------------------------ editor ---- */
-
-/// Hand the config to `$EDITOR` and bring back what changed.
-///
-/// Round-tripped through a temp file rather than edited in place: the TUI never
-/// learns where the real config lives, the server stays the only writer, and a
-/// file that fails validation is rejected without the good one having been
-/// touched. Returns `None` when nothing changed, so a look-and-quit is not
-/// reported as a save.
-///
-/// The terminal has to be handed back for the duration — an editor and a raw-mode
-/// TUI cannot share a screen, and forgetting the restore leaves both scribbling
-/// over each other.
-fn edit_config(
-    terminal: &mut ratatui::DefaultTerminal,
-    current: Option<&serde_json::Value>,
-) -> Result<Option<serde_json::Value>, String> {
-    let Some(current) = current else { return Err("config has not loaded yet".into()) };
-    let pretty = serde_json::to_string_pretty(current).map_err(|e| e.to_string())?;
-
-    let path = std::env::temp_dir().join(format!("kaizen-config-{}.json", std::process::id()));
-    std::fs::write(&path, format!("{pretty}\n")).map_err(|e| format!("cannot write temp file: {e}"))?;
-
-    let editor = std::env::var("VISUAL")
-        .or_else(|_| std::env::var("EDITOR"))
-        .unwrap_or_else(|_| "vi".to_string());
-
-    ratatui::restore();
-    // `sh -c` so `EDITOR="code -w"` and friends work, which is how people
-    // actually set it.
-    let status = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!("{editor} \"$1\"", ))
-        .arg(&editor)
-        .arg(&path)
-        .status();
-    *terminal = ratatui::try_init().map_err(|e| format!("cannot take the terminal back: {e}"))?;
-    terminal.clear().ok();
-
-    let status = status.map_err(|e| format!("could not start {editor}: {e}"))?;
-    if !status.success() {
-        let _ = std::fs::remove_file(&path);
-        return Err(format!("{editor} exited without saving"));
-    }
-
-    let edited = std::fs::read_to_string(&path).map_err(|e| format!("cannot read it back: {e}"))?;
-    let _ = std::fs::remove_file(&path);
-    let next: serde_json::Value =
-        serde_json::from_str(&edited).map_err(|e| format!("that is not valid JSON: {e}"))?;
-    Ok((&next != current).then_some(next))
+    frame.render_widget(Paragraph::new(text).style(Style::new().fg(colour)), footer);
 }
 
 /* -------------------------------------------------------------------- loop ---- */
@@ -1021,7 +916,7 @@ pub fn main(base: Option<String>) -> std::io::Result<()> {
     let mut terminal = ratatui::try_init().map_err(|e| {
         std::io::Error::new(e.kind(), format!("{e} — this needs a terminal (is output piped?)"))
     })?;
-    let result = run(&mut terminal, &mut app, &base, &req_tx, &res_rx, &ev_rx);
+    let result = run(&mut terminal, &mut app, &req_tx, &res_rx, &ev_rx);
     ratatui::restore();
     result
 }
@@ -1029,7 +924,6 @@ pub fn main(base: Option<String>) -> std::io::Result<()> {
 fn run(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
-    base: &str,
     req: &mpsc::Sender<Req>,
     res: &mpsc::Receiver<Res>,
     events: &mpsc::Receiver<String>,
@@ -1068,10 +962,12 @@ fn run(
                 }
                 Res::Diff(_, Ok(None)) => app.say("no patch for this suggestion yet", true),
                 Res::Diff(_, Err(e)) => app.say(e, true),
-                Res::Config(Ok((config, raw))) => {
+                Res::Config(Ok((_, raw))) => {
                     app.config_errors = Vec::new();
-                    app.config = Some(config);
-                    app.config_raw = Some(raw);
+                    // A reload discards a draft on purpose: the server is the
+                    // authority, and silently merging would hide which won.
+                    app.config = Some(raw.clone());
+                    app.config_saved = Some(raw);
                 }
                 Res::Config(Err(e)) => app.say(e, true),
                 Res::SkillFile(path, Ok(body)) => {
@@ -1081,7 +977,7 @@ fn run(
             }
         }
 
-        terminal.draw(|frame| draw(frame, app, base))?;
+        terminal.draw(|frame| draw(frame, app))?;
 
         if !event::poll(TICK)? {
             continue;
@@ -1121,14 +1017,21 @@ fn run(
         if let Some(overlay) = app.overlay.as_mut() {
             fn scroll_of(o: &mut Overlay) -> &mut u16 {
                 match o {
-                    Overlay::Help { scroll }
-                    | Overlay::Docs { scroll }
+                    Overlay::Help { scroll, .. }
                     | Overlay::File { scroll, .. }
                     | Overlay::Diff { scroll, .. } => scroll,
                 }
             }
             match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => app.overlay = None,
+                // The two halves of help are one tab apart, so you can arrive by
+                // either key and still reach the other.
+                KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => {
+                    if let Overlay::Help { guide, scroll } = overlay {
+                        *guide = !*guide;
+                        *scroll = 0;
+                    }
+                }
                 KeyCode::Char('j') | KeyCode::Down => {
                     let s = scroll_of(overlay);
                     *s = s.saturating_add(1);
@@ -1151,13 +1054,20 @@ fn run(
         }
 
         app.notice = None;
-        match key.code {
-            KeyCode::Char('q') => return Ok(()),
-            // Esc unwinds one step at a time — detail to queue, tab to queue,
-            // and only then out. A key that quits from wherever you happen to be
-            // is a key you stop pressing.
-            KeyCode::Esc => {
-                if app.focus == Focus::Detail {
+        // Ctrl-C is not a binding — it is the terminal's, and it should work
+        // from inside a search box too, which the table below deliberately does
+        // not reach.
+        let Some(action) = keys::resolve(key.code, app.tab) else { continue };
+        match action {
+            Action::Quit => return Ok(()),
+            Action::Back => {
+                // Unwinds one step at a time: a cluster filter, then the detail
+                // pane, then back to the queue, and only then out.
+                if app.cluster_filter.is_some() && app.tab == Tab::Queue {
+                    app.cluster_filter = None;
+                    app.sel = 0;
+                    app.clamp();
+                } else if app.focus == Focus::Detail {
                     app.focus = Focus::Queue;
                 } else if app.tab != Tab::Queue {
                     app.tab = Tab::Queue;
@@ -1165,74 +1075,36 @@ fn run(
                     return Ok(());
                 }
             }
-            KeyCode::Tab | KeyCode::BackTab => {
-                app.focus = match app.focus {
-                    Focus::Queue => Focus::Detail,
-                    Focus::Detail => Focus::Queue,
-                }
-            }
-            KeyCode::Char('j') | KeyCode::Down => app.move_by(1),
-            KeyCode::Char('k') | KeyCode::Up => app.move_by(-1),
-            KeyCode::PageDown => app.move_by(10),
-            KeyCode::PageUp => app.move_by(-10),
-            KeyCode::Char('J') => app.scroll = app.scroll.saturating_add(3),
-            KeyCode::Char('K') => app.scroll = app.scroll.saturating_sub(3),
-            KeyCode::Char('f') => {
-                app.filter = app.filter.next();
-                app.focus = Focus::Queue;
-                app.sel = 0;
-                app.scroll = 0;
-            }
-            KeyCode::Char('/') => {
-                app.searching = true;
-                app.focus = Focus::Queue;
-            }
-            KeyCode::Char('t') => theme::cycle(),
-            // `h`, not `?`. Nothing was bound to it before; it is vim's "left",
-            // but going back is `esc`/`tab` here and always was.
-            KeyCode::Char('h') => app.overlay = Some(Overlay::Help { scroll: 0 }),
-            KeyCode::Char('1') => app.tab = Tab::Queue,
-            KeyCode::Char('2') => app.tab = Tab::Clusters,
-            KeyCode::Char('3') => app.tab = Tab::Skills,
-            KeyCode::Char('4') => {
-                app.tab = Tab::Settings;
-                // Fetched on arrival rather than at boot: it is one request and
-                // it should reflect a file that may have changed since.
-                if app.config.is_none() {
+            Action::Go(tab) => {
+                app.tab = tab;
+                if tab == Tab::Settings && app.config.is_none() {
                     app.busy = true;
                     let _ = req.send(Req::Config);
                 }
             }
-            // Settings is the only tab that can be changed from here, and it is
-            // changed by handing the file to the editor you already have.
-            KeyCode::Char('e') if app.tab == Tab::Settings => {
-                match edit_config(terminal, app.config_raw.as_ref()) {
-                    Ok(Some(next)) => {
-                        app.busy = true;
-                        let _ = req.send(Req::SaveConfig(next));
-                        let _ = req.send(Req::Config);
-                    }
-                    Ok(None) => app.say("config unchanged", false),
-                    Err(e) => app.say(e, true),
-                }
+            Action::Move(d) => app.move_by(d),
+            Action::ScrollDetail(d) => app.scroll = app.scroll.saturating_add_signed(d),
+            Action::ToggleFocus => {
+                app.focus = if app.focus == Focus::Queue { Focus::Detail } else { Focus::Queue }
             }
-            // `d` is the patch; `D` is the model the patch is moving through.
-            KeyCode::Char('D') => app.overlay = Some(Overlay::Docs { scroll: 0 }),
-            KeyCode::Char('g') => {
+            Action::Help => app.overlay = Some(Overlay::Help { guide: false, scroll: 0 }),
+            Action::Guide => app.overlay = Some(Overlay::Help { guide: true, scroll: 0 }),
+            Action::Theme => theme::cycle(),
+            Action::Refresh => {
                 app.busy = true;
                 let _ = req.send(Req::Refresh);
-                // Settings is the one tab whose contents are not in the state,
-                // so a refresh there has to ask for the config as well.
                 if app.tab == Tab::Settings {
                     let _ = req.send(Req::Config);
                 }
             }
-            KeyCode::Char('a') | KeyCode::Char('r') => {
-                let status = if key.code == KeyCode::Char('a') { "approved" } else { "rejected" };
-                // Checked here as well as on the server. The round trip would
-                // refuse it anyway, but a key that silently does nothing until a
-                // 409 comes back reads as a broken TUI rather than as a
-                // suggestion that still needs a plan behind it.
+            Action::CycleFilter => {
+                app.filter = app.filter.next();
+                app.sel = 0;
+                app.scroll = 0;
+            }
+            Action::Search => app.searching = true,
+            Action::Approve | Action::Reject => {
+                let status = if action == Action::Approve { "approved" } else { "rejected" };
                 match app.selected_status() {
                     Some(from) if !can_transition(&from, status) => {
                         let onward = next_statuses(&from);
@@ -1254,42 +1126,53 @@ fn run(
                     None => {}
                 }
             }
-            // On the clusters tab the row *is* the cluster; on the queue it is
-            // whatever cluster the selected suggestion belongs to.
-            KeyCode::Char('A') => {
+            Action::ApproveCluster => {
                 let id = match app.tab {
-                    Tab::Clusters => {
-                        let picked = app.clusters().get(app.cluster_sel).map(|c| c.id.clone());
-                        picked
-                    }
+                    Tab::Clusters => app.clusters().get(app.cluster_sel).map(|c| c.id.clone()),
                     _ => app.selected_cluster(),
                 };
                 match id {
                     Some(id) => {
-                        app.busy = true;
-                        let _ = req.send(Req::SetCluster { id, status: "approved".into() });
+                        // The server checks every member before writing any, so
+                        // one finished member refuses the whole call. Saying so
+                        // here beats a 409 that names a filename.
+                        let (ready, total) = app.cluster_readiness(&id);
+                        if ready == 0 {
+                            app.say(format!("nothing in {id} can be approved — all {total} are decided"), true);
+                        } else if ready < total {
+                            app.say(format!("{id}: only {ready} of {total} can move"), true);
+                        } else {
+                            app.busy = true;
+                            let _ = req.send(Req::SetCluster { id, status: "approved".into() });
+                        }
                     }
                     None => app.say("this suggestion is not in a cluster", true),
                 }
             }
-            KeyCode::Char('d') => {
+            Action::Apply => {
+                if let Some(id) = app.selected_id() {
+                    app.busy = true;
+                    let _ = req.send(Req::Apply { id });
+                }
+            }
+            Action::Diff => {
                 if let Some(id) = app.selected_id() {
                     app.busy = true;
                     let _ = req.send(Req::Diff { id });
                 }
             }
-            KeyCode::Enter => match app.tab {
-                // Reuses the search rather than adding a grouped list: a cluster
-                // id is built from its members' shared words, so it matches them.
+            Action::Open => match app.tab {
                 Tab::Clusters => {
-                    // Cloned out before touching `app`: the list borrows it.
                     let id = app.clusters().get(app.cluster_sel).map(|c| c.id.clone());
                     if let Some(id) = id {
-                        app.query = id.clone();
+                        app.cluster_filter = Some(id.clone());
+                        app.filter = Filter::All;
+                        app.query.clear();
                         app.tab = Tab::Queue;
                         app.sel = 0;
                         app.clamp();
-                        app.say(format!("queue filtered to {id}"), false);
+                        let n = app.visible().len();
+                        app.say(format!("{n} in {id} — esc clears"), false);
                     }
                 }
                 Tab::Skills => {
@@ -1299,15 +1182,16 @@ fn run(
                         let _ = req.send(Req::SkillFile { path });
                     }
                 }
-                Tab::Settings => {}
-                Tab::Queue => {
-                    if let Some(id) = app.selected_id() {
-                        app.busy = true;
-                        let _ = req.send(Req::Apply { id });
-                    }
-                }
+                _ => {}
             },
-            _ => {}
+            Action::Edit => app.edit_setting(),
+            Action::Save => match app.pending_config() {
+                Some(next) => {
+                    app.busy = true;
+                    let _ = req.send(Req::SaveConfig(next));
+                }
+                None => app.say("nothing changed", false),
+            },
         }
     }
 }
@@ -1332,7 +1216,7 @@ mod tests {
                   "rationale": "Because approval without one is a dead end." },
                 { "id": "user/other/2026-08-01-a-second-thing.md", "skill": "other",
                   "slug": "a-second-thing",
-                  "severity": "low", "status": "new", "score": 5, "surfaced": true }
+                  "severity": "low", "status": "recorded", "score": 5, "surfaced": true }
               ],
               "skills": [
                 { "name": "ts-pr-review", "kind": "user", "lines": 700, "scripts": 0,
@@ -1343,8 +1227,10 @@ mod tests {
                   "path": "/s/ts-github-triage/SKILL.md" }
               ],
               "clusters": [
-                { "id": "origin-local-remote", "size": 9, "incidents": 27,
-                  "spanDays": 70, "promoted": true, "scopes": ["_lib/pr/local-workspace.md"] },
+                { "id": "origin-local-remote", "size": 2, "incidents": 27,
+                  "spanDays": 70, "promoted": true, "scopes": ["_lib/pr/local-workspace.md"],
+                  "members": ["user/kaizen/2026-08-08-approval-is-a-dead-end.md",
+                              "user/other/2026-08-01-a-second-thing.md"] },
                 { "id": "quiet-pair", "size": 2, "incidents": 2,
                   "spanDays": 3, "promoted": false, "scopes": ["_lib/pr/github.md"] }
               ],
@@ -1364,7 +1250,7 @@ mod tests {
     fn render(app: &App, w: u16, h: u16) -> String {
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
-        terminal.draw(|frame| draw(frame, app, "http://127.0.0.1:7777")).unwrap();
+        terminal.draw(|frame| draw(frame, app)).unwrap();
         let buf = terminal.backend().buffer().clone();
         (0..h)
             .map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect::<String>())
@@ -1405,14 +1291,16 @@ mod tests {
         assert!(text.contains("origin-local-remote"), "detail names the cluster");
         // Asserted piecewise: the detail pane wraps, so the cluster summary can be
         // split across rows and a single `contains` on the whole frame would miss it.
-        for part in ["9 members", "27 incidents", "70 days", "promoted"] {
+        for part in ["2 members", "27 incidents", "70 days", "promoted"] {
             assert!(text.contains(part), "cluster summary missing {part:?}: {text}");
         }
         assert!(text.contains("2 open"), "header carries the metrics");
         assert!(!text.contains("1 promoted clusters"), "singular, not '1 clusters': {text}");
         // The footer is easy to lose to a layout mistake and hard to notice.
         assert!(text.contains("a approve"), "key hints render: {text}");
-        assert!(text.contains("http://127.0.0.1:7777"), "and the base URL still fits");
+        // No URL in the footer any more: it was never something anyone needed
+        // mid-decision and it was taking the room the keys wanted.
+        assert!(!text.contains("http://"), "the footer carries no URL: {text}");
     }
 
     /// The columns that read the same on every row are one character each, and the
@@ -1421,10 +1309,7 @@ mod tests {
     fn rows_spend_their_width_on_the_slug() {
         let text = render(&app_with_state(), 120, 30);
         assert!(text.contains("▸  42 H apr"), "marker, score, severity, status: {text}");
-        // The second row's file says `new`, which the spec lists as an alias of
-        // `recorded` — so it draws as `rec`. A row shows the status the model
-        // has, not the word that happened to be written before the rename.
-        assert!(text.contains("   5 L rec"), "a legacy status renders canonically: {text}");
+        assert!(text.contains("   5 L rec"), "the second row draws its status: {text}");
         assert!(!text.contains("medium   approved"), "the spelled-out columns are gone: {text}");
     }
 
@@ -1433,9 +1318,7 @@ mod tests {
     #[test]
     fn approving_is_only_offered_where_the_model_allows_it() {
         assert!(!can_transition("recorded", "approved"), "a bare capture is not approvable");
-        assert!(!can_transition("new", "approved"), "nor is it under its old name");
         assert!(can_transition("planned", "approved"), "a plan can be approved");
-        assert!(can_transition("proposed", "approved"), "including under its old name");
         assert!(can_transition("recorded", "rejected"), "but anything can be rejected early");
         assert!(!can_transition("verified", "planned"), "and nothing follows a terminal");
 
@@ -1447,11 +1330,12 @@ mod tests {
     /// Every abbreviation and colour in the list comes from `lifecycle.json`, so
     /// a status the spec does not know must degrade rather than render blank.
     #[test]
-    fn statuses_resolve_through_the_spec_including_aliases() {
+    fn statuses_resolve_through_the_spec() {
         assert_eq!(status_abbrev("recorded"), "rec");
-        assert_eq!(status_abbrev("new"), "rec", "the old name maps to the new status");
-        assert_eq!(status_abbrev("proposed"), "pln");
+        assert_eq!(status_abbrev("planned"), "pln");
         assert_eq!(status_abbrev("verified"), "ver");
+        // One spelling per status: anything else is a typo, not an older name.
+        assert_eq!(status_abbrev("new"), "—");
         assert_eq!(status_abbrev("nonsense"), "—");
         assert_eq!(status_abbrev(""), "—");
     }
@@ -1490,16 +1374,15 @@ mod tests {
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(card.contains("h  help"), "the card offers h: {card}");
-        assert!(!card.contains("?  help"), "and not ?: {card}");
+        assert!(card.contains("help"), "the card offers help: {card}");
+        assert!(!card.contains("?"), "and never mentions ?: {card}");
 
-        // Asserted on the tables, not the rendered row: the footer drops whole
-        // hints from the end when the width is tight, so a narrow queue can
-        // legitimately not show the last one.
-        for (focus, wide) in [(Focus::Queue, true), (Focus::Queue, false), (Focus::Detail, true)] {
-            let keys = queue_keys(focus, wide);
-            assert!(keys.contains(&("h", "help")), "{focus:?}/{wide} offers h: {keys:?}");
-            assert!(!keys.iter().any(|(k, _)| *k == "?"), "{focus:?}/{wide} drops ?: {keys:?}");
+        // Asserted on the table, not a rendered row: the footer drops whole
+        // hints from the end when the width is tight.
+        for tab in Tab::ALL {
+            let hints = keys::hints(tab);
+            assert!(hints.contains(&("h", "help")), "{tab:?} offers h: {hints:?}");
+            assert!(!hints.iter().any(|(k, _)| *k == "?"), "{tab:?} drops ?: {hints:?}");
         }
     }
 
@@ -1517,13 +1400,44 @@ mod tests {
         let mut app = app_with_state();
         app.tab = Tab::Clusters;
         let text = render(&app, 120, 30);
-        assert!(text.contains("Clusters (2 · 1 promoted)"), "{text}");
+        assert!(text.contains("Clusters (2 ·"), "{text}");
         assert!(text.contains("▲"), "the promoted one is marked: {text}");
         assert!(text.contains("origin-local-remote"), "{text}");
         assert!(text.contains("_lib/pr/local-workspace.md"), "the scope is the fix's address: {text}");
         // A one-member cluster is not a cluster: nothing to decide as one.
         assert_eq!(app.clusters().len(), 2);
         assert_eq!(app.clusters()[0].id, "origin-local-remote");
+    }
+
+    /// The bug this replaced: `enter` set the search box to the cluster id, and
+    /// a cluster id is built out of its members' *shared* vocabulary — so it
+    /// frequently appears in none of their slugs and the queue came back empty.
+    #[test]
+    fn opening_a_cluster_filters_by_membership_not_by_text() {
+        let mut app = app_with_state();
+        // The id matches no member's text, which is exactly the failing case.
+        assert!(app.visible().iter().all(|s| !s.slug.contains("origin-local-remote")));
+
+        app.cluster_filter = Some("origin-local-remote".into());
+        assert_eq!(app.visible().len(), 2, "both members are found by id");
+
+        app.cluster_filter = Some("nonexistent".into());
+        assert!(app.visible().is_empty(), "an unknown cluster hides everything, not nothing");
+
+        app.cluster_filter = None;
+        assert_eq!(app.visible().len(), 2);
+    }
+
+    /// The other half of the report: `A` on a cluster whose members are all
+    /// decided produced a 409 listing filenames. It refuses locally now.
+    #[test]
+    fn cluster_readiness_counts_what_could_actually_move() {
+        let app = app_with_state();
+        // approved -> applied is legal, recorded -> approved is not.
+        let (ready, total) = app.cluster_readiness("origin-local-remote");
+        assert_eq!(total, 2);
+        assert_eq!(ready, 0, "neither member can become approved from where it is");
+        assert_eq!(app.cluster_readiness("nope"), (0, 0));
     }
 
     #[test]
@@ -1560,8 +1474,8 @@ mod tests {
         // The whole point of the view: a guard someone turned off says OFF here
         // while every prose description of the tool still says it is on.
         assert!(text.contains("OFF"), "a disabled guard is loud: {text}");
-        // And the way to change it is offered where you are looking.
-        assert!(text.contains("$EDITOR"), "the footer says how to edit: {text}");
+        // And it is changed here rather than somewhere else.
+        assert!(text.contains("space change"), "the footer says how: {text}");
     }
 
     #[test]
@@ -1583,7 +1497,7 @@ mod tests {
     #[test]
     fn the_docs_overlay_opens_on_the_phases() {
         let mut app = app_with_state();
-        app.overlay = Some(Overlay::Docs { scroll: 0 });
+        app.overlay = Some(Overlay::Help { guide: true, scroll: 0 });
         let text = render(&app, 110, 30);
         assert!(text.contains("lifecycle"), "{text}");
         assert!(text.contains("Capture"), "the phases are listed: {text}");
@@ -1703,11 +1617,12 @@ mod tests {
     #[test]
     fn the_help_overlay_scrolls() {
         let mut app = app_with_state();
-        app.overlay = Some(Overlay::Help { scroll: 0 });
+        app.overlay = Some(Overlay::Help { guide: false, scroll: 0 });
         assert!(render(&app, 100, 16).contains("navigate"));
-        app.overlay = Some(Overlay::Help { scroll: 20 });
+        // Asserted on a section heading, which only the card has — the footer
+        // behind the overlay also says "j/k".
+        app.overlay = Some(Overlay::Help { guide: false, scroll: 8 });
         let text = render(&app, 100, 16);
-        assert!(text.contains("columns"), "the legend is reachable: {text}");
         assert!(!text.contains("navigate"), "the top scrolled away: {text}");
     }
 
@@ -1717,7 +1632,7 @@ mod tests {
         for (w, h) in [(200, 60), (120, 30), (89, 24), (80, 24), (40, 10), (20, 6), (10, 4), (4, 2)] {
             render(&app, w, h);
         }
-        for overlay in [Overlay::Help { scroll: 0 }, Overlay::Diff {
+        for overlay in [Overlay::Help { guide: false, scroll: 0 }, Overlay::Diff {
             id: "user/k/2026-08-08-x.md".into(),
             body: "@@ -1 +1 @@\n-a\n+b".into(),
             scroll: 0,
@@ -1757,7 +1672,10 @@ mod tests {
         assert!(detail.contains("approval-is-a-dead-end"), "the slug titles the pane: {detail}");
         assert!(detail.contains("Context"), "{detail}");
         assert!(!detail.contains("Queue ("), "the queue is not drawn: {detail}");
-        assert!(detail.contains("esc back"), "and there is a way out: {detail}");
+        assert!(
+            keys::hints(Tab::Queue).contains(&("esc", "back")),
+            "and there is a way out",
+        );
     }
 
     /// The URL is the first thing to go when the keys and it cannot both fit.
@@ -1779,7 +1697,7 @@ mod tests {
 
         app.filter = Filter::Undecided;
         assert_eq!(app.visible().len(), 1);
-        assert_eq!(app.visible()[0].status, "new");
+        assert_eq!(app.visible()[0].status, "recorded");
         let text = render(&app, 120, 30);
         assert!(text.contains("Queue (1 of 2 · undecided)"), "the title says why: {text}");
 

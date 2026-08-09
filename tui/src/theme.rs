@@ -16,10 +16,6 @@ pub fn cycle() {
     let _ = CURRENT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |i| Some((i + 1) % NAMES.len()));
 }
 
-pub fn name() -> &'static str {
-    NAMES[i()]
-}
-
 fn i() -> usize {
     CURRENT.load(Ordering::Relaxed)
 }

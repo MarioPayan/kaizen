@@ -9,17 +9,10 @@
 import { basename } from 'node:path';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { TYPES, OBJECTIVES, EFFORTS, SEVERITIES } from './taxonomy.mjs';
-import { canonicalStatus, statusIds, acceptedStatuses, section } from './lifecycle.mjs';
+import { canonicalStatus, statusIds, section } from './lifecycle.mjs';
 
-/**
- * What a status may be *written as*, which includes the names used before the
- * lifecycle spec renamed them. Validation accepts these; everything downstream
- * sees the canonical id, because `parseSuggestion` resolves it on the way in.
- */
-export const STATUSES = acceptedStatuses();
-
-/** Just the canonical ids — what a writer should be choosing between. */
-export const CANONICAL_STATUSES = statusIds();
+/** Every status a file may name. There is one spelling per status. */
+export const STATUSES = statusIds();
 
 const IMPACT = { low: 1, medium: 3, high: 8 };
 const EFFORT_COST = { S: 1, M: 3, L: 8 };
@@ -85,9 +78,8 @@ export function parseSuggestion({ id, file, skill, target, text }) {
     date: data.date || fromName.date,
     slug: fromName.slug,
     severity,
-    // Resolved here, once, so nothing above the parser has to know that `new`
-    // and `recorded` are the same thing. An unrecognised status reads as the
-    // entry state rather than propagating a typo through the queue.
+    // An unrecognised status reads as the entry state rather than propagating
+    // a typo through the queue.
     status: canonicalStatus(data.status) ?? 'recorded',
     type: TYPES.includes(data.type) ? data.type : '',
     objective: OBJECTIVES.includes(data.objective) ? data.objective : '',

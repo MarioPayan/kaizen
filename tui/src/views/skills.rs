@@ -5,15 +5,14 @@
 //! high complaint rate is what it is trying to remove. Both the ratio and the
 //! label come from the scanner, so this view derives nothing.
 
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Cell, Paragraph, Row, Table, TableState, Wrap};
 use ratatui::Frame;
 
 use crate::api::Skill;
 use crate::theme;
-use crate::ui::{titled, truncate};
+use crate::ui::titled;
 
 /// Worst ratio first — the list is a work order, not a directory.
 pub fn ranked(skills: &[Skill]) -> Vec<&Skill> {
@@ -54,37 +53,45 @@ pub fn draw(frame: &mut Frame, area: Rect, skills: &[Skill], sel: usize, focused
         return;
     }
 
-    // health(9) + per100(7) + filed(6) + scripts(4) + lines(6) are fixed; the
-    // name takes the rest. The name is what you read down, same as the queue.
-    const FIXED: u16 = 32;
-    const MARKER: u16 = 2;
-    let name_w = inner.width.saturating_sub(FIXED + MARKER) as usize;
-
-    let items: Vec<ListItem> = rows
+    let body: Vec<Row> = rows
         .iter()
         .map(|s| {
-            ListItem::new(Line::from(vec![
-                Span::styled(
-                    format!("{:<9}", s.health),
+            Row::new(vec![
+                Cell::from(s.health.clone()).style(
                     Style::new().fg(health_colour(&s.health)).add_modifier(
                         if s.health == "noisy" { Modifier::BOLD } else { Modifier::empty() },
                     ),
                 ),
-                Span::styled(format!("{:>6.2} ", s.per100), Style::new().fg(theme::accent())),
-                Span::styled(format!("{:>4}  ", s.suggestions), Style::new().fg(theme::dim())),
-                Span::styled(format!("{:>2}  ", s.scripts), Style::new().fg(theme::ok())),
-                Span::styled(format!("{:>5} ", s.lines), Style::new().fg(theme::dim())),
-                Span::raw(truncate(&s.name, name_w)),
-            ]))
+                Cell::from(format!("{:.2}", s.per100)).style(Style::new().fg(theme::accent())),
+                Cell::from(s.suggestions.to_string()).style(Style::new().fg(theme::dim())),
+                Cell::from(s.scripts.to_string()).style(Style::new().fg(theme::ok())),
+                Cell::from(s.lines.to_string()).style(Style::new().fg(theme::dim())),
+                Cell::from(s.name.clone()),
+            ])
         })
         .collect();
 
-    let mut state = ListState::default().with_selected(Some(sel));
+    let widths = [
+        Constraint::Length(8),
+        Constraint::Length(6),
+        Constraint::Length(5),
+        Constraint::Length(7),
+        Constraint::Length(5),
+        Constraint::Fill(1),
+    ];
+
+    let mut state = TableState::default().with_selected(Some(sel));
     frame.render_stateful_widget(
-        List::new(items)
+        Table::new(body, widths)
+            // `2.36 17 0 721` is unreadable without these; per100 in particular
+            // is the number the whole tool argues about and looked like noise.
+            .header(
+                Row::new(vec!["health", "per100", "filed", "scripts", "lines", "skill"])
+                    .style(Style::new().fg(theme::dim()).add_modifier(Modifier::BOLD)),
+            )
+            .column_spacing(2)
             .highlight_symbol("▸ ")
-            .highlight_style(Style::new().bg(theme::selection_bg()))
-            .scroll_padding(2),
+            .row_highlight_style(Style::new().bg(theme::selection_bg())),
         inner,
         &mut state,
     );

@@ -54,7 +54,6 @@ export function validateLifecycle(l) {
   if (!phases.length) errors.push('no phases defined');
 
   const seenAbbrev = new Map();
-  const seenAlias = new Map();
   for (const s of statuses) {
     if (!phaseIds.has(s.phase)) errors.push(`status "${s.id}": phase "${s.phase}" does not exist`);
     if (typeof s.abbrev !== 'string' || s.abbrev.length !== 3) {
@@ -75,14 +74,6 @@ export function validateLifecycle(l) {
     const hasNext = (s.next ?? []).length > 0;
     if (s.terminal && hasNext) errors.push(`status "${s.id}": terminal but has next`);
     if (!s.terminal && !hasNext) errors.push(`status "${s.id}": not terminal but has nowhere to go`);
-
-    for (const a of s.aliases ?? []) {
-      if (ids.has(a)) errors.push(`status "${s.id}": alias "${a}" collides with a status id`);
-      if (seenAlias.has(a)) {
-        errors.push(`status "${s.id}": alias "${a}" already used by "${seenAlias.get(a)}"`);
-      }
-      seenAlias.set(a, s.id);
-    }
   }
 
   const fieldIds = new Set((l.fields ?? []).map((f) => f.id));
@@ -152,20 +143,12 @@ export function spec() {
 /** Canonical ids, in the order the spec lists them. */
 export const statusIds = (l = spec()) => l.statuses.map((s) => s.id);
 
-/** Ids plus every legacy name, which is what a file on disk may actually say. */
-export const acceptedStatuses = (l = spec()) => l.statuses.flatMap((s) => [s.id, ...(s.aliases ?? [])]);
-
 /**
- * The status a file means, whatever it happens to say.
- *
- * Resolving on read is what let the rename happen without touching 73 files:
- * a `new` on disk *is* `recorded`, everywhere above the parser. Returns null for
- * anything the spec does not know, so callers can fall back deliberately rather
- * than propagate a typo.
+ * The status, if the spec knows it — otherwise null, so a caller can fall back
+ * deliberately rather than propagate a typo through the queue.
  */
 export function canonicalStatus(value, l = spec()) {
-  const found = l.statuses.find((s) => s.id === value || (s.aliases ?? []).includes(value));
-  return found ? found.id : null;
+  return l.statuses.some((s) => s.id === value) ? value : null;
 }
 
 /** No exit: the item has left the pipeline for good. */
@@ -354,17 +337,11 @@ export function renderMarkdown(l) {
   }
 
   push('## Statuses', '');
-  push('| Status | Short | Phase | Also written as | What it means |', '|---|---|---|---|---|');
+  push('| Status | Short | Phase | What it means |', '|---|---|---|---|');
   for (const s of l.statuses) {
-    const alias = s.aliases?.length ? s.aliases.map((a) => `\`${a}\``).join(', ') : '—';
-    push(`| \`${s.id}\` | \`${s.abbrev}\` | ${s.phase} | ${alias} | ${s.help} |`);
+    push(`| \`${s.id}\` | \`${s.abbrev}\` | ${s.phase} | ${s.help} |`);
   }
   push('');
-  push(
-    'The "also written as" column is the previous vocabulary. Files recorded before',
-    'this spec still carry those names and are read as the status they map to.',
-    '',
-  );
 
   push('## Transitions', '');
   push('```');

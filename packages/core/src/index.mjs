@@ -30,7 +30,6 @@ export {
   LIFECYCLE_PATH,
   spec,
   statusIds,
-  acceptedStatuses,
   canonicalStatus,
   isTerminal,
   canTransition,

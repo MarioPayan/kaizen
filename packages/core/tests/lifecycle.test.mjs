@@ -46,7 +46,6 @@ const ok = () => ({
       phase: 'one',
       tone: 'accent',
       terminal: false,
-      aliases: ['old'],
       help: 'h',
       next: ['done'],
     },
@@ -57,7 +56,6 @@ const ok = () => ({
       phase: 'two',
       tone: 'positive',
       terminal: true,
-      aliases: [],
       help: 'h',
       next: [],
     },
@@ -144,12 +142,6 @@ describe('validateLifecycle', () => {
     );
     expect(errorsFor((l) => (l.statuses[0].next = []))).toContainEqual(
       expect.stringContaining('nowhere to go'),
-    );
-  });
-
-  it('rejects an alias that collides with a status id', () => {
-    expect(errorsFor((l) => l.statuses[0].aliases.push('done'))).toContainEqual(
-      expect.stringContaining('collides with a status id'),
     );
   });
 
@@ -276,8 +268,10 @@ describe('missingRequirements', () => {
     expect(missingRequirements('approved', { data: {}, body: '' })).toEqual([]);
   });
 
-  it('accepts a legacy status name', () => {
-    expect(missingRequirements('proposed', { data: {}, body, hasPatch: true })).toEqual([]);
+  it('asks nothing of a status the spec does not know', () => {
+    // There is one spelling per status now, so an unknown name is a typo rather
+    // than an older word for the same thing.
+    expect(missingRequirements('proposed', { data: {}, body: '', hasPatch: false })).toEqual([]);
   });
 });
 

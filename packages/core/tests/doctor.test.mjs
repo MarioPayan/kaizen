@@ -18,7 +18,7 @@ const suggestion = (over = {}) => ({
   skill: 'demo',
   slug: 'a-thing',
   date: '2026-08-01',
-  status: 'new',
+  status: 'recorded',
   scope: 'demo/SKILL.md',
   severity: 'low',
   ...over,
@@ -156,9 +156,9 @@ describe('kaizen doctor', () => {
   });
 
   it('flags decisions that have sat past the drain window', () => {
-    const old = suggestion({ status: 'proposed', date: '2026-01-01' });
+    const old = suggestion({ status: 'planned', date: '2026-01-01' });
     expect(only(stateWith([old]), 'stale-decision')).toHaveLength(1);
-    const fresh = suggestion({ status: 'proposed', date: '2026-08-07' });
+    const fresh = suggestion({ status: 'planned', date: '2026-08-07' });
     expect(only(stateWith([fresh]), 'stale-decision')).toEqual([]);
   });
 

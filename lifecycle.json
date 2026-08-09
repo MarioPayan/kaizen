@@ -1,5 +1,5 @@
 {
-  "$comment": "The suggestion lifecycle, once. Every consumer reads THIS file: packages/data generates a typed module from it, docs/LIFECYCLE.md is generated from it, and tui/src/tui.rs embeds it at compile time. Do not restate any of this in prose anywhere — a sixth copy is how the previous five got out of sync. Regenerate with `kaizen docs`; `kaizen docs --check` fails when a generated artifact has drifted.",
+  "$comment": "The suggestion lifecycle, once. Every consumer reads THIS file: packages/data generates a typed module from it, docs/LIFECYCLE.md is generated from it, and tui/src/tui.rs embeds it at compile time. Nothing is published yet, so there is no legacy vocabulary to carry — a status is written exactly as its id. Do not restate any of this in prose anywhere — a sixth copy is how the previous five got out of sync. Regenerate with `kaizen docs`; `kaizen docs --check` fails when a generated artifact has drifted.",
   "version": 1,
   "phases": [
     {
@@ -65,7 +65,6 @@
       "phase": "capture",
       "tone": "accent",
       "terminal": false,
-      "aliases": ["new"],
       "help": "Filed with its context and waiting for triage. Nobody has judged it yet.",
       "next": ["triaged", "rejected", "superseded"]
     },
@@ -76,7 +75,6 @@
       "phase": "triage",
       "tone": "accent",
       "terminal": false,
-      "aliases": [],
       "help": "Confirmed to still be a real problem at HEAD, and labelled. Ready for someone to plan a fix.",
       "next": ["planned", "rejected", "superseded"]
     },
@@ -87,7 +85,6 @@
       "phase": "plan",
       "tone": "warning",
       "terminal": false,
-      "aliases": ["proposed"],
       "help": "A patch and a validation plan both exist. This is the only status that can be approved.",
       "next": ["approved", "rejected"]
     },
@@ -98,7 +95,6 @@
       "phase": "decide",
       "tone": "positive",
       "terminal": false,
-      "aliases": [],
       "help": "You said yes to a specific patch. It lands on the next drain.",
       "next": ["applied"]
     },
@@ -109,7 +105,6 @@
       "phase": "apply",
       "tone": "muted",
       "terminal": false,
-      "aliases": [],
       "help": "Landed as a commit. The server sets this after git succeeded — it cannot be set by hand.",
       "next": ["verified", "failed"]
     },
@@ -120,7 +115,6 @@
       "phase": "verify",
       "tone": "positive",
       "terminal": true,
-      "aliases": [],
       "help": "The validation plan passed against the landed change. Done, and provably so.",
       "next": []
     },
@@ -131,7 +125,6 @@
       "phase": "verify",
       "tone": "negative",
       "terminal": false,
-      "aliases": [],
       "help": "It landed and the validation plan did not pass. Goes back for a new plan rather than starting over — the problem is still real and still triaged.",
       "next": ["planned"]
     },
@@ -142,7 +135,6 @@
       "phase": "decide",
       "tone": "muted",
       "terminal": true,
-      "aliases": [],
       "help": "You said no. The file stays on disk as a record and stops being offered.",
       "next": []
     },
@@ -153,7 +145,6 @@
       "phase": "triage",
       "tone": "muted",
       "terminal": true,
-      "aliases": [],
       "help": "The problem is gone — already fixed by other work, or the file it named no longer exists. Records where the fix actually lives so the finding is not re-filed.",
       "next": []
     }

@@ -9,11 +9,10 @@
  *   triage    apply a batch of triage decisions to frontmatter (--self-check)
  *   doctor    run kaizen's own rubric against kaizen (--file queues findings)
  *   docs      regenerate what lifecycle.json implies (--check fails on drift)
- *   migrate   rewrite legacy status names in suggestion files (--apply)
  *   serve     start the local app + API
  *   tui       the queue in the terminal (starts `serve` if the port is dead)
  */
-import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, cpSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir, tmpdir } from 'node:os';
@@ -622,64 +621,6 @@ async function cmdDocs() {
   console.log(`generated files are current (${GENERATED.map(([r]) => r).join(', ')})`);
 }
 
-/* ------------------------------------------------------------- migrate ---- */
-
-/**
- * Rewrite legacy status names to the ids the spec uses now.
- *
- * Strictly cosmetic: `parseSuggestion` canonicalises on read, so a file saying
- * `new` already behaves as `recorded` everywhere. This exists so the files match
- * what every screen shows, and so the aliases can eventually be retired.
- *
- * Dry by default, and `--apply` copies the feedback directory first. That is not
- * belt-and-braces: unlike the skills tree, **the feedback directory is not a git
- * repository**, so there is no `git checkout` to undo a bad pass over 73 files.
- */
-async function cmdMigrate() {
-  const config = requireConfig();
-  const write = has('--apply');
-  const state = buildState(config);
-
-  const changes = [];
-  for (const s of state.suggestions) {
-    const { data } = parseFrontmatter(readFileSync(s.file, 'utf8'));
-    const raw = data.status ?? '';
-    const canonical = canonicalStatus(raw);
-    // A blank status is a file that predates the field entirely; it reads as the
-    // entry state and writing that in is part of the point.
-    if (canonical && canonical === raw) continue;
-    changes.push({ file: s.file, id: s.id, from: raw || '(none)', to: canonical ?? 'recorded' });
-  }
-
-  if (changes.length === 0) {
-    console.log(`nothing to migrate — all ${state.suggestions.length} files use canonical statuses`);
-    return;
-  }
-
-  const tally = {};
-  for (const c of changes) tally[`${c.from} → ${c.to}`] = (tally[`${c.from} → ${c.to}`] ?? 0) + 1;
-  for (const [move, n] of Object.entries(tally).sort((a, b) => b[1] - a[1])) {
-    console.log(`  ${String(n).padStart(4)}  ${move}`);
-  }
-  console.log(`${changes.length} of ${state.suggestions.length} files`);
-
-  if (!write) {
-    console.log('\nDry run. Re-run with --apply to write (a backup is taken first).');
-    return;
-  }
-
-  const stamp = new Date().toISOString().replace(/[-:]/g, '').slice(0, 15);
-  for (const t of resolveTargets(config)) {
-    if (!existsSync(t.feedback)) continue;
-    const backup = `${t.feedback}.backup-${stamp}`;
-    cpSync(t.feedback, backup, { recursive: true });
-    console.log(`backed up ${t.feedback} -> ${backup}`);
-  }
-
-  for (const c of changes) writeFrontmatter(c.file, { status: c.to });
-  console.log(`migrated ${changes.length} files`);
-}
-
 /* --------------------------------------------------------------- serve ---- */
 
 async function cmdServe() {
@@ -726,18 +667,16 @@ const commands = {
   triage: cmdTriage,
   doctor: cmdDoctor,
   docs: cmdDocs,
-  migrate: cmdMigrate,
   serve: cmdServe,
   tui: cmdTui,
   help: () =>
     console.log(
-      'usage: kaizen <init|scan|status|validate|triage|doctor|docs|migrate|serve|tui> [--fix] [--pretty]\n' +
+      'usage: kaizen <init|scan|status|validate|triage|doctor|docs|serve|tui> [--fix] [--pretty]\n' +
         '       kaizen doctor [--file]\n' +
         '       kaizen triage --apply <file.json|-> [--dry-run]\n' +
         '       kaizen triage --self-check\n' +
-        '       kaizen validate [--fix] [--strict]\n' +
         '       kaizen docs [--check] [--self-check]\n' +
-        '       kaizen migrate [--apply]',
+        '       kaizen validate [--fix] [--strict]',
     ),
 };
 

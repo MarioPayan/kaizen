@@ -52,20 +52,17 @@ Cannot be left until these are present: `verified_at`.
 
 ## Statuses
 
-| Status       | Short | Phase   | Also written as | What it means                                                                                                                                                  |
-| ------------ | ----- | ------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `recorded`   | `rec` | capture | `new`           | Filed with its context and waiting for triage. Nobody has judged it yet.                                                                                       |
-| `triaged`    | `tri` | triage  | —               | Confirmed to still be a real problem at HEAD, and labelled. Ready for someone to plan a fix.                                                                   |
-| `planned`    | `pln` | plan    | `proposed`      | A patch and a validation plan both exist. This is the only status that can be approved.                                                                        |
-| `approved`   | `apr` | decide  | —               | You said yes to a specific patch. It lands on the next drain.                                                                                                  |
-| `applied`    | `apl` | apply   | —               | Landed as a commit. The server sets this after git succeeded — it cannot be set by hand.                                                                       |
-| `verified`   | `ver` | verify  | —               | The validation plan passed against the landed change. Done, and provably so.                                                                                   |
-| `failed`     | `fai` | verify  | —               | It landed and the validation plan did not pass. Goes back for a new plan rather than starting over — the problem is still real and still triaged.              |
-| `rejected`   | `rej` | decide  | —               | You said no. The file stays on disk as a record and stops being offered.                                                                                       |
-| `superseded` | `sup` | triage  | —               | The problem is gone — already fixed by other work, or the file it named no longer exists. Records where the fix actually lives so the finding is not re-filed. |
-
-The "also written as" column is the previous vocabulary. Files recorded before
-this spec still carry those names and are read as the status they map to.
+| Status       | Short | Phase   | What it means                                                                                                                                                  |
+| ------------ | ----- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `recorded`   | `rec` | capture | Filed with its context and waiting for triage. Nobody has judged it yet.                                                                                       |
+| `triaged`    | `tri` | triage  | Confirmed to still be a real problem at HEAD, and labelled. Ready for someone to plan a fix.                                                                   |
+| `planned`    | `pln` | plan    | A patch and a validation plan both exist. This is the only status that can be approved.                                                                        |
+| `approved`   | `apr` | decide  | You said yes to a specific patch. It lands on the next drain.                                                                                                  |
+| `applied`    | `apl` | apply   | Landed as a commit. The server sets this after git succeeded — it cannot be set by hand.                                                                       |
+| `verified`   | `ver` | verify  | The validation plan passed against the landed change. Done, and provably so.                                                                                   |
+| `failed`     | `fai` | verify  | It landed and the validation plan did not pass. Goes back for a new plan rather than starting over — the problem is still real and still triaged.              |
+| `rejected`   | `rej` | decide  | You said no. The file stays on disk as a record and stops being offered.                                                                                       |
+| `superseded` | `sup` | triage  | The problem is gone — already fixed by other work, or the file it named no longer exists. Records where the fix actually lives so the finding is not re-filed. |
 
 ## Transitions
 

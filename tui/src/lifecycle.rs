@@ -44,8 +44,6 @@ pub struct StatusSpec {
     pub phase: String,
     pub tone: String,
     pub terminal: bool,
-    #[serde(default)]
-    pub aliases: Vec<String>,
     pub help: String,
     #[serde(default)]
     pub next: Vec<String>,
@@ -68,13 +66,9 @@ pub fn lifecycle() -> &'static Lifecycle {
     })
 }
 
-/// A row carries whatever its file says, which for anything written before the
-/// spec is `new` or `proposed`. Match the id first, then the aliases.
+/// There is one spelling per status, so this is a lookup rather than a resolve.
 pub fn status_spec(s: &str) -> Option<&'static StatusSpec> {
-    lifecycle()
-        .statuses
-        .iter()
-        .find(|x| x.id == s || x.aliases.iter().any(|a| a == s))
+    lifecycle().statuses.iter().find(|x| x.id == s)
 }
 
 /// Three columns instead of nine. `approved` is most of the queue most of the
@@ -97,7 +91,7 @@ pub fn next_statuses(from: &str) -> &'static [String] {
     status_spec(from).map(|s| s.next.as_slice()).unwrap_or(&[])
 }
 
-/// Is this move legal? Both sides resolve through the aliases first.
+/// Is this move legal?
 pub fn can_transition(from: &str, to: &str) -> bool {
     let Some(target) = status_spec(to) else { return false };
     next_statuses(from).iter().any(|n| n == &target.id)
@@ -122,10 +116,9 @@ pub fn decision_status() -> &'static str {
 /// Still short of the decision, and still in play.
 ///
 /// Derived from where the attended phase sits rather than from a list of names,
-/// so the filter cannot fall behind a renamed status the way it just did — it
-/// was still matching `new` and `proposed` after the vocabulary moved on.
-/// Terminals are excluded even when their phase is early: `superseded` is
-/// produced during triage but nobody is going to decide it.
+/// so the filter cannot fall behind a renamed status. Terminals are excluded
+/// even when their phase is early: `superseded` is produced during triage but
+/// nobody is going to decide it.
 pub fn is_before_decision(status: &str) -> bool {
     if is_terminal(status) {
         return false;

@@ -1,23 +1,21 @@
 //! Clusters, because one fix closes all of them.
 //!
-//! This is the highest-value screen in the tool and the reason the skill used to
-//! say "point at the app if the queue is long": approving nine suggestions that
+//! This is the highest-value screen in the tool: approving nine suggestions that
 //! share one file is one decision, not nine. The queue can only ever show you
 //! the cluster of the row you happen to be on.
 //!
-//! Read-only apart from `A`. Deciding still happens in the queue, where the
-//! plan and the validation plan are visible — approving a cluster from a list of
-//! ids alone would be exactly the un-evidenced yes the model exists to prevent.
+//! Read-only apart from `A`. Deciding still happens in the queue, where the plan
+//! and the validation plan are visible — approving a cluster from a list of ids
+//! alone would be the un-evidenced yes the model exists to prevent.
 
-use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::layout::{Constraint, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::widgets::{Cell, Paragraph, Row, Table, TableState, Wrap};
 use ratatui::Frame;
 
 use crate::api::Cluster;
 use crate::theme;
-use crate::ui::{titled, truncate};
+use crate::ui::titled;
 
 /// Worth acting on: more than one member, promoted first, then by what it cost.
 pub fn actionable(clusters: &[Cluster]) -> Vec<&Cluster> {
@@ -31,10 +29,21 @@ pub fn actionable(clusters: &[Cluster]) -> Vec<&Cluster> {
     out
 }
 
-pub fn draw(frame: &mut Frame, area: Rect, clusters: &[Cluster], sel: usize, focused: bool) {
+pub fn draw(
+    frame: &mut Frame,
+    area: Rect,
+    clusters: &[Cluster],
+    sel: usize,
+    focused: bool,
+    // How many members could still be approved. Shown because the server's
+    // cluster write is all-or-nothing: a cluster whose members have all been
+    // decided refuses the whole call, and reading that off a 409 that names one
+    // file is a poor way to find out.
+    ready: &dyn Fn(&str) -> usize,
+) {
     let rows = actionable(clusters);
-    let promoted = rows.iter().filter(|c| c.promoted).count();
-    let outer = titled(&format!("Clusters ({} · {promoted} promoted)", rows.len()), area, focused);
+    let live = rows.iter().filter(|c| ready(&c.id) > 0).count();
+    let outer = titled(&format!("Clusters ({} · {live} actionable)", rows.len()), area, focused);
     let inner = outer.inner(area);
     frame.render_widget(outer, area);
 
@@ -48,41 +57,50 @@ pub fn draw(frame: &mut Frame, area: Rect, clusters: &[Cluster], sel: usize, foc
         return;
     }
 
-    // promoted(2) + size(5) + incidents(6) + days(6) are fixed; the id and the
-    // scope share the rest, with the scope favoured — the id is a slug built out
-    // of the members' words, the scope is the file the one fix lands in.
-    const FIXED: u16 = 19;
-    const MARKER: u16 = 2;
-    let spare = inner.width.saturating_sub(FIXED + MARKER) as usize;
-    let id_w = (spare / 2).min(34);
-    let scope_w = spare.saturating_sub(id_w + 2);
-
-    let items: Vec<ListItem> = rows
+    let body: Vec<Row> = rows
         .iter()
         .map(|c| {
-            ListItem::new(Line::from(vec![
-                Span::styled(
-                    if c.promoted { "▲ " } else { "  " },
-                    Style::new().fg(theme::warn()).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(format!("{:>3}  ", c.size), Style::new().fg(theme::dim())),
-                Span::styled(format!("{:>4}  ", c.incidents), Style::new().fg(theme::accent())),
-                Span::styled(format!("{:>4}d ", c.span_days), Style::new().fg(theme::dim())),
-                Span::raw(format!("{:<width$}  ", truncate(&c.id, id_w), width = id_w)),
-                Span::styled(
-                    truncate(c.scopes.first().map(String::as_str).unwrap_or("—"), scope_w),
-                    Style::new().fg(theme::dim()),
-                ),
-            ]))
+            let open = ready(&c.id);
+            // A cluster with nothing left to decide is dimmed whole, so the eye
+            // skips it rather than landing there and pressing A.
+            let done = open == 0;
+            let tone = |c: Color| if done { theme::dim() } else { c };
+            Row::new(vec![
+                Cell::from(if c.promoted { "▲" } else { "" }).style(Style::new().fg(tone(theme::warn()))),
+                Cell::from(format!("{open}/{}", c.size)).style(Style::new().fg(tone(theme::ok()))),
+                Cell::from(c.incidents.to_string()).style(Style::new().fg(tone(theme::accent()))),
+                Cell::from(format!("{}d", c.span_days)).style(Style::new().fg(theme::dim())),
+                Cell::from(c.id.clone()).style(if done { Style::new().fg(theme::dim()) } else { Style::new() }),
+                Cell::from(c.scopes.first().cloned().unwrap_or_else(|| "—".into()))
+                    .style(Style::new().fg(theme::dim())),
+            ])
         })
         .collect();
 
-    let mut state = ListState::default().with_selected(Some(sel));
+    // Widths are declared, not computed. The arithmetic this replaces — a FIXED
+    // constant, a `spare`, two derived widths — is where every off-by-one
+    // truncation lived, and it had to be redone on each column change.
+    let widths = [
+        Constraint::Length(1),
+        Constraint::Length(7),
+        Constraint::Length(4),
+        Constraint::Length(5),
+        Constraint::Fill(4),
+        Constraint::Fill(5),
+    ];
+
+    let mut state = TableState::default().with_selected(Some(sel));
     frame.render_stateful_widget(
-        List::new(items)
+        Table::new(body, widths)
+            // Numeric columns are meaningless unlabelled: `9 27 70d` needs a
+            // header far more than a slug does.
+            .header(
+                Row::new(vec!["", "open", "inc", "span", "cluster", "the file one fix lands in"])
+                    .style(Style::new().fg(theme::dim()).add_modifier(Modifier::BOLD)),
+            )
+            .column_spacing(2)
             .highlight_symbol("▸ ")
-            .highlight_style(Style::new().bg(theme::selection_bg()))
-            .scroll_padding(2),
+            .row_highlight_style(Style::new().bg(theme::selection_bg())),
         inner,
         &mut state,
     );

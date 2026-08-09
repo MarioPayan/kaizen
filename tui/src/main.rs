@@ -5,6 +5,7 @@
 //! still owns the writes and their guards.
 
 mod api;
+mod keys;
 mod lifecycle;
 mod theme;
 mod tui;
