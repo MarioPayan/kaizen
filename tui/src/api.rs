@@ -142,6 +142,91 @@ pub fn spawn_stream(base: String, tx: std::sync::mpsc::Sender<String>) {
     });
 }
 
+/* ------------------------------------------------------------ server start ---- */
+
+/// Is anything answering on the port? A short timeout on purpose — this runs
+/// before the terminal is taken over, and a dead port should be obvious fast.
+pub fn server_is_up(base: &str) -> bool {
+    ureq::AgentBuilder::new()
+        .timeout(Duration::from_millis(1500))
+        .build()
+        .get(&format!("{base}/api/health"))
+        .call()
+        .is_ok()
+}
+
+pub enum Started {
+    AlreadyUp,
+    Spawned,
+}
+
+/// `scripts/cli.mjs`, found by walking up from the binary.
+///
+/// `current_exe` reads `/proc/self/exe`, so this still resolves through the
+/// `~/.local/bin` symlink to the real path inside the repo. Walking up rather
+/// than counting components keeps it working for both `target/release` and
+/// `target/debug`.
+fn find_cli() -> Option<std::path::PathBuf> {
+    if let Some(explicit) = std::env::var_os("KAIZEN_CLI") {
+        let path = std::path::PathBuf::from(explicit);
+        return path.is_file().then_some(path);
+    }
+    let exe = std::env::current_exe().ok()?;
+    let mut dir = exe.parent()?;
+    for _ in 0..6 {
+        let candidate = dir.join("scripts").join("cli.mjs");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        dir = dir.parent()?;
+    }
+    None
+}
+
+/// Start `kaizen serve` if nothing is listening, and wait for it to bind.
+///
+/// The server is the engine — @kaizen/core does the scanning, clustering and
+/// scoring, and this crate is a client of it — so the TUI is useless without one.
+/// Starting it here rather than making you remember is the whole point.
+///
+/// The child gets its own process group: without that, the Ctrl-C that quits the
+/// TUI goes to the whole foreground group and takes the server down with it.
+pub fn ensure_server(base: &str) -> Result<Started, String> {
+    if server_is_up(base) {
+        return Ok(Started::AlreadyUp);
+    }
+    let cli = find_cli().ok_or_else(|| {
+        "cannot find scripts/cli.mjs to start the server — set KAIZEN_CLI to its path".to_string()
+    })?;
+
+    #[cfg(unix)]
+    use std::os::unix::process::CommandExt;
+    let mut command = std::process::Command::new("node");
+    command
+        .arg(&cli)
+        .arg("serve")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(unix)]
+    command.process_group(0);
+
+    command.spawn().map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => "node is not on PATH, so the server cannot be started".into(),
+        _ => format!("could not start the server: {e}"),
+    })?;
+
+    // Binding is fast; scanning the skills tree on the first request is not, so
+    // wait for the port rather than for a state response.
+    for _ in 0..40 {
+        if server_is_up(base) {
+            return Ok(Started::Spawned);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Err(format!("started the server but nothing answered at {base}"))
+}
+
 /* ------------------------------------------------------------------ client ---- */
 
 pub struct Client {

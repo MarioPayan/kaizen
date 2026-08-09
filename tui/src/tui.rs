@@ -530,6 +530,15 @@ pub fn main(base: Option<String>) -> std::io::Result<()> {
     let client = Client::new(base);
     let base = client.base().to_string();
 
+    // Before the terminal is taken over, so anything said here stays readable.
+    // A failure is reported and then ignored: the TUI already has an honest
+    // "cannot reach the server" screen, and that beats refusing to open.
+    match crate::api::ensure_server(&base) {
+        Ok(crate::api::Started::AlreadyUp) => {}
+        Ok(crate::api::Started::Spawned) => eprintln!("kaizen: started the server at {base}"),
+        Err(e) => eprintln!("kaizen: {e}"),
+    }
+
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         ratatui::restore();
@@ -545,7 +554,12 @@ pub fn main(base: Option<String>) -> std::io::Result<()> {
     let mut app = App::new();
     let _ = req_tx.send(Req::Refresh);
 
-    let mut terminal = ratatui::init();
+    // `try_init` rather than `init`: the latter panics when there is no terminal
+    // to take over — piped output, a cron run — and a ratatui backtrace is a poor
+    // way to say "this needs a TTY".
+    let mut terminal = ratatui::try_init().map_err(|e| {
+        std::io::Error::new(e.kind(), format!("{e} — this needs a terminal (is output piped?)"))
+    })?;
     let result = run(&mut terminal, &mut app, &base, &req_tx, &res_rx, &ev_rx);
     ratatui::restore();
     result
