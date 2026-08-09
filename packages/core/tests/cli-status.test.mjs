@@ -29,7 +29,6 @@ const run = (config) => {
 
 const base = (over = {}) => ({
   targets: [{ name: 'user', skills: join(root, 'skills'), feedback: join(root, 'feedback') }],
-  autoApply: [],
   cadence: { weekly: 'SUN 09:00', sessionHook: true },
   ...over,
 });

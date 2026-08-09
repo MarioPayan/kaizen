@@ -283,17 +283,32 @@ export function buildState(config) {
     generatedAt: new Date().toISOString(),
     targets,
     warnings,
-    skills: skills.map((s) => ({
-      ...s,
-      suggestions: byName.get(s.name) ?? 0,
+    skills: skills.map((s) => {
+      const suggestions = byName.get(s.name) ?? 0;
       // The ratio the whole thesis rests on: failures per unit of prose.
-      per100: s.lines ? Number((((byName.get(s.name) ?? 0) / s.lines) * 100).toFixed(2)) : 0,
-    })),
+      const per100 = s.lines ? Number(((suggestions / s.lines) * 100).toFixed(2)) : 0;
+      return { ...s, suggestions, per100, health: health(s, suggestions, per100) };
+    }),
     suggestions,
     clusters,
     orphans,
     metrics: metrics(suggestions, skills, clusters, open),
   };
+}
+
+/**
+ * The thesis, as a label.
+ *
+ * A skill with scripts and no complaints is the shape the system is trying to
+ * produce; heavy prose with a high complaint rate is what it is trying to
+ * remove. Computed here rather than in a front end because it is a fact about
+ * the scan, and the scanner is the single source for everything else on the row.
+ */
+function health(skill, suggestions, per100) {
+  if (skill.scripts > 0 && suggestions === 0) return 'scripted';
+  if (per100 >= 2) return 'noisy';
+  if (per100 > 0) return 'watch';
+  return 'quiet';
 }
 
 function metrics(suggestions, skills, clusters, open) {

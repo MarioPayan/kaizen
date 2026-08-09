@@ -7,15 +7,13 @@
  *
  *   - Rust embeds the JSON directly (`include_str!`), so the TUI needs no
  *     generated artifact and no server to draw its docs.
- *   - TypeScript cannot: a `.json` import widens every string to `string`, so
- *     `Status` would stop being a union and start being "any text". The
- *     generated module below re-emits the same data `as const`, which restores
- *     the literal types.
- *   - Markdown cannot import anything at all, so the document is generated too.
+ *   - Markdown cannot import anything, so `docs/LIFECYCLE.md` is generated.
  *
- * Two of the three are therefore copies, and a copy that nothing checks is the
- * problem this file exists to solve. `kaizen docs --check` regenerates both and
- * fails on any difference; it runs first in `npm run check`.
+ * There used to be a third — a generated `as const` TypeScript module, because
+ * a `.json` import there widens every string and the unions stop being unions.
+ * The web app went, and with it the only TypeScript consumer, so the generated
+ * module went too. One copy remains, and `kaizen docs --check` fails when it
+ * drifts; it runs first in `npm run check`.
  *
  * Both renderers must be pure functions of the spec — no clock, no cwd, no
  * ordering that depends on anything but the file. A generator whose output
@@ -93,6 +91,13 @@ export function validateLifecycle(l) {
     for (const r of p.requires ?? []) {
       if (!fieldIds.has(r)) errors.push(`phase "${p.id}": requires unknown field "${r}"`);
     }
+  }
+  for (const [i, r] of (l.rungs ?? []).entries()) {
+    // Position is meaning here: rung 2 is "one above rung 1", and the docs and
+    // the queue both read the number. A gap or a reorder would silently relabel
+    // every triaged suggestion on disk.
+    if (r.n !== i) errors.push(`rung ${r.n}: rungs must be listed 0..n with no gaps`);
+    if (!r.title || !r.detail || !r.cost) errors.push(`rung ${r.n}: needs title, detail and cost`);
   }
   for (const f of l.fields ?? []) {
     if (!phaseIds.has(f.phase)) errors.push(`field "${f.id}": phase "${f.phase}" does not exist`);
@@ -395,6 +400,23 @@ export function renderMarkdown(l) {
   // listed every required field as frontmatter, including the four that are
   // `## Heading` sections — so following it produced a file the parser could
   // not read.
+  // The ladder lives here because `rung` is one of the fields above, and a
+  // number nobody can decode is not a label. It used to be a table in the web
+  // app's data layer, which is exactly the wrong place for a piece of doctrine.
+  if (l.rungs?.length) {
+    push('## The determinism ladder', '');
+    push(
+      'Every fix is placed on a rung, and may not sit higher than necessary. A fix at',
+      'rung 2 or 3 has to say in one sentence why the rung below does not work.',
+      '',
+    );
+    push('| Rung | What it is | Costs | Why |', '|---|---|---|---|');
+    for (const r of l.rungs) {
+      push(`| **${r.n}** | ${r.title} | ${r.cost} | ${r.detail} |`);
+    }
+    push('');
+  }
+
   const capture = l.phases[0];
   const required = (capture.requires ?? []).map((id) => l.fields.find((f) => f.id === id)).filter(Boolean);
   push(`### What ${capture.title.toLowerCase()} writes`, '');
@@ -405,30 +427,4 @@ export function renderMarkdown(l) {
   push('```', '');
 
   return out.join('\n');
-}
-
-/** The module the app and data layer import, where the unions come from. */
-export function renderTypes(l) {
-  // `$comment` is a note to whoever edits the JSON. Shipping it into the app
-  // bundle helps nobody and makes the diff on every wording tweak enormous.
-  const { $comment, ...data } = l;
-  void $comment;
-  const json = JSON.stringify(data, null, 2);
-  return [
-    `/* ${BANNER('DO NOT EDIT.')} */`,
-    '',
-    '/**',
-    ' * Why this is generated rather than an import of the JSON: TypeScript widens',
-    ' * every string in a `.json` module to `string`, so `Status` would accept any',
-    ' * text at all. Re-emitting the same data `as const` is what keeps the unions',
-    ' * below real — a wrong status is a compile error, which is the whole point.',
-    ' */',
-    `export const LIFECYCLE = ${json} as const;`,
-    '',
-    'export type Phase = (typeof LIFECYCLE.phases)[number]["id"];',
-    'export type LifecycleStatus = (typeof LIFECYCLE.statuses)[number]["id"];',
-    'export type LifecycleField = (typeof LIFECYCLE.fields)[number]["id"];',
-    'export type StatusTone = (typeof LIFECYCLE.statuses)[number]["tone"];',
-    '',
-  ].join('\n');
 }

@@ -93,12 +93,6 @@ describe('config validation', () => {
     expect(validateConfig(cfg)).toContain('server.host must be 127.0.0.1');
   });
 
-  it('rejects an unknown autoApply rule', () => {
-    const cfg = defaultConfig();
-    cfg.autoApply = ['everything:S'];
-    expect(validateConfig(cfg).join()).toMatch(/unknown type/);
-  });
-
   it('rejects scan enabled with no roots', () => {
     const cfg = defaultConfig();
     cfg.scan = { enabled: true, roots: [], depth: 3, writable: false };

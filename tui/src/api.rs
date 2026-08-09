@@ -79,15 +79,112 @@ pub struct Metrics {
     pub promoted_clusters: u64,
 }
 
+/// A skill as the scanner sees it. `health` is computed by `buildState` rather
+/// than here — the scanner is the single source for everything else on the row,
+/// and re-deriving one field in Rust is how the two drift.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct Skill {
+    pub name: String,
+    pub kind: String,
+    pub target: String,
+    pub path: String,
+    pub project: String,
+    pub lines: u64,
+    pub scripts: u64,
+    pub suggestions: u64,
+    pub per100: f64,
+    pub health: String,
+    pub worktrees: u64,
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct State {
     #[serde(rename = "generatedAt")]
     pub generated_at: String,
     pub warnings: Vec<String>,
+    pub skills: Vec<Skill>,
     pub suggestions: Vec<Suggestion>,
     pub clusters: Vec<Cluster>,
     pub metrics: Metrics,
+}
+
+/* ------------------------------------------------------------------ config ---- */
+
+/// Only what the settings view draws. Unknown keys are ignored on the way in and
+/// preserved on the way out, because editing round-trips the raw JSON — the TUI
+/// never rewrites a config from this struct.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct Config {
+    pub targets: Vec<Target>,
+    pub scan: ScanConfig,
+    pub surface: SurfaceConfig,
+    pub cadence: Cadence,
+    #[serde(rename = "clusterPromotion")]
+    pub cluster_promotion: Promotion,
+    #[serde(rename = "applyGuards")]
+    pub apply_guards: Guards,
+    pub server: ServerConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct Target {
+    pub name: String,
+    pub skills: String,
+    pub feedback: String,
+    pub writable: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct ScanConfig {
+    pub enabled: bool,
+    pub roots: Vec<String>,
+    pub depth: u64,
+    pub writable: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct SurfaceConfig {
+    pub types: Vec<String>,
+    pub objectives: Vec<String>,
+    #[serde(rename = "minSeverity")]
+    pub min_severity: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct Cadence {
+    pub weekly: String,
+    #[serde(rename = "sessionHook")]
+    pub session_hook: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct Promotion {
+    pub members: u64,
+    pub incidents: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct Guards {
+    #[serde(rename = "requireCleanTree")]
+    pub require_clean_tree: bool,
+    #[serde(rename = "requireDiffApplies")]
+    pub require_diff_applies: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct ServerConfig {
+    pub host: String,
+    pub port: u64,
 }
 
 impl State {
@@ -300,6 +397,46 @@ impl Client {
     pub fn apply(&self, id: &str) -> Result<String, String> {
         let res = self.post("/api/apply", serde_json::json!({ "id": id }))?;
         Ok(res.get("sha").and_then(|v| v.as_str()).unwrap_or_default().to_string())
+    }
+
+    /// The live config, as both a typed view and the raw JSON.
+    ///
+    /// Both, because they answer different questions: the struct is what the
+    /// settings view draws, and the raw value is what an edit round-trips. Going
+    /// back out through the struct would silently drop any key it does not know.
+    pub fn config(&self) -> Result<(Config, serde_json::Value), String> {
+        let url = format!("{}/api/config", self.base);
+        let body: serde_json::Value = self
+            .agent
+            .get(&url)
+            .call()
+            .map_err(|e| self.explain(e, "GET /api/config"))?
+            .into_json()
+            .map_err(|e| format!("GET /api/config: bad JSON: {e}"))?;
+        let raw = body.get("config").cloned().unwrap_or(serde_json::Value::Null);
+        let typed: Config = serde_json::from_value(raw.clone())
+            .map_err(|e| format!("GET /api/config: unexpected shape: {e}"))?;
+        Ok((typed, raw))
+    }
+
+    /// Save a whole config. The server validates and refuses with its own list of
+    /// reasons, which is the message worth showing.
+    pub fn save_config(&self, config: &serde_json::Value) -> Result<(), String> {
+        self.post("/api/config", config.clone()).map(|_| ())
+    }
+
+    /// A skill's source, for reading in the pane. The server refuses anything
+    /// outside a configured target, so a bad path is a 403 rather than a leak.
+    pub fn skill_file(&self, path: &str) -> Result<String, String> {
+        let url = format!("{}/api/skill?path={}", self.base, urlencode(path));
+        let res = self
+            .agent
+            .get(&url)
+            .call()
+            .map_err(|e| self.explain(e, "GET /api/skill"))?
+            .into_json::<serde_json::Value>()
+            .map_err(|e| format!("GET /api/skill: bad JSON: {e}"))?;
+        Ok(res.get("content").and_then(|v| v.as_str()).unwrap_or_default().to_string())
     }
 
     pub fn diff(&self, id: &str) -> Result<Option<String>, String> {

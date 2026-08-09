@@ -39,13 +39,6 @@ export function defaultConfig() {
     // view preference, not a filter on what gets filed — muted work stays on
     // disk and stays one click away.
     surface: defaultSurface(),
-    models: {
-      triage: 'claude-opus-5',
-      proposal: 'claude-opus-5',
-      validate: 'claude-haiku-4-5-20251001',
-    },
-    // Which {type}:{effort} pairs may apply without a human. Empty = nothing does.
-    autoApply: [],
     clusterPromotion: { members: 3, incidents: 5 },
     applyGuards: { requireCleanTree: true, requireDiffApplies: true },
     server: { host: '127.0.0.1', port: 7777 },
@@ -111,16 +104,6 @@ export function validateConfig(cfg) {
     }
     if (!SEVERITIES.includes(cfg.surface.minSeverity)) {
       errs.push(`surface.minSeverity must be one of ${SEVERITIES}`);
-    }
-  }
-
-  if (!Array.isArray(cfg.autoApply)) {
-    errs.push('autoApply must be an array');
-  } else {
-    for (const rule of cfg.autoApply) {
-      const [type, effort] = String(rule).split(':');
-      if (!TYPES.includes(type)) errs.push(`autoApply "${rule}": unknown type "${type}"`);
-      if (!EFFORTS.includes(effort)) errs.push(`autoApply "${rule}": effort must be one of ${EFFORTS}`);
     }
   }
 

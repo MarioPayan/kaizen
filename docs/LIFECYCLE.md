@@ -105,6 +105,18 @@ cannot be written down.
 | `applied_sha`  | Apply       | frontmatter                   | The commit. Set by the server, never by hand.                                                                                                                                                                                      |
 | `verified_at`  | Verify      | frontmatter                   | When the validation plan was run against the landed change, and what it returned.                                                                                                                                                  |
 
+## The determinism ladder
+
+Every fix is placed on a rung, and may not sit higher than necessary. A fix at
+rung 2 or 3 has to say in one sentence why the rung below does not work.
+
+| Rung  | What it is          | Costs            | Why                                                                               |
+| ----- | ------------------- | ---------------- | --------------------------------------------------------------------------------- |
+| **0** | Harness enforces it | 0 tokens         | A hook, a permission rule, a CLAUDE.md line. Cannot drift, cannot be skipped.     |
+| **1** | A script decides    | one Bash call    | Shell returning a verdict. Testable, greppable, identical every run.              |
+| **2** | A written rule      | tokens every run | Prose re-read and re-interpreted every run. Fine when the input genuinely varies. |
+| **3** | Left to reasoning   | tokens + drift   | Nothing written down. Where most recorded failures came from.                     |
+
 ### What capture writes
 
 ```markdown

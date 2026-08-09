@@ -203,7 +203,9 @@ validation column is the point — it is what turns "do you want this change" in
 "do you want this change, and here is how we will know it worked". Highest score
 first.
 
-**Nothing applies without the user's approval** unless `autoApply` in the config matches, which by default it does not. Say what is waiting and stop. The app is the other way to approve — point at it if the queue is long, because approving a cluster there is one action instead of many.
+**Nothing applies without the user's approval.** There is no bypass — the config used to declare an `autoApply` list and nothing ever read it, so the setting has been removed rather than left describing behaviour that did not exist. Say what is waiting and stop.
+
+The TUI is the other way to approve, and the faster one when the queue is long: `kaizen tui`, tab 2, `A` approves a whole cluster as one decision.
 
 ## Step 7 — Apply, then verify (`MODE=drain`)
 

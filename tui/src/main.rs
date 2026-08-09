@@ -6,7 +6,10 @@
 
 mod api;
 mod lifecycle;
+mod theme;
 mod tui;
+mod ui;
+mod views;
 
 const HELP: &str = "\
 kaizen-tui — the kaizen queue in the terminal

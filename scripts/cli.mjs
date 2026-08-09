@@ -42,7 +42,6 @@ import {
   canTransition,
   missingRequirements,
   renderMarkdown,
-  renderTypes,
 } from '@kaizen/core';
 
 const [, , command = 'status', ...args] = argv;
@@ -562,10 +561,7 @@ function cmdDoctor() {
 /* ---------------------------------------------------------------- docs ---- */
 
 /** Where each generated artifact lands, relative to the repo root. */
-const GENERATED = [
-  ['docs/LIFECYCLE.md', renderMarkdown, 'markdown'],
-  ['packages/data/src/lifecycle.generated.ts', renderTypes, 'typescript'],
-];
+const GENERATED = [['docs/LIFECYCLE.md', renderMarkdown, 'markdown']];
 
 /**
  * Regenerate what `lifecycle.json` implies, or prove it is already current.

@@ -16,7 +16,6 @@ import {
   loadLifecycle,
   validateLifecycle,
   renderMarkdown,
-  renderTypes,
   LIFECYCLE_PATH,
   section,
   missingRequirements,
@@ -175,6 +174,31 @@ describe('validateLifecycle', () => {
     );
   });
 
+  /**
+   * The rung number is written into every triaged suggestion on disk, so its
+   * position in this list *is* its meaning. A gap or a reorder would silently
+   * relabel the whole corpus.
+   */
+  it('rejects rungs that are not 0..n in order', () => {
+    const withRungs = (rungs) => {
+      const l = ok();
+      l.rungs = rungs;
+      return validateLifecycle(l);
+    };
+    const good = [
+      { n: 0, title: 't', detail: 'd', cost: 'c' },
+      { n: 1, title: 't', detail: 'd', cost: 'c' },
+    ];
+    expect(withRungs(good)).toEqual([]);
+    expect(withRungs([good[1], good[0]])).toContainEqual(expect.stringContaining('no gaps'));
+    expect(withRungs([good[0], { n: 2, title: 't', detail: 'd', cost: 'c' }])).toContainEqual(
+      expect.stringContaining('no gaps'),
+    );
+    expect(withRungs([{ n: 0, title: 't' }])).toContainEqual(
+      expect.stringContaining('needs title, detail and cost'),
+    );
+  });
+
   it('rejects a status or field naming a phase that does not exist', () => {
     expect(errorsFor((l) => (l.statuses[0].phase = 'ghost'))).toContainEqual(
       expect.stringContaining('phase "ghost" does not exist'),
@@ -262,34 +286,29 @@ describe('the generated artifacts', () => {
   // people learn to skip, so determinism is the property worth pinning.
   it('render identically for identical input', () => {
     expect(renderMarkdown(spec())).toBe(renderMarkdown(spec()));
-    expect(renderTypes(spec())).toBe(renderTypes(spec()));
   });
 
-  it('keep the JSON out of the generated module comment field', () => {
-    expect(renderTypes(spec())).not.toContain('$comment');
-  });
-
-  it('derive the union from the statuses rather than widening to string', () => {
-    const ts = renderTypes(spec());
-    expect(ts).toContain('as const');
-    expect(ts).toContain('export type LifecycleStatus = (typeof LIFECYCLE.statuses)[number]["id"];');
+  it('render the determinism ladder, which used to live in the web app', () => {
+    const md = renderMarkdown(spec());
+    expect(md).toContain('## The determinism ladder');
+    for (const r of spec().rungs) expect(md).toContain(r.title);
   });
 
   it('state the approval invariant as derived, not asserted', () => {
     expect(renderMarkdown(spec())).toContain('`approved` is reachable only from `planned`');
   });
 
-  it.each([
-    ['docs/LIFECYCLE.md', renderMarkdown, 'markdown'],
-    ['packages/data/src/lifecycle.generated.ts', renderTypes, 'typescript'],
-  ])('%s on disk matches what the spec generates', async (rel, render, parser) => {
-    const path = join(ROOT, rel);
-    // Same resolveConfig dance as the generator: without it this asserts against
-    // prettier's defaults and disagrees with what `kaizen docs` actually wrote.
-    const options = (await prettier.resolveConfig(path)) ?? {};
-    const expected = await prettier.format(render(spec()), { ...options, parser, filepath: path });
-    expect(readFileSync(path, 'utf8'), `${rel} is stale — run: node scripts/cli.mjs docs`).toBe(expected);
-  });
+  it.each([['docs/LIFECYCLE.md', renderMarkdown, 'markdown']])(
+    '%s on disk matches what the spec generates',
+    async (rel, render, parser) => {
+      const path = join(ROOT, rel);
+      // Same resolveConfig dance as the generator: without it this asserts against
+      // prettier's defaults and disagrees with what `kaizen docs` actually wrote.
+      const options = (await prettier.resolveConfig(path)) ?? {};
+      const expected = await prettier.format(render(spec()), { ...options, parser, filepath: path });
+      expect(readFileSync(path, 'utf8'), `${rel} is stale — run: node scripts/cli.mjs docs`).toBe(expected);
+    },
+  );
 
   it('reads the spec from the repo root', () => {
     expect(LIFECYCLE_PATH).toBe(join(ROOT, 'lifecycle.json'));

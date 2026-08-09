@@ -15,7 +15,7 @@ import { readFile, stat } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { join, dirname, extname, resolve } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -40,16 +40,6 @@ import { createEventStream } from './events.mjs';
 
 const run = promisify(execFile);
 const here = dirname(fileURLToPath(import.meta.url));
-const DIST = resolve(here, '..', 'app', 'dist');
-
-const MIME = {
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.svg': 'image/svg+xml',
-  '.json': 'application/json; charset=utf-8',
-  '.woff2': 'font/woff2',
-};
 
 class HttpError extends Error {
   constructor(status, message, fields) {
@@ -366,28 +356,6 @@ const routes = {
   },
 };
 
-/* --------------------------------------------------------- static files ---- */
-
-async function serveStatic(req, res) {
-  const url = new URL(req.url, 'http://localhost');
-  let file = join(DIST, url.pathname === '/' ? 'index.html' : url.pathname);
-  try {
-    assertInside([DIST], file, 'asset');
-  } catch {
-    res.writeHead(403).end('forbidden');
-    return;
-  }
-  if (!existsSync(file) || (await stat(file)).isDirectory()) file = join(DIST, 'index.html');
-  if (!existsSync(file)) {
-    res.writeHead(503, { 'content-type': 'text/plain' });
-    res.end('The app has not been built yet. Run: npm run build');
-    return;
-  }
-  const body = await readFile(file);
-  res.writeHead(200, { 'content-type': MIME[extname(file)] ?? 'application/octet-stream' });
-  res.end(body);
-}
-
 /* --------------------------------------------------------------- serve ---- */
 
 export function createApp(config) {
@@ -410,7 +378,10 @@ export function createApp(config) {
 
     if (!handler) {
       if (url.pathname.startsWith('/api/')) return json(res, 404, { error: `no route ${key}` });
-      return serveStatic(req, res);
+      // There is no web app any more; the front end is the TUI. Anyone who
+      // reaches this in a browser gets told where to go rather than a 404.
+      res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
+      return res.end('kaizen: this is the local API. The front end is the terminal UI — run `kaizen tui`.\n');
     }
     try {
       json(res, 200, await handler(req, res, ctx));
@@ -436,8 +407,7 @@ export function startServer(config) {
       reject(e);
     });
     server.listen(port, host, () => {
-      console.log(`kaizen → http://${host}:${port}`);
-      if (!existsSync(DIST)) console.log('(app not built yet — run: npm run build)');
+      console.log(`kaizen api → http://${host}:${port}   (front end: kaizen tui)`);
       resolvePromise(server);
     });
   });

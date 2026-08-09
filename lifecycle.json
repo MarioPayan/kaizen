@@ -262,5 +262,31 @@
       "where": "frontmatter",
       "help": "When the validation plan was run against the landed change, and what it returned."
     }
+  ],
+  "rungs": [
+    {
+      "n": 0,
+      "title": "Harness enforces it",
+      "detail": "A hook, a permission rule, a CLAUDE.md line. Cannot drift, cannot be skipped.",
+      "cost": "0 tokens"
+    },
+    {
+      "n": 1,
+      "title": "A script decides",
+      "detail": "Shell returning a verdict. Testable, greppable, identical every run.",
+      "cost": "one Bash call"
+    },
+    {
+      "n": 2,
+      "title": "A written rule",
+      "detail": "Prose re-read and re-interpreted every run. Fine when the input genuinely varies.",
+      "cost": "tokens every run"
+    },
+    {
+      "n": 3,
+      "title": "Left to reasoning",
+      "detail": "Nothing written down. Where most recorded failures came from.",
+      "cost": "tokens + drift"
+    }
   ]
 }

@@ -27,7 +27,6 @@ export {
   loadLifecycle,
   validateLifecycle,
   renderMarkdown,
-  renderTypes,
   LIFECYCLE_PATH,
   spec,
   statusIds,
