@@ -183,6 +183,24 @@ enum Overlay {
     File { path: String, body: String, scroll: u16 },
 }
 
+/// Where you were, precisely enough to put you back.
+///
+/// Not just the tab: returning to the clusters list with the cursor reset to the
+/// top is still losing your place, and the whole complaint about `esc` was that
+/// it did not take you back to where you actually were.
+#[derive(Clone, PartialEq)]
+struct Place {
+    tab: Tab,
+    focus: Focus,
+    cluster_filter: Option<String>,
+    query: String,
+    filter: Filter,
+    sel: usize,
+    cluster_sel: usize,
+    skill_sel: usize,
+    setting_sel: u16,
+}
+
 struct Notice {
     text: String,
     error: bool,
@@ -214,6 +232,8 @@ struct App {
     config: Option<serde_json::Value>,
     config_saved: Option<serde_json::Value>,
     config_errors: Vec<String>,
+    /// Everywhere you have been, most recent last. `esc` pops it.
+    history: Vec<Place>,
 }
 
 impl App {
@@ -239,6 +259,7 @@ impl App {
             config: None,
             config_saved: None,
             config_errors: Vec::new(),
+            history: Vec::new(),
         }
     }
 
@@ -339,6 +360,50 @@ impl App {
     /// cursor index means the same thing here and there.
     fn clusters(&self) -> Vec<&crate::api::Cluster> {
         self.state.as_ref().map(|s| clusters::actionable(&s.clusters)).unwrap_or_default()
+    }
+
+    fn place(&self) -> Place {
+        Place {
+            tab: self.tab,
+            focus: self.focus,
+            cluster_filter: self.cluster_filter.clone(),
+            query: self.query.clone(),
+            filter: self.filter,
+            sel: self.sel,
+            cluster_sel: self.cluster_sel,
+            skill_sel: self.skill_sel,
+            setting_sel: self.setting_sel,
+        }
+    }
+
+    /// Remember where we are, before going somewhere else.
+    ///
+    /// Capped, and never twice in a row for the same place: holding `2` should
+    /// not bury the way back under forty copies of the clusters tab.
+    fn remember(&mut self) {
+        let here = self.place();
+        if self.history.last() == Some(&here) {
+            return;
+        }
+        self.history.push(here);
+        if self.history.len() > 32 {
+            self.history.remove(0);
+        }
+    }
+
+    fn go_back(&mut self) -> bool {
+        let Some(p) = self.history.pop() else { return false };
+        self.tab = p.tab;
+        self.focus = p.focus;
+        self.cluster_filter = p.cluster_filter;
+        self.query = p.query;
+        self.filter = p.filter;
+        self.sel = p.sel;
+        self.cluster_sel = p.cluster_sel;
+        self.skill_sel = p.skill_sel;
+        self.setting_sel = p.setting_sel;
+        self.clamp();
+        true
     }
 
     /// Space on the selected settings row: flip, step, or join a list.
@@ -1061,21 +1126,20 @@ fn run(
         match action {
             Action::Quit => return Ok(()),
             Action::Back => {
-                // Unwinds one step at a time: a cluster filter, then the detail
-                // pane, then back to the queue, and only then out.
-                if app.cluster_filter.is_some() && app.tab == Tab::Queue {
-                    app.cluster_filter = None;
-                    app.sel = 0;
-                    app.clamp();
-                } else if app.focus == Focus::Detail {
+                // The detail pane is a step within the queue rather than a place
+                // of its own, so it closes first and does not consume history.
+                if app.focus == Focus::Detail {
                     app.focus = Focus::Queue;
-                } else if app.tab != Tab::Queue {
-                    app.tab = Tab::Queue;
-                } else {
-                    return Ok(());
+                } else if !app.go_back() {
+                    // Never an exit. `esc` is labelled "back", and a key that
+                    // sometimes quits instead is one you stop trusting.
+                    app.say("nothing to go back to — q quits", false);
                 }
             }
             Action::Go(tab) => {
+                if tab != app.tab {
+                    app.remember();
+                }
                 app.tab = tab;
                 if tab == Tab::Settings && app.config.is_none() {
                     app.busy = true;
@@ -1165,6 +1229,7 @@ fn run(
                 Tab::Clusters => {
                     let id = app.clusters().get(app.cluster_sel).map(|c| c.id.clone());
                     if let Some(id) = id {
+                        app.remember();
                         app.cluster_filter = Some(id.clone());
                         app.filter = Filter::All;
                         app.query.clear();
@@ -1172,7 +1237,7 @@ fn run(
                         app.sel = 0;
                         app.clamp();
                         let n = app.visible().len();
-                        app.say(format!("{n} in {id} — esc clears"), false);
+                        app.say(format!("{n} in {id} — esc goes back"), false);
                     }
                 }
                 Tab::Skills => {
@@ -1383,6 +1448,77 @@ mod tests {
             let hints = keys::hints(tab);
             assert!(hints.contains(&("h", "help")), "{tab:?} offers h: {hints:?}");
             assert!(!hints.iter().any(|(k, _)| *k == "?"), "{tab:?} drops ?: {hints:?}");
+        }
+    }
+
+    /// The report: "hit enter and try to get back, it takes me to the init page".
+    /// `esc` was hardcoded to "go to the queue" rather than "go back".
+    #[test]
+    fn esc_returns_to_where_you_came_from_not_to_the_queue() {
+        let mut app = app_with_state();
+
+        // Queue -> clusters -> skills, then back down the way we came.
+        app.remember();
+        app.tab = Tab::Clusters;
+        app.cluster_sel = 1;
+        app.remember();
+        app.tab = Tab::Skills;
+
+        assert!(app.go_back());
+        assert_eq!(app.tab, Tab::Clusters);
+        assert_eq!(app.cluster_sel, 1, "and to the row you were on, not the top");
+
+        assert!(app.go_back());
+        assert_eq!(app.tab, Tab::Queue);
+
+        // Nothing left: it says so rather than quitting. `esc` is labelled
+        // "back", and a key that sometimes exits is one you stop trusting.
+        assert!(!app.go_back());
+    }
+
+    /// Opening a cluster jumps to the queue with a filter; going back has to
+    /// undo both the jump and the filter, and land on the same cluster row.
+    #[test]
+    fn esc_undoes_opening_a_cluster_whole() {
+        let mut app = app_with_state();
+        app.tab = Tab::Clusters;
+        app.cluster_sel = 1;
+
+        app.remember();
+        app.cluster_filter = Some("origin-local-remote".into());
+        app.tab = Tab::Queue;
+        app.sel = 0;
+        assert_eq!(app.visible().len(), 2);
+
+        assert!(app.go_back());
+        assert_eq!(app.tab, Tab::Clusters);
+        assert_eq!(app.cluster_sel, 1);
+        assert!(app.cluster_filter.is_none(), "the filter went with it");
+    }
+
+    #[test]
+    fn history_does_not_pile_up_on_a_held_key() {
+        let mut app = app_with_state();
+        for _ in 0..10 {
+            app.remember();
+        }
+        assert_eq!(app.history.len(), 1, "the same place is not remembered twice");
+
+        // And it cannot grow without bound.
+        for i in 0..60 {
+            app.sel = i % 2;
+            app.remember();
+        }
+        assert!(app.history.len() <= 32);
+    }
+
+    #[test]
+    fn esc_is_offered_on_every_tab() {
+        for tab in Tab::ALL {
+            assert!(
+                keys::hints(tab).contains(&("esc", "back")),
+                "{tab:?} offers esc",
+            );
         }
     }
 

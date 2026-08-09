@@ -75,7 +75,6 @@ const QUEUE: &[Tab] = &[Tab::Queue];
 const CLUSTERS: &[Tab] = &[Tab::Clusters];
 const SKILLS: &[Tab] = &[Tab::Skills];
 const SETTINGS: &[Tab] = &[Tab::Settings];
-const LISTS: &[Tab] = &[Tab::Queue, Tab::Clusters, Tab::Skills];
 
 /// Order matters twice: the footer offers these left to right and drops from
 /// the right when the row is tight, and the help card groups them by `section`
@@ -294,7 +293,7 @@ pub const BINDINGS: &[Binding] = &[
         hint: "esc",
         label: "back",
         section: "other",
-        tabs: LISTS,
+        tabs: ALL,
         action: Action::Back,
     },
     Binding {
