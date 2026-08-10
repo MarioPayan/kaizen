@@ -14,6 +14,17 @@ use crate::api::Skill;
 use crate::theme;
 use crate::ui::titled;
 
+/// The columns, and what they mean. The header is built from the first of each
+/// pair, so it cannot drift from the explanation.
+pub const COLUMNS: &[(&str, &str)] = &[
+    ("health", "scripted · watch · noisy · quiet — the shape, in one word"),
+    ("per100", "suggestions per 100 lines of prose: the ratio the tool argues about"),
+    ("filed", "suggestions filed against this skill"),
+    ("scripts", "scripts it can call instead of re-deriving the same thing"),
+    ("lines", "how much prose it carries"),
+    ("skill", "name, or the library module's path"),
+];
+
 /// Worst ratio first — the list is a work order, not a directory.
 pub fn ranked(skills: &[Skill]) -> Vec<&Skill> {
     let mut out: Vec<&Skill> = skills.iter().collect();
@@ -86,7 +97,7 @@ pub fn draw(frame: &mut Frame, area: Rect, skills: &[Skill], sel: usize, focused
             // `2.36 17 0 721` is unreadable without these; per100 in particular
             // is the number the whole tool argues about and looked like noise.
             .header(
-                Row::new(vec!["health", "per100", "filed", "scripts", "lines", "skill"])
+                Row::new(COLUMNS.iter().map(|(name, _)| *name).collect::<Vec<_>>())
                     .style(Style::new().fg(theme::dim()).add_modifier(Modifier::BOLD)),
             )
             .column_spacing(2)

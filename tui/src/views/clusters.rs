@@ -17,6 +17,18 @@ use crate::api::Cluster;
 use crate::theme;
 use crate::ui::titled;
 
+/// The columns, and what they mean. The table header is built from the first of
+/// each pair and the help card from both, so a column cannot be labelled one way
+/// and explained another.
+pub const COLUMNS: &[(&str, &str)] = &[
+    ("", "▲ marks a promoted cluster — its fix must land at rung 0 or 1"),
+    ("open", "members that could still be approved, of the total"),
+    ("inc", "incidents: how many times this actually happened"),
+    ("span", "days between the first filing and the last"),
+    ("cluster", "its id, built from the words its members share"),
+    ("scope", "the one file a single fix lands in"),
+];
+
 /// Worth acting on: more than one member, promoted first, then by what it cost.
 pub fn actionable(clusters: &[Cluster]) -> Vec<&Cluster> {
     let mut out: Vec<&Cluster> = clusters.iter().filter(|c| c.size > 1).collect();
@@ -95,7 +107,7 @@ pub fn draw(
             // Numeric columns are meaningless unlabelled: `9 27 70d` needs a
             // header far more than a slug does.
             .header(
-                Row::new(vec!["", "open", "inc", "span", "cluster", "the file one fix lands in"])
+                Row::new(COLUMNS.iter().map(|(name, _)| *name).collect::<Vec<_>>())
                     .style(Style::new().fg(theme::dim()).add_modifier(Modifier::BOLD)),
             )
             .column_spacing(2)

@@ -648,6 +648,26 @@ fn draw_detail(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
     );
 }
 
+/// The queue's columns. It is a composed line rather than a table — the slug has
+/// to run to the edge — so there is no header row and this is the only place
+/// they are ever named.
+const QUEUE_COLUMNS: &[(&str, &str)] = &[
+    ("score", "impact × (1 + recurrences) ÷ effort; untriaged score 0"),
+    ("H M L", "severity: high, medium, low — a letter so it survives no colour"),
+    ("status", "three letters, spelled out below"),
+    ("skill", "which skill filed it"),
+    ("slug", "what it is about"),
+];
+
+fn columns_for(tab: Tab) -> &'static [(&'static str, &'static str)] {
+    match tab {
+        Tab::Queue => QUEUE_COLUMNS,
+        Tab::Clusters => clusters::COLUMNS,
+        Tab::Skills => skills::COLUMNS,
+        Tab::Settings => settings::COLUMNS,
+    }
+}
+
 /// The keys for one tab, from the table that also dispatches them.
 ///
 /// Only what works here. The same `tabs` field that stops a key firing on the
@@ -669,6 +689,36 @@ fn help_lines(tab: Tab) -> Vec<Line<'static>> {
         }
         out.push(Line::raw(""));
     }
+    // What the numbers on this view mean. Same source as the table header for
+    // the views that have one, and the only naming the queue's columns get.
+    let columns = columns_for(tab);
+    if !columns.is_empty() {
+        out.push(Line::styled(
+            "  columns".to_string(),
+            Style::new().fg(theme::accent()).add_modifier(Modifier::BOLD),
+        ));
+        for (name, meaning) in columns {
+            out.push(Line::from(vec![
+                Span::styled(format!("    {name:<10}"), Style::new().fg(theme::ok())),
+                Span::styled(meaning.to_string(), Style::new().fg(theme::dim())),
+            ]));
+            // Spelled out from the spec, directly under the column it explains,
+            // so a renamed status cannot leave a stale legend behind.
+            if *name == "status" {
+                let legend = lifecycle()
+                    .statuses
+                    .iter()
+                    .map(|s| format!("{} {}", s.abbrev, s.id))
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                for line in wrapped(&legend, "              ", 72) {
+                    out.push(Line::styled(line, Style::new().fg(theme::dim())));
+                }
+            }
+        }
+        out.push(Line::raw(""));
+    }
+
     // The section loop leaves a blank after the last group; drop it so a card
     // with no footnote does not end in whitespace.
     while out.last().is_some_and(|l| l.spans.iter().all(|s| s.content.trim().is_empty())) {
@@ -1562,6 +1612,56 @@ mod tests {
         // No "where" column left to disagree with the filtering.
         for tab in Tab::ALL {
             assert!(!card(tab).contains("everywhere"), "{tab:?} card names no scope");
+        }
+    }
+
+    /// Every view explains its own numbers, and the tables' headers come from
+    /// the same list — so a column cannot be labelled one way and described
+    /// another. The queue has no header row at all, which is why it needs this
+    /// most: `42 H apr` says nothing on its own.
+    #[test]
+    fn every_view_explains_its_columns() {
+        let card = |tab| {
+            help_lines(tab)
+                .iter()
+                .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        for tab in Tab::ALL {
+            let text = card(tab);
+            assert!(text.contains("columns"), "{tab:?} has a columns section");
+            for (name, meaning) in columns_for(tab) {
+                assert!(text.contains(meaning), "{tab:?} explains {name:?}");
+            }
+        }
+
+        // Named per view, not shared: `per100` means nothing on the queue.
+        assert!(card(Tab::Skills).contains("per100"));
+        assert!(!card(Tab::Queue).contains("per100"));
+        assert!(card(Tab::Clusters).contains("promoted"));
+
+        // The status legend is generated, so a renamed status cannot leave a
+        // stale abbreviation behind in the help.
+        let queue = card(Tab::Queue);
+        for s in &lifecycle().statuses {
+            assert!(queue.contains(&format!("{} {}", s.abbrev, s.id)), "legend has {}", s.id);
+        }
+    }
+
+    /// The tables build their header from the same list the help reads.
+    #[test]
+    fn a_table_header_cannot_drift_from_its_explanation() {
+        for (tab, columns) in [
+            (Tab::Clusters, clusters::COLUMNS),
+            (Tab::Skills, skills::COLUMNS),
+        ] {
+            let mut app = app_with_state();
+            app.tab = tab;
+            let text = render(&app, 120, 20);
+            for (name, _) in columns.iter().filter(|(n, _)| !n.is_empty()) {
+                assert!(text.contains(name), "{tab:?} header shows {name:?}: {text}");
+            }
         }
     }
 

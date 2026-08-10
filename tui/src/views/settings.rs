@@ -20,6 +20,15 @@ use serde_json::Value;
 use crate::theme;
 use crate::ui::titled;
 
+/// Not columns so much as the marks a value can take. Same idea: nobody guesses
+/// what `×` against a word means.
+pub const COLUMNS: &[(&str, &str)] = &[
+    ("on / OFF", "a switch — OFF is loud because a guard someone turned off matters"),
+    ("× / ·", "in or out of the list on the left"),
+    ("always", "not configurable; shown so the guard list is the whole list"),
+    ("● unsaved", "edits are held here until s sends them"),
+];
+
 /// What a row does when you press space.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Kind {
