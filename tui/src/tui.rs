@@ -674,64 +674,64 @@ fn columns_for(tab: Tab) -> &'static [(&'static str, &'static str)] {
 /// wrong view is what keeps it off this card, so the two cannot disagree — and
 /// a key that means something different per view shows the meaning it has here
 /// rather than all three at once.
-fn help_lines(tab: Tab) -> Vec<Line<'static>> {
+fn help_keys(tab: Tab) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     for (section, bindings) in keys::sections(tab) {
         out.push(Line::styled(
-            format!("  {section}"),
+            section.to_string(),
             Style::new().fg(theme::accent()).add_modifier(Modifier::BOLD),
         ));
         for b in bindings {
             out.push(Line::from(vec![
-                Span::styled(format!("    {:<8}", b.hint), Style::new().fg(theme::ok())),
+                Span::styled(format!("  {:<7}", b.hint), Style::new().fg(theme::ok())),
                 Span::raw(b.label),
             ]));
         }
         out.push(Line::raw(""));
     }
-    // What the numbers on this view mean. Same source as the table header for
-    // the views that have one, and the only naming the queue's columns get.
-    let columns = columns_for(tab);
-    if !columns.is_empty() {
-        out.push(Line::styled(
-            "  columns".to_string(),
-            Style::new().fg(theme::accent()).add_modifier(Modifier::BOLD),
-        ));
-        for (name, meaning) in columns {
-            out.push(Line::from(vec![
-                Span::styled(format!("    {name:<10}"), Style::new().fg(theme::ok())),
-                Span::styled(meaning.to_string(), Style::new().fg(theme::dim())),
-            ]));
-            // Spelled out from the spec, directly under the column it explains,
-            // so a renamed status cannot leave a stale legend behind.
-            if *name == "status" {
-                let legend = lifecycle()
-                    .statuses
-                    .iter()
-                    .map(|s| format!("{} {}", s.abbrev, s.id))
-                    .collect::<Vec<_>>()
-                    .join(" · ");
-                for line in wrapped(&legend, "              ", 72) {
-                    out.push(Line::styled(line, Style::new().fg(theme::dim())));
-                }
-            }
-        }
-        out.push(Line::raw(""));
-    }
-
-    // The section loop leaves a blank after the last group; drop it so a card
-    // with no footnote does not end in whitespace.
-    while out.last().is_some_and(|l| l.spans.iter().all(|s| s.content.trim().is_empty())) {
-        out.pop();
-    }
     // Only where applying is a thing you can do here. A footnote about git on
     // the settings card is the same clutter as a key you cannot press.
-    if keys::resolve(ratatui::crossterm::event::KeyCode::Enter, tab) == Some(keys::Action::Apply) {
-        out.push(Line::raw(""));
+    if keys::resolve(KeyCode::Enter, tab) == Some(keys::Action::Apply) {
         out.push(Line::styled(
-            "  applying needs a clean tree and a patch on disk",
+            "applying needs a clean tree",
             Style::new().fg(theme::dim()),
         ));
+        out.push(Line::styled("and a patch on disk", Style::new().fg(theme::dim())));
+    }
+    out
+}
+
+/// What the numbers on this view mean.
+///
+/// Same source as the table header for the views that have one, and the only
+/// naming the queue's columns get — it is a composed line, not a table, so
+/// `42 H apr` is otherwise unexplained anywhere.
+fn help_columns(tab: Tab, width: usize) -> Vec<Line<'static>> {
+    let mut out = vec![Line::styled(
+        "columns".to_string(),
+        Style::new().fg(theme::accent()).add_modifier(Modifier::BOLD),
+    )];
+    for (name, meaning) in columns_for(tab) {
+        out.push(Line::styled(
+            format!("  {name}"),
+            Style::new().fg(theme::ok()),
+        ));
+        for line in wrapped(meaning, "    ", width) {
+            out.push(Line::styled(line, Style::new().fg(theme::dim())));
+        }
+        // Spelled out from the spec, directly under the column it explains, so
+        // a renamed status cannot leave a stale legend behind.
+        if *name == "status" {
+            let legend = lifecycle()
+                .statuses
+                .iter()
+                .map(|s| format!("{} {}", s.abbrev, s.id))
+                .collect::<Vec<_>>()
+                .join(" · ");
+            for line in wrapped(&legend, "    ", width) {
+                out.push(Line::styled(line, Style::new().fg(theme::dim())));
+            }
+        }
     }
     out
 }
@@ -834,15 +834,16 @@ fn docs_lines(width: usize) -> Vec<Line<'static>> {
 }
 
 fn draw_overlay(frame: &mut Frame, area: Rect, overlay: &Overlay, tab: Tab) {
-    // Size first: the docs wrap their own prose and need to know how wide the box
-    // will be. `min` after the clamp — on a terminal narrower than the floor the
-    // box would otherwise be wider than the screen and the centring underflows.
+    // Size first: the docs and the columns both wrap their own prose and need to
+    // know how wide the box will be. `min` after the clamp — on a terminal
+    // narrower than the floor the box would be wider than the screen and the
+    // centring subtraction underflows.
     let w = area.width.saturating_sub(8).clamp(20, 120).min(area.width);
     let h = area.height.saturating_sub(4).max(6).min(area.height);
     let box_area = Rect::new((area.width - w) / 2, (area.height - h) / 2, w, h);
     let inner_w = w.saturating_sub(2) as usize;
 
-    let (title, body, scroll) = match overlay {
+    let (title, scroll) = match overlay {
         Overlay::Help { guide, scroll } => (
             // Both halves named in the title, the current one marked, so the
             // switch is discoverable without being explained. The keys half
@@ -853,17 +854,49 @@ fn draw_overlay(frame: &mut Frame, area: Rect, overlay: &Overlay, tab: Tab) {
                 tab.label(),
                 if *guide { "▸" } else { " " },
             ),
-            if *guide { docs_lines(inner_w) } else { help_lines(tab) },
             *scroll,
         ),
-        Overlay::File { path, body, scroll } => (
-            format!("file — {}", path.rsplit('/').next().unwrap_or(path)),
-            body.lines().map(|l| Line::raw(l.to_string())).collect(),
-            *scroll,
+        Overlay::File { path, scroll, .. } => {
+            (format!("file — {}", path.rsplit('/').next().unwrap_or(path)), *scroll)
+        }
+        Overlay::Diff { id, scroll, .. } => (format!("patch — {}", short(id)), *scroll),
+    };
+
+    frame.render_widget(Clear, box_area);
+    let block = titled(&title, box_area, true);
+    let inner = block.inner(box_area);
+    frame.render_widget(block, box_area);
+
+    let paragraph = |lines: Vec<Line<'static>>| {
+        Paragraph::new(lines).wrap(Wrap { trim: false }).scroll((scroll, 0))
+    };
+
+    match overlay {
+        // Two columns: what the numbers mean on the left, what the keys do on
+        // the right. They answer different questions and reading one should not
+        // mean scrolling past the other.
+        Overlay::Help { guide: false, .. } if inner.width >= 72 => {
+            let [left, right] =
+                Layout::horizontal([Constraint::Percentage(58), Constraint::Min(22)]).areas(inner);
+            frame.render_widget(paragraph(help_columns(tab, left.width as usize - 1)), left);
+            frame.render_widget(paragraph(help_keys(tab)), right);
+        }
+        // Too narrow to sit side by side: keys first, since that is what `h` was
+        // pressed for, then the columns under them.
+        Overlay::Help { guide: false, .. } => {
+            let mut lines = help_keys(tab);
+            lines.push(Line::raw(""));
+            lines.extend(help_columns(tab, inner_w));
+            frame.render_widget(paragraph(lines), inner);
+        }
+        Overlay::Help { .. } => frame.render_widget(paragraph(docs_lines(inner_w)), inner),
+        Overlay::File { body, .. } => frame.render_widget(
+            paragraph(body.lines().map(|l| Line::raw(l.to_string())).collect()),
+            inner,
         ),
-        Overlay::Diff { id, body, scroll } => (
-            format!("patch — {}", short(id)),
-            body.lines()
+        Overlay::Diff { body, .. } => {
+            let lines = body
+                .lines()
                 .map(|l| {
                     let colour = match l.chars().next() {
                         Some('+') if !l.starts_with("+++") => theme::ok(),
@@ -873,18 +906,10 @@ fn draw_overlay(frame: &mut Frame, area: Rect, overlay: &Overlay, tab: Tab) {
                     };
                     Line::styled(l.to_string(), Style::new().fg(colour))
                 })
-                .collect(),
-            *scroll,
-        ),
-    };
-
-    frame.render_widget(Clear, box_area);
-    frame.render_widget(
-        Paragraph::new(body).wrap(Wrap { trim: false }).scroll((scroll, 0)).block(titled(
-            &title, box_area, true,
-        )),
-        box_area,
-    );
+                .collect();
+            frame.render_widget(paragraph(lines), inner);
+        }
+    }
 }
 
 fn draw(frame: &mut Frame, app: &App) {
@@ -1497,7 +1522,7 @@ mod tests {
     /// advertised, so they are the only places it can be advertised wrongly.
     #[test]
     fn help_is_on_h_everywhere_it_is_offered() {
-        let card = help_lines(Tab::Queue)
+        let card = help_keys(Tab::Queue)
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
             .collect::<Vec<_>>()
@@ -1580,12 +1605,18 @@ mod tests {
     /// the card contradicting itself.
     #[test]
     fn the_help_card_shows_only_this_view_and_its_meaning_of_a_key() {
+        // Both halves, as the overlay shows them together, whitespace-normalised
+        // because the column meanings wrap inside their pane.
+        let squash = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
         let card = |tab| {
-            help_lines(tab)
-                .iter()
-                .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
+            squash(
+                &help_keys(tab)
+                    .into_iter()
+                    .chain(help_columns(tab, 60))
+                    .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            )
         };
 
         // `enter` is bound three times, once per view. Each card shows its one.
@@ -1621,18 +1652,24 @@ mod tests {
     /// most: `42 H apr` says nothing on its own.
     #[test]
     fn every_view_explains_its_columns() {
+        // Both halves, as the overlay shows them together, whitespace-normalised
+        // because the column meanings wrap inside their pane.
+        let squash = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
         let card = |tab| {
-            help_lines(tab)
-                .iter()
-                .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
+            squash(
+                &help_keys(tab)
+                    .into_iter()
+                    .chain(help_columns(tab, 60))
+                    .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            )
         };
         for tab in Tab::ALL {
             let text = card(tab);
             assert!(text.contains("columns"), "{tab:?} has a columns section");
             for (name, meaning) in columns_for(tab) {
-                assert!(text.contains(meaning), "{tab:?} explains {name:?}");
+                assert!(text.contains(&squash(meaning)), "{tab:?} explains {name:?}");
             }
         }
 
@@ -1646,6 +1683,15 @@ mod tests {
         let queue = card(Tab::Queue);
         for s in &lifecycle().statuses {
             assert!(queue.contains(&format!("{} {}", s.abbrev, s.id)), "legend has {}", s.id);
+        }
+        // Side by side, not stacked, once there is room for both.
+        let mut app = app_with_state();
+        app.overlay = Some(Overlay::Help { guide: false, scroll: 0 });
+        let wide = render(&app, 120, 30);
+        for line in wide.lines() {
+            if line.contains("columns") {
+                assert!(line.contains("navigate"), "columns and keys share a row: {line}");
+            }
         }
     }
 
