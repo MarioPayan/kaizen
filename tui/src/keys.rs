@@ -53,7 +53,6 @@ pub enum Action {
     CycleFilter,
     Search,
     Refresh,
-    Theme,
     /// Settings: flip a boolean, step a choice, or start editing a value.
     Edit,
     Save,
@@ -280,14 +279,6 @@ pub const BINDINGS: &[Binding] = &[
         section: "other",
         tabs: ALL,
         action: Action::Refresh,
-    },
-    Binding {
-        keys: &[KeyCode::Char('t')],
-        hint: "t",
-        label: "theme",
-        section: "other",
-        tabs: ALL,
-        action: Action::Theme,
     },
     Binding {
         keys: &[KeyCode::Esc],

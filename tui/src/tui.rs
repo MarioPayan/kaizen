@@ -1271,7 +1271,6 @@ fn run(
             }
             Action::Help => app.overlay = Some(Overlay::Help { guide: false, scroll: 0 }),
             Action::Guide => app.overlay = Some(Overlay::Help { guide: true, scroll: 0 }),
-            Action::Theme => theme::cycle(),
             Action::Refresh => {
                 app.busy = true;
                 let _ = req.send(Req::Refresh);
@@ -1772,17 +1771,30 @@ mod tests {
         assert!(column_values(Tab::Clusters, "scope").is_empty());
     }
 
-    /// The light theme assumed a light terminal — grey dim, a blue accent and a
-    /// near-white selection — and read as grey-on-grey where it actually ran.
+    /// The complaint, as a check. `DarkGray` on a black terminal is the grey
+    /// text this palette exists to be rid of, and a named ANSI grey is at the
+    /// mercy of whatever the terminal maps it to.
     #[test]
-    fn only_themes_that_work_on_a_dark_terminal_remain() {
-        assert_eq!(theme::NAMES, ["dark", "high-contrast"]);
-        // Cycling has to come home, or `t` becomes a key you press hoping.
-        let first = theme::dim();
-        for _ in 0..theme::NAMES.len() {
-            theme::cycle();
+    fn nothing_is_drawn_in_grey() {
+        use ratatui::style::Color;
+        for tab in Tab::ALL {
+            let mut app = app_with_state();
+            app.tab = tab;
+            app.config = Some(serde_json::json!({ "targets": [], "surface": {} }));
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
+            terminal.draw(|frame| draw(frame, &app)).unwrap();
+            let buf = terminal.backend().buffer().clone();
+            for y in 0..40 {
+                for x in 0..120 {
+                    let fg = buf[(x, y)].style().fg;
+                    assert!(
+                        !matches!(fg, Some(Color::DarkGray) | Some(Color::Gray)),
+                        "{tab:?} draws grey at {x},{y}",
+                    );
+                }
+            }
         }
-        assert_eq!(theme::dim(), first);
     }
 
     #[test]

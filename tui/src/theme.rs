@@ -1,51 +1,41 @@
 //! Colour, and the two vocabularies that spend it.
 //!
-//! Separate from the views because a palette is the one thing every view shares
-//! and none of them should redefine. A status tone comes from `lifecycle.json`
-//! and is semantic — five names — so this is where it becomes a terminal colour.
+//! One palette, for a dark terminal. There were three: a `light` one that
+//! assumed a light background, and a `dark` one whose dim was `DarkGray` —
+//! grey-on-black, the least readable text on screen and the reason this is now
+//! a single set of constants rather than a switch.
+//!
+//! With one palette there is nothing to cycle, so the atomic, the index and the
+//! `t` key went with the other two.
 
 use ratatui::style::Color;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::lifecycle::status_spec;
 
-static CURRENT: AtomicUsize = AtomicUsize::new(0);
-/// Two, both for a dark terminal.
-///
-/// There was a `light` one, and it was the wrong shape: `Gray` dim, a `Blue`
-/// accent and a near-white selection all assume a light background, so on the
-/// terminal anyone actually runs this in it read as grey-on-grey. A theme that
-/// only works somewhere else is worse than not offering one.
-pub const NAMES: [&str; 2] = ["dark", "high-contrast"];
-
-pub fn cycle() {
-    let _ = CURRENT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |i| Some((i + 1) % NAMES.len()));
+/// Bright enough to read as text, not as a hint. Everything secondary uses this,
+/// so it is the colour most of the screen is actually made of.
+pub const fn dim() -> Color {
+    Color::Rgb(190, 190, 190)
 }
 
-fn i() -> usize {
-    CURRENT.load(Ordering::Relaxed)
+pub const fn accent() -> Color {
+    Color::Rgb(0, 220, 255)
 }
 
-pub fn accent() -> Color {
-    [Color::Cyan, Color::Rgb(0, 255, 255)][i()]
+pub const fn ok() -> Color {
+    Color::Rgb(0, 230, 100)
 }
-pub fn dim() -> Color {
-    // High contrast means high contrast: `Gray` sat on a #464646 selection and
-    // was the least readable thing on screen, in the theme named for being the
-    // most readable.
-    [Color::DarkGray, Color::Rgb(190, 190, 190)][i()]
+
+pub const fn warn() -> Color {
+    Color::Rgb(255, 210, 0)
 }
-pub fn ok() -> Color {
-    [Color::Green, Color::Rgb(0, 255, 0)][i()]
+
+pub const fn err() -> Color {
+    Color::Rgb(255, 95, 95)
 }
-pub fn warn() -> Color {
-    [Color::Yellow, Color::Rgb(255, 255, 0)][i()]
-}
-pub fn err() -> Color {
-    [Color::Red, Color::Rgb(255, 80, 80)][i()]
-}
-pub fn selection_bg() -> Color {
-    [Color::Rgb(45, 55, 70), Color::Rgb(70, 70, 70)][i()]
+
+pub const fn selection_bg() -> Color {
+    Color::Rgb(70, 70, 70)
 }
 
 pub fn severity_colour(s: &str) -> Color {
@@ -72,7 +62,7 @@ pub fn severity_letter(s: &str) -> &'static str {
     }
 }
 
-/// The spec's tone is semantic so each front end can spend its own palette. A
+/// The spec's tone is semantic so a front end can spend its own palette. A
 /// terminal has green and red, so all five land somewhere distinct here.
 pub fn tone_colour(tone: &str) -> Color {
     match tone {
