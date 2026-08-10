@@ -180,7 +180,8 @@ pub const BINDINGS: &[Binding] = &[
         keys: &[KeyCode::Enter],
         hint: "enter",
         label: "open file",
-        section: "decide",
+        // Not "decide": reading a skill is looking, not choosing.
+        section: "navigate",
         tabs: SKILLS,
         action: Action::Open,
     },
@@ -331,23 +332,20 @@ pub fn hints(tab: Tab) -> Vec<(&'static str, &'static str)> {
         .collect()
 }
 
-/// The help card, grouped by section in the order the sections first appear.
-pub fn sections() -> Vec<(&'static str, Vec<&'static Binding>)> {
+/// The help card for one tab, grouped by section in first-seen order.
+///
+/// Filtered to the tab rather than listing everything with a "where" column.
+/// That is what lets one key carry a different meaning per view without the
+/// card reading as a contradiction: on the queue `enter` is "apply", on
+/// clusters it is "show members", and you only ever see the one that is true
+/// where you are standing.
+pub fn sections(tab: Tab) -> Vec<(&'static str, Vec<&'static Binding>)> {
     let mut out: Vec<(&'static str, Vec<&'static Binding>)> = Vec::new();
-    for b in BINDINGS.iter().filter(|b| !b.hint.is_empty()) {
+    for b in BINDINGS.iter().filter(|b| applies(b, tab) && !b.hint.is_empty()) {
         match out.iter_mut().find(|(name, _)| *name == b.section) {
             Some((_, list)) => list.push(b),
             None => out.push((b.section, vec![b])),
         }
     }
     out
-}
-
-/// Which tabs a binding is offered on, in words, for the help card.
-pub fn where_of(b: &Binding) -> String {
-    if b.tabs.is_empty() {
-        "everywhere".into()
-    } else {
-        b.tabs.iter().map(|t| t.label()).collect::<Vec<_>>().join(", ")
-    }
 }

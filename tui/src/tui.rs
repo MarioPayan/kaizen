@@ -648,13 +648,15 @@ fn draw_detail(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
     );
 }
 
-/// The keys, from the one table that also dispatches them.
+/// The keys for one tab, from the table that also dispatches them.
 ///
-/// Nothing is written twice: a binding that applies to one tab says so here,
-/// and the same field is what stops the key firing anywhere else.
-fn help_lines() -> Vec<Line<'static>> {
+/// Only what works here. The same `tabs` field that stops a key firing on the
+/// wrong view is what keeps it off this card, so the two cannot disagree — and
+/// a key that means something different per view shows the meaning it has here
+/// rather than all three at once.
+fn help_lines(tab: Tab) -> Vec<Line<'static>> {
     let mut out = Vec::new();
-    for (section, bindings) in keys::sections() {
+    for (section, bindings) in keys::sections(tab) {
         out.push(Line::styled(
             format!("  {section}"),
             Style::new().fg(theme::accent()).add_modifier(Modifier::BOLD),
@@ -662,16 +664,25 @@ fn help_lines() -> Vec<Line<'static>> {
         for b in bindings {
             out.push(Line::from(vec![
                 Span::styled(format!("    {:<8}", b.hint), Style::new().fg(theme::ok())),
-                Span::raw(format!("{:<18}", b.label)),
-                Span::styled(keys::where_of(b), Style::new().fg(theme::dim())),
+                Span::raw(b.label),
             ]));
         }
         out.push(Line::raw(""));
     }
-    out.push(Line::styled(
-        "  applying needs a clean tree and a patch on disk",
-        Style::new().fg(theme::dim()),
-    ));
+    // The section loop leaves a blank after the last group; drop it so a card
+    // with no footnote does not end in whitespace.
+    while out.last().is_some_and(|l| l.spans.iter().all(|s| s.content.trim().is_empty())) {
+        out.pop();
+    }
+    // Only where applying is a thing you can do here. A footnote about git on
+    // the settings card is the same clutter as a key you cannot press.
+    if keys::resolve(ratatui::crossterm::event::KeyCode::Enter, tab) == Some(keys::Action::Apply) {
+        out.push(Line::raw(""));
+        out.push(Line::styled(
+            "  applying needs a clean tree and a patch on disk",
+            Style::new().fg(theme::dim()),
+        ));
+    }
     out
 }
 
@@ -772,7 +783,7 @@ fn docs_lines(width: usize) -> Vec<Line<'static>> {
     out
 }
 
-fn draw_overlay(frame: &mut Frame, area: Rect, overlay: &Overlay) {
+fn draw_overlay(frame: &mut Frame, area: Rect, overlay: &Overlay, tab: Tab) {
     // Size first: the docs wrap their own prose and need to know how wide the box
     // will be. `min` after the clamp — on a terminal narrower than the floor the
     // box would otherwise be wider than the screen and the centring underflows.
@@ -784,13 +795,15 @@ fn draw_overlay(frame: &mut Frame, area: Rect, overlay: &Overlay) {
     let (title, body, scroll) = match overlay {
         Overlay::Help { guide, scroll } => (
             // Both halves named in the title, the current one marked, so the
-            // switch is discoverable without being explained.
+            // switch is discoverable without being explained. The keys half
+            // names its view, because it is showing that view's keys only.
             format!(
-                "help — {} keys {} guide   (tab switches)",
+                "help — {} keys ({}) {} guide   (tab switches)",
                 if *guide { " " } else { "▸" },
+                tab.label(),
                 if *guide { "▸" } else { " " },
             ),
-            if *guide { docs_lines(inner_w) } else { help_lines() },
+            if *guide { docs_lines(inner_w) } else { help_lines(tab) },
             *scroll,
         ),
         Overlay::File { path, body, scroll } => (
@@ -921,7 +934,7 @@ fn draw(frame: &mut Frame, app: &App) {
     draw_footer(frame, footer, app);
 
     if let Some(overlay) = &app.overlay {
-        draw_overlay(frame, frame.area(), overlay);
+        draw_overlay(frame, frame.area(), overlay, app.tab);
     }
 }
 
@@ -1434,7 +1447,7 @@ mod tests {
     /// advertised, so they are the only places it can be advertised wrongly.
     #[test]
     fn help_is_on_h_everywhere_it_is_offered() {
-        let card = help_lines()
+        let card = help_lines(Tab::Queue)
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
             .collect::<Vec<_>>()
@@ -1510,6 +1523,46 @@ mod tests {
             app.remember();
         }
         assert!(app.history.len() <= 32);
+    }
+
+    /// The card is the current view's keys, not a catalogue with a "where"
+    /// column. That is what lets one key mean different things per view without
+    /// the card contradicting itself.
+    #[test]
+    fn the_help_card_shows_only_this_view_and_its_meaning_of_a_key() {
+        let card = |tab| {
+            help_lines(tab)
+                .iter()
+                .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        // `enter` is bound three times, once per view. Each card shows its one.
+        let queue = card(Tab::Queue);
+        assert!(queue.contains("apply"), "{queue}");
+        assert!(!queue.contains("show members"), "and not the clusters meaning: {queue}");
+        assert!(!queue.contains("open file"), "nor the skills one: {queue}");
+
+        let clusters = card(Tab::Clusters);
+        assert!(clusters.contains("show members"), "{clusters}");
+        assert!(!clusters.contains("enter   apply"), "{clusters}");
+        // The git footnote is queue-only too — it is advice about a key that is
+        // not bound here.
+        assert!(!clusters.contains("clean tree"), "{clusters}");
+        assert!(queue.contains("clean tree"), "{queue}");
+
+        assert!(card(Tab::Skills).contains("open file"));
+
+        // Keys that do not work here are not offered here.
+        assert!(!card(Tab::Skills).contains("approve"), "skills cannot approve");
+        assert!(card(Tab::Settings).contains("save"), "but settings can save");
+        assert!(!card(Tab::Queue).contains("save"), "and the queue cannot");
+
+        // No "where" column left to disagree with the filtering.
+        for tab in Tab::ALL {
+            assert!(!card(tab).contains("everywhere"), "{tab:?} card names no scope");
+        }
     }
 
     #[test]
