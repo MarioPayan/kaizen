@@ -653,11 +653,35 @@ fn draw_detail(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
 /// they are ever named.
 const QUEUE_COLUMNS: &[(&str, &str)] = &[
     ("score", "impact × (1 + recurrences) ÷ effort; untriaged score 0"),
-    ("H M L", "severity: high, medium, low — a letter so it survives no colour"),
-    ("status", "three letters, spelled out below"),
+    ("H M L", "severity, as a letter so it survives a terminal with no colour"),
+    ("status", "how far it has got"),
     ("skill", "which skill filed it"),
     ("slug", "what it is about"),
 ];
+
+/// The closed set a column can hold, when it has one.
+///
+/// A sub-list rather than a run-on inside the description: nine statuses in one
+/// wrapped sentence is a thing you read twice and still lose your place in.
+/// Empty for a column whose values are open — a slug or a filename.
+fn column_values(tab: Tab, column: &str) -> Vec<(String, String)> {
+    let pairs = |xs: &[(&str, &str)]| {
+        xs.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect::<Vec<_>>()
+    };
+    match (tab, column) {
+        // Generated, so renaming a status cannot leave a stale legend behind.
+        (Tab::Queue, "status") => lifecycle()
+            .statuses
+            .iter()
+            .map(|s| (s.abbrev.clone(), s.id.clone()))
+            .collect(),
+        (Tab::Queue, "H M L") => {
+            pairs(&[("H", "high"), ("M", "medium"), ("L", "low")])
+        }
+        (Tab::Skills, "health") => pairs(skills::HEALTH),
+        _ => Vec::new(),
+    }
+}
 
 fn columns_for(tab: Tab) -> &'static [(&'static str, &'static str)] {
     match tab {
@@ -719,17 +743,23 @@ fn help_columns(tab: Tab, width: usize) -> Vec<Line<'static>> {
         for line in wrapped(meaning, "    ", width) {
             out.push(Line::styled(line, Style::new().fg(theme::dim())));
         }
-        // Spelled out from the spec, directly under the column it explains, so
-        // a renamed status cannot leave a stale legend behind.
-        if *name == "status" {
-            let legend = lifecycle()
-                .statuses
-                .iter()
-                .map(|s| format!("{} {}", s.abbrev, s.id))
-                .collect::<Vec<_>>()
-                .join(" · ");
-            for line in wrapped(&legend, "    ", width) {
-                out.push(Line::styled(line, Style::new().fg(theme::dim())));
+        // Sized to the longest value in this list, not a fixed column: three
+        // letters padded to eleven reads as two separate lists.
+        let values = column_values(tab, name);
+        let pad = values.iter().map(|(v, _)| v.chars().count()).max().unwrap_or(0) + 2;
+        for (value, meaning) in values {
+            // Wrapped here, with the value's column left blank on continuation
+            // rows. Letting the Paragraph wrap it restarts at column zero, which
+            // puts the second half of a sentence under the next value.
+            let avail = width.saturating_sub(6 + pad).max(16);
+            for (n, chunk) in wrapped(&meaning, "", avail).iter().enumerate() {
+                out.push(Line::from(vec![
+                    Span::styled(
+                        format!("      {:<pad$}", if n == 0 { value.as_str() } else { "" }),
+                        Style::new().fg(theme::ok()),
+                    ),
+                    Span::styled(chunk.clone(), Style::new().fg(theme::dim())),
+                ]));
             }
         }
     }
@@ -1709,6 +1739,50 @@ mod tests {
                 assert!(text.contains(name), "{tab:?} header shows {name:?}: {text}");
             }
         }
+    }
+
+    /// A closed set reads as a list, not as a sentence with nine items in it.
+    #[test]
+    fn a_column_with_a_closed_set_lists_its_values() {
+        let lines = |tab| {
+            help_columns(tab, 60)
+                .iter()
+                .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+                .collect::<Vec<_>>()
+        };
+
+        let queue = lines(Tab::Queue);
+        // Every status on its own line, generated from the spec.
+        for s in &lifecycle().statuses {
+            assert!(
+                queue.iter().any(|l| l.trim_start().starts_with(&s.abbrev) && l.contains(&s.id)),
+                "{} is its own row",
+                s.id,
+            );
+        }
+        // And not crammed into one, which is what it used to be.
+        assert!(!queue.iter().any(|l| l.contains("rec recorded · tri")), "no run-on legend");
+
+        for (value, _) in skills::HEALTH {
+            assert!(lines(Tab::Skills).iter().any(|l| l.contains(value)), "{value} is listed");
+        }
+
+        // A column whose values are open gets no sub-list invented for it.
+        assert!(column_values(Tab::Queue, "slug").is_empty());
+        assert!(column_values(Tab::Clusters, "scope").is_empty());
+    }
+
+    /// The light theme assumed a light terminal — grey dim, a blue accent and a
+    /// near-white selection — and read as grey-on-grey where it actually ran.
+    #[test]
+    fn only_themes_that_work_on_a_dark_terminal_remain() {
+        assert_eq!(theme::NAMES, ["dark", "high-contrast"]);
+        // Cycling has to come home, or `t` becomes a key you press hoping.
+        let first = theme::dim();
+        for _ in 0..theme::NAMES.len() {
+            theme::cycle();
+        }
+        assert_eq!(theme::dim(), first);
     }
 
     #[test]

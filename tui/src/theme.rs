@@ -10,7 +10,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::lifecycle::status_spec;
 
 static CURRENT: AtomicUsize = AtomicUsize::new(0);
-pub const NAMES: [&str; 3] = ["dark", "light", "high-contrast"];
+/// Two, both for a dark terminal.
+///
+/// There was a `light` one, and it was the wrong shape: `Gray` dim, a `Blue`
+/// accent and a near-white selection all assume a light background, so on the
+/// terminal anyone actually runs this in it read as grey-on-grey. A theme that
+/// only works somewhere else is worse than not offering one.
+pub const NAMES: [&str; 2] = ["dark", "high-contrast"];
 
 pub fn cycle() {
     let _ = CURRENT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |i| Some((i + 1) % NAMES.len()));
@@ -21,22 +27,25 @@ fn i() -> usize {
 }
 
 pub fn accent() -> Color {
-    [Color::Cyan, Color::Blue, Color::Rgb(0, 255, 255)][i()]
+    [Color::Cyan, Color::Rgb(0, 255, 255)][i()]
 }
 pub fn dim() -> Color {
-    [Color::DarkGray, Color::Gray, Color::Gray][i()]
+    // High contrast means high contrast: `Gray` sat on a #464646 selection and
+    // was the least readable thing on screen, in the theme named for being the
+    // most readable.
+    [Color::DarkGray, Color::Rgb(190, 190, 190)][i()]
 }
 pub fn ok() -> Color {
-    [Color::Green, Color::Green, Color::Rgb(0, 255, 0)][i()]
+    [Color::Green, Color::Rgb(0, 255, 0)][i()]
 }
 pub fn warn() -> Color {
-    [Color::Yellow, Color::Rgb(176, 120, 0), Color::Rgb(255, 255, 0)][i()]
+    [Color::Yellow, Color::Rgb(255, 255, 0)][i()]
 }
 pub fn err() -> Color {
-    [Color::Red, Color::Red, Color::Rgb(255, 80, 80)][i()]
+    [Color::Red, Color::Rgb(255, 80, 80)][i()]
 }
 pub fn selection_bg() -> Color {
-    [Color::Rgb(45, 55, 70), Color::Rgb(206, 216, 232), Color::Rgb(70, 70, 70)][i()]
+    [Color::Rgb(45, 55, 70), Color::Rgb(70, 70, 70)][i()]
 }
 
 pub fn severity_colour(s: &str) -> Color {

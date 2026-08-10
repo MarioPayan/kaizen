@@ -17,12 +17,22 @@ use crate::ui::titled;
 /// The columns, and what they mean. The header is built from the first of each
 /// pair, so it cannot drift from the explanation.
 pub const COLUMNS: &[(&str, &str)] = &[
-    ("health", "scripted · watch · noisy · quiet — the shape, in one word"),
+    ("health", "the shape of this skill, in one word"),
     ("per100", "suggestions per 100 lines of prose: the ratio the tool argues about"),
     ("filed", "suggestions filed against this skill"),
     ("scripts", "scripts it can call instead of re-deriving the same thing"),
     ("lines", "how much prose it carries"),
     ("skill", "name, or the library module's path"),
+];
+
+/// What each `health` word means. Its own list rather than a run-on in the
+/// column's description, because four values crammed into one sentence is the
+/// thing you have to re-read.
+pub const HEALTH: &[(&str, &str)] = &[
+    ("scripted", "has scripts and nothing filed — the shape to aim for"),
+    ("noisy", "two or more suggestions per hundred lines"),
+    ("watch", "some, but under that"),
+    ("quiet", "nothing filed against it"),
 ];
 
 /// Worst ratio first — the list is a work order, not a directory.
