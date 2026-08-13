@@ -9,7 +9,6 @@ import { readdirSync, readFileSync, statSync, existsSync } from 'node:fs';
 import { join, relative, dirname, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { parseSuggestion } from './suggestion.mjs';
-import { categorize } from './categories.mjs';
 import { resolveTargets, expandPath } from './config.mjs';
 import { surfaceOf, passesSurface } from './taxonomy.mjs';
 import { suggestionId } from './paths.mjs';
@@ -268,8 +267,6 @@ export function buildState(config) {
   const surface = surfaceOf(config);
   for (const s of suggestions) s.surfaced = passesSurface(s, surface);
 
-  const categories = categorize(suggestions, { promotion: config.categoryPromotion });
-
   // A feedback folder whose skill no longer exists still holds real findings —
   // often the same live problem filed under a name that has since been renamed.
   const liveSkills = new Set(skills.map((s) => s.name));
@@ -296,9 +293,8 @@ export function buildState(config) {
       return { ...s, suggestions, per100, health: health(s, suggestions, per100) };
     }),
     suggestions,
-    categories,
     orphans,
-    metrics: metrics(suggestions, skills, categories, open),
+    metrics: metrics(suggestions, skills, open),
   };
 }
 
@@ -317,7 +313,7 @@ function health(skill, suggestions, per100) {
   return 'quiet';
 }
 
-function metrics(suggestions, skills, categories, open) {
+function metrics(suggestions, skills, open) {
   const incidents = suggestions.reduce((sum, s) => sum + s.incidents, 0);
   const recurrences = suggestions.reduce((sum, s) => sum + s.recurrences, 0);
   const byRung = {};
@@ -332,8 +328,6 @@ function metrics(suggestions, skills, categories, open) {
     untriaged: suggestions.filter((s) => !s.triaged).length,
     incidents,
     recurrences,
-    categories: categories.length,
-    promotedCategories: categories.filter((c) => c.promoted).length,
     incidentsByRung: byRung,
     proseLines,
     scriptCount: skills.reduce((sum, s) => sum + s.scripts, 0),

@@ -14,7 +14,7 @@ the thing together. The README covers the why; start there if you haven't.
    given field existed.
 2. **Session line.** A `SessionStart` hook (`hooks/session-status.sh`) runs
    `kaizen status`: one line, no model, silent when there is nothing to say. It
-   counts open work only — a promoted category whose members are all applied or
+   counts open work only — a skill whose suggestions are all applied or
    superseded is history and is not named.
 
    The same hook is where the **weekly pass** fires, when `asks.enabled` is on
@@ -25,14 +25,14 @@ the thing together. The README covers the why; start there if you haven't.
    rather than an instruction — to a detached `claude -p`, which follows the
    "Recurring asks" section of the triage skill and files ordinary suggestions
    under `skill: session`. From there they are indistinguishable from any other
-   suggestion — same categories, same promotion rule, same queue.
+   suggestion — same grouping, same queue.
 
 3. **Triage / plan.** `/kaizen:triage` (the `skills/kaizen/SKILL.md` skill) reads
    the state, confirms each problem still exists at HEAD, labels it, and writes
    real patches plus validation plans. All file edits go through the CLI/server,
    never by hand-editing status fields the model forbids.
 4. **Decide.** The only attended phase. `kaizen tui` — approve per suggestion
-   (`a`) or per category (`A`).
+   (`a`) or per skill (`A`).
 5. **Apply.** The server lands each approved patch as one commit with a
    `Kaizen-Suggestion:` trailer. `git log --grep=Kaizen-Suggestion` is the
    ledger; `git revert` is the undo.
@@ -73,14 +73,9 @@ Each module owns one thing; `index.mjs` is the public surface.
   Untriaged scores 0 so it sorts below anything assessed. `writeFrontmatter`
   rewrites keys in place, preserving order and body.
 - **`scan.mjs`** — `buildState(config)` reads the world: skills (in place, never
-  copied), suggestions, categories, orphans, metrics. Collapses git worktrees via
+  copied), suggestions, orphans, metrics. Collapses git worktrees via
   `--git-common-dir` so one repo's skills count once. Tags each suggestion
   `surfaced` (a view preference — nothing is dropped from the state).
-- **`categories.mjs`** — grouping is a key, not an algorithm: `category:` pin (a
-  human decision; `cluster:` still read as its old spelling) beats `scope` — the
-  file the fix lands in — beats `skill:<name>`. Promotion at ≥3 members or ≥5
-  incidents means the fix must land at rung 0/1. The TF-IDF clusterer this
-  replaced was rediscovering scope once capture started requiring it.
 - **`lifecycle.mjs`** — loads and validates `lifecycle.json`, answers every
   status question (`isTerminal`, `canTransition`, `hasLanded`,
   `awaitingDecision`, `missingRequirements`…), and renders `docs/LIFECYCLE.md`.
@@ -93,7 +88,7 @@ Each module owns one thing; `index.mjs` is the public surface.
   decides when to read it. Redacts URLs and paths, windows to `asks.days`, drops
   `/` and `!` lines, collapses exact repeats. It deliberately groups nothing:
   over 5,556 real prompts the top repeated 3-grams were all URL and
-  home-directory fragments, which is the same wall `categories.mjs` hit. Off
+  home-directory fragments — the same wall the old clusterer hit. Off
   unless `asks.enabled` — the file is everything the user has ever typed.
   `windowDays` gives the first pass the full backlog and every later one only
   what has happened since the last stamp plus a lookback, so a pass never spends
@@ -115,7 +110,7 @@ write files and shell out to git.
 | `GET /api/skill?path=`                 | raw markdown, containment-checked                  |
 | `GET /api/diff?id=`                    | the sibling `.patch`, if any                       |
 | `POST /api/suggestion`                 | one status move, gated (see below)                 |
-| `POST /api/category`                   | one status move for every member — all-or-nothing  |
+| `POST /api/group`                      | one status move per skill — moves the movable      |
 | `POST /api/dispatch`                   | one detached `claude` run — one id, or the backlog |
 | `POST /api/apply`                      | `git apply` + one commit + writes `applied` + sha  |
 | `POST /api/revert`                     | `git revert` a kaizen commit on a writable target  |
@@ -145,9 +140,8 @@ and the `D` docs overlay work with the server down.
 - `keys.rs` — every binding declared once; the help card and footer are built
   from the same table, so a key cannot be documented one way and bound another.
 - `views/` — board (a lane per live status plus one closed lane, all spec-derived,
-  empty lanes collapse), categories (approve as one decision), skills (failures
-  per 100 lines of prose, worst first), settings (edit via `$EDITOR`, server
-  validates).
+  empty lanes collapse), skills (failures per 100 lines of prose, worst first),
+  settings (edit via `$EDITOR`, server validates).
 - `theme.rs` — one palette; `lifecycle.rs` — the embedded spec and its queries.
 
 The boundary that matters: **the engine decides, the TUI draws.** Every derived

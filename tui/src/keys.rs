@@ -12,24 +12,22 @@
 
 use ratatui::crossterm::event::KeyCode;
 
-/// The five places you work. Overlays are things you consult on top of one.
+/// The four places you work. Overlays are things you consult on top of one.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tab {
     Queue,
     Board,
-    Categories,
     Skills,
     Settings,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 5] = [Tab::Queue, Tab::Board, Tab::Categories, Tab::Skills, Tab::Settings];
+    pub const ALL: [Tab; 4] = [Tab::Queue, Tab::Board, Tab::Skills, Tab::Settings];
 
     pub fn label(self) -> &'static str {
         match self {
             Tab::Queue => "queue",
             Tab::Board => "board",
-            Tab::Categories => "categories",
             Tab::Skills => "skills",
             Tab::Settings => "settings",
         }
@@ -50,7 +48,7 @@ pub enum Action {
     Guide,
     Approve,
     Reject,
-    ApproveCategory,
+    ApproveSkill,
     /// Send one detached fable run at the selected suggestion.
     Triage,
     /// Send one detached fable run at everything a pass can still move.
@@ -82,7 +80,6 @@ const QUEUE: &[Tab] = &[Tab::Queue];
 const BOARD: &[Tab] = &[Tab::Board];
 /// Where the per-suggestion decide keys work: anywhere one suggestion is selected.
 const DECIDING: &[Tab] = &[Tab::Queue, Tab::Board];
-const CATEGORIES: &[Tab] = &[Tab::Categories];
 const SKILLS: &[Tab] = &[Tab::Skills];
 const SETTINGS: &[Tab] = &[Tab::Settings];
 
@@ -162,13 +159,13 @@ pub const BINDINGS: &[Binding] = &[
         tabs: BOARD,
         action: Action::Lane(1),
     },
-    // The shifted key widens the same verb — `a` this item, `A` its category;
-    // `t` this item, `T` the backlog. One footer entry carries both spellings,
-    // and the shifted binding rides under it as a blank-hint alternate.
+    // The shifted key widens the same verb — `a` this item, `A` its whole
+    // skill; `t` this item, `T` the backlog. One footer entry carries both
+    // spellings, and the shifted binding rides under it as a blank-hint alternate.
     Binding {
         keys: &[KeyCode::Char('a')],
         hint: "a",
-        label: "approve (A category)",
+        label: "approve (A skill)",
         section: "decide",
         tabs: DECIDING,
         action: Action::Approve,
@@ -179,16 +176,7 @@ pub const BINDINGS: &[Binding] = &[
         label: "",
         section: "decide",
         tabs: DECIDING,
-        action: Action::ApproveCategory,
-    },
-    // Categories has no lowercase partner for `A`, so there it keeps its own line.
-    Binding {
-        keys: &[KeyCode::Char('A')],
-        hint: "A",
-        label: "approve category",
-        section: "decide",
-        tabs: CATEGORIES,
-        action: Action::ApproveCategory,
+        action: Action::ApproveSkill,
     },
     Binding {
         keys: &[KeyCode::Char('r')],
@@ -214,14 +202,6 @@ pub const BINDINGS: &[Binding] = &[
         // item happens in the queue, where the plan and validation are visible.
         section: "decide",
         tabs: BOARD,
-        action: Action::Open,
-    },
-    Binding {
-        keys: &[KeyCode::Enter],
-        hint: "enter",
-        label: "show members",
-        section: "decide",
-        tabs: CATEGORIES,
         action: Action::Open,
     },
     Binding {
@@ -291,7 +271,7 @@ pub const BINDINGS: &[Binding] = &[
     },
     Binding {
         keys: &[KeyCode::Char('1')],
-        hint: "1-5",
+        hint: "1-4",
         label: "tabs",
         section: "tabs",
         tabs: ALL,
@@ -311,18 +291,10 @@ pub const BINDINGS: &[Binding] = &[
         label: "",
         section: "tabs",
         tabs: ALL,
-        action: Action::Go(Tab::Categories),
-    },
-    Binding {
-        keys: &[KeyCode::Char('4')],
-        hint: "",
-        label: "",
-        section: "tabs",
-        tabs: ALL,
         action: Action::Go(Tab::Skills),
     },
     Binding {
-        keys: &[KeyCode::Char('5')],
+        keys: &[KeyCode::Char('4')],
         hint: "",
         label: "",
         section: "tabs",
@@ -386,7 +358,7 @@ pub fn resolve(key: KeyCode, tab: Tab) -> Option<Action> {
 }
 
 /// The footer's offer for this tab. Bindings with a blank hint are alternates
-/// of the one above them — `k` is `j/k`, `2` is part of `1-5` — and are not
+/// of the one above them — `k` is `j/k`, `2` is part of `1-4` — and are not
 /// offered twice.
 pub fn hints(tab: Tab) -> Vec<(&'static str, &'static str)> {
     BINDINGS
@@ -401,7 +373,7 @@ pub fn hints(tab: Tab) -> Vec<(&'static str, &'static str)> {
 /// Filtered to the tab rather than listing everything with a "where" column.
 /// That is what lets one key carry a different meaning per view without the
 /// card reading as a contradiction: on the queue `enter` is "apply", on
-/// categories it is "show members", and you only ever see the one that is true
+/// the board it is "open in queue", and you only ever see the one that is true
 /// where you are standing.
 pub fn sections(tab: Tab) -> Vec<(&'static str, Vec<&'static Binding>)> {
     let mut out: Vec<(&'static str, Vec<&'static Binding>)> = Vec::new();

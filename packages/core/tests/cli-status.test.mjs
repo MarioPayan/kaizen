@@ -112,11 +112,11 @@ describe('kaizen status', () => {
   });
 
   /**
-   * `top:` has to name work, not history. A promoted cluster whose members are
-   * all applied or superseded is fully addressed — and one of exactly that shape
+   * `top:` has to name work, not history. A skill whose suggestions are all
+   * applied or superseded is fully addressed — and one of exactly that shape
    * was headlining every session with 27 incidents nobody could act on.
    */
-  it('names a top cluster only while some of it is still open', () => {
+  it('names a top skill only while some of its work is still open', () => {
     mkdirSync(join(root, 'feedback', 'demo2'), { recursive: true });
     const member = (slug, status) =>
       writeFileSync(
@@ -126,14 +126,11 @@ describe('kaizen status', () => {
           'skill: demo2',
           'date: 2026-01-02',
           'severity: low',
-          'cluster: pinned-pair',
           `status: ${status}`,
           '---',
           '',
           '## Suggestion',
           '',
-          // Vocabulary the demo file above does not share — otherwise its
-          // still-open member drifts into this cluster and keeps `top:` honest.
           'normalise the remote before comparing',
           '',
           '## Recurrence — 2026-01-03',
@@ -143,14 +140,14 @@ describe('kaizen status', () => {
         ].join('\n'),
       );
 
-    // 3 incidents each → 6 ≥ 5: promoted. Both landed or terminal → silent.
+    // 3 incidents each → 6 ≥ 5: loud enough. Both landed or terminal → silent.
     member('origin-first', 'applied');
     member('origin-second', 'superseded');
     expect(run(base())).not.toMatch(/top:/);
 
-    // One member back in play → the cluster is work again.
+    // One member back in play → the skill is work again.
     member('origin-first', 'recorded');
-    expect(run(base())).toMatch(/top: pinned-pair/);
+    expect(run(base())).toMatch(/top: demo2 \(6\)/);
   });
 });
 
@@ -170,9 +167,9 @@ describe('kaizen status --bar', () => {
     return { raw: out, plain: out.replace(/\x1b\[[0-9;]*m/g, '').trim() };
   };
 
-  it('draws one dot per pile and points at the hottest open category', () => {
-    // The corpus built up by the tests above: pinned-pair holds a recorded
-    // member (3 incidents) plus superseded/approved siblings from demo.
+  it('draws one dot per pile and points at the hottest open skill', () => {
+    // The corpus built up by the tests above: demo2 holds a recorded member
+    // (3 incidents) plus a superseded sibling, 6 incidents in all.
     const { plain } = bar(base());
     expect(plain).toMatch(/^改 ○\d+/);
     expect(plain).toContain('▲');

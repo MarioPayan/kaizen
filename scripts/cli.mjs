@@ -41,7 +41,6 @@ import {
   discoverSuggestions,
   surfaceOf,
   passesSurface,
-  categorize,
   readAsks,
   passDue,
   windowDays,
@@ -49,7 +48,6 @@ import {
   canonicalStatus,
   isTerminal,
   hasLanded,
-  canTransition,
   nextStatuses,
   missingRequirements,
   renderMarkdown,
@@ -190,7 +188,7 @@ async function cmdInit() {
   for (const w of state.warnings) console.log(`  warning: ${w}`);
   console.log(
     `\nFound ${state.skills.length} skills and ${state.metrics.total} suggestions ` +
-      `(${state.metrics.incidents} incidents, ${state.metrics.categories} categories).`,
+      `(${state.metrics.incidents} incidents).`,
   );
   console.log('\nNext: `kaizen serve` to open the app, or run /kaizen:triage in Claude Code.\n');
 }
@@ -226,14 +224,36 @@ function cmdScan() {
  *
  * The dot's fill IS the state: ○ unjudged (to triage), ● a decision that is
  * yours — the only amber thing, because it is the only thing that ever needs
- * you — ◐ half-done (landed, unverified), ▲ the hottest promoted category
- * with open work. Zero segments vanish; an empty backlog is a dim 改, which
+ * you — ◐ half-done (landed, unverified), ▲ the busiest skill with open
+ * work. Zero segments vanish; an empty backlog is a dim 改, which
  * proves the segment is alive without saying anything.
  *
  * Runs on every status-line refresh, so it reads suggestions only — no skills
  * discovery, no project scan, no git. And it never errors out loud: a bar that
  * prints a stack trace every few seconds is worse than no bar.
  */
+/**
+ * The busiest skill still holding open work — the bar's ▲ and the line's
+ * "top". Grouping is the skill itself now (`session` included), so this is a
+ * count, not a clustering pass.
+ */
+function hottestSkill(suggestions, openIds) {
+  const bySkill = new Map();
+  for (const s of suggestions) {
+    const e = bySkill.get(s.skill) ?? { incidents: 0, open: false };
+    e.incidents += s.incidents;
+    e.open ||= openIds.has(s.id);
+    bySkill.set(s.skill, e);
+  }
+  // Incidents count the skill's whole history — that is what says "this one
+  // keeps failing" — but only a skill with open work is worth pointing at.
+  // ponytail: 5 mirrors the old promotion threshold — a knob nobody ever turned.
+  const top = [...bySkill.entries()]
+    .filter(([, e]) => e.open && e.incidents >= 5)
+    .sort((a, b) => b[1].incidents - a[1].incidents)[0];
+  return top ? { skill: top[0], incidents: top[1].incidents } : null;
+}
+
 function cmdBar() {
   const paint = (code, text) => `\x1b[${code}m${text}\x1b[0m`;
   try {
@@ -256,13 +276,12 @@ function cmdBar() {
     const deciding = surfaced.filter((s) => wants.includes(s.status)).length;
     const landed = surfaced.filter((s) => hasLanded(s.status) && !isTerminal(s.status)).length;
 
-    // Same rule as the session line: a category is only worth pointing at
-    // while something in it is still open work.
+    // Same rule as the session line: a skill is only worth pointing at
+    // while something of its own is still open work.
     const open = new Set(
       surfaced.filter((s) => !isTerminal(s.status) && !hasLanded(s.status)).map((s) => s.id),
     );
-    const categories = categorize(suggestions, { promotion: config.categoryPromotion });
-    const top = categories.find((c) => c.promoted && c.members.some((m) => open.has(m)));
+    const top = hottestSkill(suggestions, open);
 
     const parts = [];
     if (toTriage) parts.push(paint('36', `○${toTriage}`));
@@ -297,7 +316,6 @@ function cmdStatus() {
   } catch {
     return;
   }
-  const { categories } = state;
 
   // Counted over what the user asked to see, not over everything on disk. The
   // dashboard's header still reports the full totals; this line is the one that
@@ -320,12 +338,12 @@ function cmdStatus() {
   const wants = awaitingDecision();
   const ready = surfaced.filter((s) => wants.includes(s.status)).length;
   if (ready) parts.push(`${ready} awaiting you`);
-  // A category is worth naming only while something in it is still open work —
-  // surfaced, no commit landed, not terminal. One whose members are all applied
-  // or superseded is history, and it was headlining every session as "top".
+  // A skill is worth naming only while something of its own is still open work
+  // — surfaced, no commit landed, not terminal. One whose suggestions are all
+  // applied or superseded is history, and it was headlining every session as "top".
   const ids = new Set(surfaced.filter((s) => !isTerminal(s.status) && !hasLanded(s.status)).map((s) => s.id));
-  const top = categories.find((c) => c.promoted && c.members.some((m) => ids.has(m)));
-  if (top) parts.push(`top: ${top.id} (${top.incidents})`);
+  const top = hottestSkill(state.suggestions, ids);
+  if (top) parts.push(`top: ${top.skill} (${top.incidents})`);
   if (parts.length === 0) return;
   console.log(`kaizen: ${parts.join(' · ')}`);
 }
@@ -426,7 +444,6 @@ const TRIAGE_FIELDS = {
   status: STATUSES,
   rung: ['0', '1', '2', '3'],
   scope: null, // free text: a path, checked for being non-empty only
-  category: null,
   // The triage phase's own output: which commit the problem was last confirmed
   // to still exist at. Without it a pass cannot legally reach `triaged`, and the
   // 27 already-fixed suggestions this check exists for stay invisible.

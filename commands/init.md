@@ -12,6 +12,6 @@ It looks for skills in the usual places, asks before adding any of them, and ask
 separately about scanning project repositories. Nothing is assumed about this
 machine's layout.
 
-Afterwards, report what it found: how many skills, how many suggestions, how many
-categories. If it reported warnings about missing paths, surface them — those are
+Afterwards, report what it found: how many skills and how many
+suggestions. If it reported warnings about missing paths, surface them — those are
 configuration problems, not noise.

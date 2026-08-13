@@ -1,6 +1,6 @@
 ---
 name: kaizen
-description: Triage the improvement suggestions your skills have filed, categorise recurring failures, and propose fixes that push instructions down into scripts. Use when the user says "/kaizen:triage", "/kaizen", "triage my skills", "what should I fix in my skills", "review the skill backlog", "kaizen pass", or when a session-start line reports untriaged suggestions. Also use to drain approved proposals into applied commits.
+description: Triage the improvement suggestions your skills have filed, group recurring failures by skill, and propose fixes that push instructions down into scripts. Use when the user says "/kaizen:triage", "/kaizen", "triage my skills", "what should I fix in my skills", "review the skill backlog", "kaizen pass", or when a session-start line reports untriaged suggestions. Also use to drain approved proposals into applied commits.
 ---
 
 # kaizen
@@ -51,7 +51,7 @@ Files written before the spec carry the older names — `new` and `proposed`. Th
 ## Inputs
 
 - `MODE` — (optional) `triage` (default), `drain`, `report`
-- `TARGET` — (optional) a category id, suggestion id, or skill name to limit the pass
+- `TARGET` — (optional) a suggestion id or skill name to limit the pass
 
 ## Outputs
 
@@ -63,7 +63,7 @@ Files written before the spec carry the older names — `new` and `proposed`. Th
 
 ## Step 1 — Read the state
 
-Run the scanner rather than walking directories by hand. It parses, scores, categorises and reports orphans deterministically, and it is the same code the app renders:
+Run the scanner rather than walking directories by hand. It parses, scores and reports orphans deterministically, and it is the same code the app renders:
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/cli.mjs" scan --pretty
@@ -71,7 +71,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/cli.mjs" scan --pretty
 
 If it reports no config, stop and tell the user to run `/kaizen:init`. Do not guess at paths.
 
-Note `metrics.untriaged`, the promoted categories, and `warnings`. Warnings about a missing path are configuration problems — surface them, do not work around them.
+Note `metrics.untriaged` and `warnings`. Warnings about a missing path are configuration problems — surface them, do not work around them.
 
 ## Step 2 — Triage
 
@@ -111,10 +111,10 @@ For each suggestion where `triaged` is false, decide:
 
 Two rules while triaging:
 
-- **`scope` matters more than it looks.** It IS the category: suggestions sharing a scope share one fix and one decision. Measured on the first full pass: supplying it collapsed 34 vague groups into 9 that each name exactly one file. When the fix is a script that does not exist yet, name the path it *would* live at — that is what gathers "five wrong `gh` commands in one skill" into one decision.
+- **`scope` matters more than it looks.** Suggestions sharing a scope share one fix and one decision. Measured on the first full pass: supplying it collapsed 34 vague groups into 9 that each name exactly one file. When the fix is a script that does not exist yet, name the path it *would* live at — that is what gathers "five wrong `gh` commands in one skill" into one decision.
 - **Do not invent severity.** If the original author left it blank, read the Context and decide from what actually happened, or leave it blank and say so. A wrong label outranks a missing one in the queue, which is worse.
 
-Then re-run the scan so categories reflect the new `scope` values.
+Then re-run the scan so the state reflects the new `scope` values.
 
 ## Step 3 — Confirm the problem still exists
 
@@ -142,15 +142,15 @@ For each candidate, read the current `scope` file at HEAD.
 A confirmation is worth exactly as much as its commit. If the tree has moved a
 long way since, confirm again rather than trusting an old stamp.
 
-## Step 4 — Category promotion
+## Step 4 — Repeated scopes
 
-A category at or above the configured threshold (default: 3 members, or 5 incidents) is **promoted**. For a promoted category:
+When several suggestions share one `scope`, that repetition is evidence prose already failed there. For a scope with 3+ members or 5+ incidents:
 
-- The fix **must** land at rung 0 or rung 1. Patching one skill's prose is not an acceptable outcome — the category is proof that prose already failed there repeatedly.
+- The fix **must** land at rung 0 or rung 1. Patching one skill's prose is not an acceptable outcome — the recurrence is proof that prose already failed there repeatedly.
 - Add one line to the shared authoring conventions of the target tree so future skills inherit the rule.
-- Write **one** proposal for the category, not one per member. Members reference it.
+- Write **one** proposal for the scope, not one per member. Members reference it.
 
-Say plainly which categories were promoted and what single artefact each collapses into.
+Say plainly which scopes cross that line and what single artefact each collapses into.
 
 ## Step 5 — Plan
 
@@ -179,8 +179,8 @@ leave it at `triaged` and say so.
 
 ```bash
 # in the target's skills directory
-git diff > /tmp/kaizen-<category-or-id>.patch
-git apply --check /tmp/kaizen-<category-or-id>.patch   # must pass before it is offered
+git diff > /tmp/kaizen-<scope-or-id>.patch
+git apply --check /tmp/kaizen-<scope-or-id>.patch   # must pass before it is offered
 ```
 
 Store it beside the suggestion as `<suggestion-basename>.patch`.
@@ -197,7 +197,7 @@ patch to satisfy the gate.
 
 This is the one attended phase, so it is the only place the loop pauses.
 
-Show a ranked table for everything at `planned`: category or suggestion,
+Show a ranked table for everything at `planned`: scope or suggestion,
 incidents, rung, scope, the one-line plan, **and how it will be validated**. The
 validation column is the point — it is what turns "do you want this change" into
 "do you want this change, and here is how we will know it worked". Highest score
@@ -205,7 +205,7 @@ first.
 
 **Nothing applies without the user's approval.** There is no bypass — the config used to declare an `autoApply` list and nothing ever read it, so the setting has been removed rather than left describing behaviour that did not exist. Say what is waiting and stop.
 
-The TUI is the other way to approve, and the faster one when the queue is long: `kaizen tui`, tab 2, `A` approves a whole category as one decision.
+The TUI is the other way to approve, and the faster one when the queue is long: `kaizen tui` — `A` approves everything approvable in the selected row’s skill as one decision, and tab 2 is the board when you want the whole state at a glance.
 
 ## Step 7 — Apply, then verify (`MODE=drain`)
 
@@ -217,7 +217,7 @@ For each suggestion at `status: approved`:
 4. Commit one suggestion per commit:
 
 ```
-kaizen(<type>/<objective>): <category or slug>
+kaizen(<type>/<objective>): <scope or slug>
 
 <one line on what changed and why>
 
@@ -279,7 +279,7 @@ is where failures come from. The checklist is now a check:
 | `script-without-self-check` | a rung-1 fix with no way to prove it works — which is not an improvement on the prose it replaced |
 
 `--file` writes each finding into the `kaizen` feedback folder in the same format
-as any other suggestion, so it queues, categorises and scores alongside them. There
+as any other suggestion, so it queues and scores alongside them. There
 is deliberately no special case for the tool complaining about itself: if a
 finding cannot earn its place against the real backlog, it should not be acted on.
 
@@ -325,7 +325,7 @@ File a suggestion when all of these hold:
 Write each one with `${CLAUDE_PLUGIN_ROOT}/skills/_lib/skill-reflect.md`, with these differences:
 
 - `skill: session` — no skill ran, so it files under the reserved name.
-- `scope:` — the path the skill or script **should** live at. That is what puts three separate reports of the same missing skill into one category.
+- `scope:` — the path the skill or script **should** live at. That is what marks three separate reports of the same missing skill as one fix.
 - `## Evidence` — the prompts themselves, verbatim from the corpus, with their counts and dates. This is the only receipt there will ever be; a summary is not one.
 
 Then the rules that keep an unattended pass from becoming its own problem:
@@ -342,7 +342,6 @@ Then the rules that keep an unattended pass from becoming its own problem:
 - **Orphaned feedback.** A folder whose skill no longer exists still holds real findings, often the same live problem under a renamed skill. Read them before deciding: a finding about a shared `_lib/` module usually survives its skill's rename and should be remapped, while one about machinery that has been removed outright should not. Remap with `mv` into the successor's folder **plus** `"skill": "<successor>"` in the triage call — the folder is the scanner's signal but frontmatter wins, so moving alone leaves the orphan warning up. Otherwise move the folder under `_archive/` in the feedback directory, which the scanner skips. Never delete.
 - **A skill the scanner cannot see.** A feedback folder for a skill that lives outside every configured `skills` path — a plugin's own skills, for instance — is reported as an orphan and is not one. Check whether the skill exists somewhere unscanned before remapping or archiving it.
 - **Stale paths in old proposals.** Suggestions written before a reorganisation reference paths that no longer exist. Remap to the current path during triage; if the module is gone entirely, mark `superseded`.
-- **A category the user disagrees with.** Pin the correct grouping with `category: <name>` in frontmatter (`cluster:` is still read as the old spelling). A pin always beats the scope/skill key, and differently-pinned suggestions never merge.
 - **Nothing to do.** Say so in one line and stop. A pass that reports nothing is a good outcome, not a failed run.
 
 ## Notes

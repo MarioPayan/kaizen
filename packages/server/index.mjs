@@ -310,31 +310,34 @@ const routes = {
    * suggestion is further along than the rest would otherwise be half-moved,
    * and there is no transaction to roll back a partial write of eleven files.
    */
-  'POST /api/category': async (req, _res, ctx) => {
-    const { id, status } = await readBody(req);
+  // One decision can close a skill's whole pile: move every suggestion of the
+  // skill that can legally make the move and meets the phase's requirements,
+  // skip the rest, and say how many of each. Not all-or-nothing like the
+  // per-suggestion route — a skill's pile mixes statuses by nature, and
+  // refusing everything because one member is already applied would make the
+  // key useless.
+  'POST /api/group': async (req, _res, ctx) => {
+    const { skill, status } = await readBody(req);
+    if (!skill) throw new HttpError(400, 'skill is required');
     const to = assertSettable(status);
     const state = buildState(ctx.config);
-    const category = state.categories.find((c) => c.id === id);
-    if (!category) throw new HttpError(404, `no such category: ${id}`);
+    const members = state.suggestions.filter((s) => s.skill === skill);
+    if (!members.length) throw new HttpError(404, `no suggestions under skill "${skill}"`);
 
-    const members = category.members.map((m) => ({
-      member: m,
-      from: state.suggestions.find((s) => s.id === m)?.status,
-    }));
-    const refused = members.filter((m) => !canTransition(m.from, to));
-    if (refused.length) {
-      throw new HttpError(
-        409,
-        `${refused.length} of ${members.length} in "${id}" cannot become ${to}: ` +
-          refused.map((m) => `${m.member.split('/').at(-1)} is ${m.from}`).join(', '),
-      );
+    const moved = [];
+    for (const s of members) {
+      if (!canTransition(s.status, to)) continue;
+      try {
+        assertRequirements(ctx.config, s.id, to);
+      } catch {
+        continue;
+      }
+      const { path } = suggestionFile(ctx.config, s.id);
+      writeFrontmatter(path, { status: to });
+      moved.push(s.id);
     }
-    for (const { member } of members) assertRequirements(ctx.config, member, to);
-    for (const { member } of members) {
-      const { path } = suggestionFile(ctx.config, member);
-      writeFrontmatter(path, { status: to, category: category.id });
-    }
-    return { id, status: to, updated: members.length };
+    if (!moved.length) throw new HttpError(409, `nothing under "${skill}" can become ${to}`);
+    return { skill, status: to, moved: moved.length, skipped: members.length - moved.length };
   },
 
   // Triage is unattended by design, so the TUI can start it without leaving the

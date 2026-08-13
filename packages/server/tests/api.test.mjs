@@ -236,6 +236,39 @@ describe('api', () => {
 });
 
 /**
+ * The wide approve: one decision moves a skill's whole pile — what can legally
+ * move moves, the rest is skipped and counted, and a pile with nothing movable
+ * refuses rather than pretending.
+ */
+describe('POST /api/group', () => {
+  it('moves the movable, skips the rest, and refuses an immovable pile', async () => {
+    const file = (slug, status) =>
+      writeFileSync(
+        join(root, 'skills-feedback', 'demo', `2026-04-04-${slug}.md`),
+        `---\nskill: demo\ndate: 2026-04-04\nseverity: low\ntype: hygiene\nobjective: debt\neffort: S\nrung: 1\nstatus: ${status}\n---\n\n## Context\n\nc\n\n## Suggestion\n\ns\n\n## Plan\n\np\n\n## Validation\n\nv\n`,
+      );
+    file('group-a', 'planned');
+    file('group-b', 'verified');
+    writeFileSync(join(root, 'skills-feedback', 'demo', '2026-04-04-group-a.patch'), 'x\n');
+
+    const { status, body } = await api('POST', '/api/group', { skill: 'demo', status: 'approved' });
+    expect(status).toBe(200);
+    expect(body.moved).toBe(1);
+    expect(body.skipped).toBeGreaterThan(0);
+    expect(readFileSync(join(root, 'skills-feedback', 'demo', '2026-04-04-group-a.md'), 'utf8')).toMatch(
+      /status: approved/,
+    );
+
+    const again = await api('POST', '/api/group', { skill: 'demo', status: 'approved' });
+    expect(again.status).toBe(409);
+    expect(again.body.error).toMatch(/nothing under "demo"/);
+
+    const nowhere = await api('POST', '/api/group', { skill: 'ghost', status: 'approved' });
+    expect(nowhere.status).toBe(404);
+  });
+});
+
+/**
  * Dispatch hands the backlog to one detached claude run. The tests cover the
  * seat, not the agent: one run at a time, and the seat frees when it exits.
  */

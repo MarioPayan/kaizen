@@ -24,7 +24,7 @@ const suggestion = (over = {}) => ({
   ...over,
 });
 
-const stateWith = (suggestions) => ({ suggestions, categories: [], skills: [], metrics: {} });
+const stateWith = (suggestions) => ({ suggestions, skills: [], metrics: {} });
 
 // A config with no targets keeps the script-scanning check off the real machine,
 // so these assertions are about the checks and not about this laptop's contents.
@@ -34,7 +34,9 @@ const only = (state, id) => run(state).filter((f) => f.check === id);
 
 describe('kaizen doctor', () => {
   it('says nothing about a healthy queue', () => {
-    const healthy = stateWith([suggestion(), suggestion({ status: 'applied' })]);
+    // Different scopes: sharing one would read as a shared-scope fix orphaning
+    // its sibling, which is a different test below.
+    const healthy = stateWith([suggestion(), suggestion({ status: 'applied', scope: 'other/file.md' })]);
     // dead-config-key greps the real repo and may legitimately fire; every other
     // check must be silent, or a clean run still produces a wall of text.
     const noisy = run(healthy).filter((f) => f.check !== 'dead-config-key');
@@ -42,40 +44,23 @@ describe('kaizen doctor', () => {
   });
 
   /**
-   * The shape of this session's 27. A category fix closes one member and the
-   * drain marks only the suggestion named in its commit trailer, so the rest
+   * The shape of this session's 27. A shared-scope fix closes one suggestion
+   * and the drain marks only the one named in its commit trailer, so the rest
    * sit at their old status reading as open work — for months, in the real
    * case, while the code that fixed them had long shipped.
    */
-  describe('category-fix-orphans-siblings', () => {
-    const categorized = (members, over = {}) => ({
-      suggestions: members,
-      categories: [
-        {
-          id: 'origin-local-remote',
-          members: members.map((s) => s.id),
-          size: members.length,
-          scopes: ['_lib/pr/find-clone.sh'],
-          incidents: members.length,
-          promoted: true,
-          ...over,
-        },
-      ],
-      skills: [],
-      metrics: {},
-    });
-
-    it('flags the unfinished members when a sibling has already landed', () => {
+  describe('scope-fix-orphans-siblings', () => {
+    it('flags the unfinished siblings when one has already landed', () => {
       const found = only(
-        categorized([
+        stateWith([
           suggestion({ id: 'user/demo/a.md', slug: 'a', status: 'applied', appliedSha: 'c9168b6dead' }),
           suggestion({ id: 'user/demo/b.md', slug: 'b', status: 'recorded' }),
           suggestion({ id: 'user/demo/c.md', slug: 'c', status: 'approved' }),
         ]),
-        'category-fix-orphans-siblings',
+        'scope-fix-orphans-siblings',
       );
       expect(found).toHaveLength(1);
-      expect(found[0].context).toMatch(/1 of 3 members are finished, 2 are not/);
+      expect(found[0].context).toMatch(/1 of 3 suggestions are finished, 2 are not/);
       expect(found[0].context).toMatch(/\bb\b/);
       // Naming the commit is what makes the re-check cheap.
       expect(found[0].suggestion).toMatch(/c9168b6/);
@@ -83,61 +68,49 @@ describe('kaizen doctor', () => {
 
     it('counts superseded as finished, since that is how a sibling gets closed', () => {
       const found = only(
-        categorized([
+        stateWith([
           suggestion({ id: 'user/demo/a.md', slug: 'a', status: 'superseded' }),
           suggestion({ id: 'user/demo/b.md', slug: 'b', status: 'triaged' }),
         ]),
-        'category-fix-orphans-siblings',
+        'scope-fix-orphans-siblings',
       );
       expect(found).toHaveLength(1);
     });
 
-    it('says nothing when the whole category is still open', () => {
+    it('says nothing while the whole scope is still open', () => {
       const found = only(
-        categorized([
+        stateWith([
           suggestion({ id: 'user/demo/a.md', slug: 'a', status: 'recorded' }),
           suggestion({ id: 'user/demo/b.md', slug: 'b', status: 'recorded' }),
         ]),
-        'category-fix-orphans-siblings',
+        'scope-fix-orphans-siblings',
       );
       expect(found).toEqual([]);
     });
 
-    it('says nothing when the whole cluster is finished', () => {
+    it('says nothing when the whole scope is finished', () => {
       const found = only(
-        categorized([
+        stateWith([
           suggestion({ id: 'user/demo/a.md', slug: 'a', status: 'applied' }),
           suggestion({ id: 'user/demo/b.md', slug: 'b', status: 'verified' }),
         ]),
-        'category-fix-orphans-siblings',
+        'scope-fix-orphans-siblings',
       );
       expect(found).toEqual([]);
     });
 
     /**
-     * Caught by running the check against the real queue before shipping it.
-     * `self-script-without` groups nine findings by slug vocabulary across seven
-     * separate scripts; finishing two of them orphans nothing, because each of
-     * the rest needs its own fix.
+     * Suggestions that merely share a skill or vocabulary are not siblings —
+     * each may need its own fix. Only an identical scope path means one
+     * artefact closes them all.
      */
-    it('ignores a cluster whose members do not share one scope', () => {
+    it('ignores suggestions that do not share one scope', () => {
       const found = only(
-        categorized(
-          [
-            suggestion({ id: 'user/demo/a.md', slug: 'a', status: 'applied' }),
-            suggestion({ id: 'user/demo/b.md', slug: 'b', status: 'recorded' }),
-          ],
-          { scopes: ['one/a.sh', 'two/b.sh'] },
-        ),
-        'category-fix-orphans-siblings',
-      );
-      expect(found).toEqual([]);
-    });
-
-    it('ignores a cluster of one, which cannot orphan anything', () => {
-      const found = only(
-        categorized([suggestion({ id: 'user/demo/a.md', slug: 'a', status: 'applied' })]),
-        'category-fix-orphans-siblings',
+        stateWith([
+          suggestion({ id: 'user/demo/a.md', slug: 'a', status: 'applied', scope: 'one/a.sh' }),
+          suggestion({ id: 'user/demo/b.md', slug: 'b', status: 'recorded', scope: 'two/b.sh' }),
+        ]),
+        'scope-fix-orphans-siblings',
       );
       expect(found).toEqual([]);
     });

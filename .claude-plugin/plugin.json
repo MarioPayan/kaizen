@@ -1,6 +1,6 @@
 {
   "name": "kaizen",
-  "description": "Perpetual improvement loop for Claude Code skills. Reads the suggestions your skills already file, clusters recurring failures, ranks them, and proposes fixes you approve from a local app — with a bias toward turning instructions into scripts.",
+  "description": "Perpetual improvement loop for Claude Code skills. Reads the suggestions your skills already file, groups them by skill, ranks them, and proposes fixes you approve from a local app — with a bias toward turning instructions into scripts.",
   "version": "0.1.0",
   "author": {
     "name": "Mario Payan"

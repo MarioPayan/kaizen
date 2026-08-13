@@ -1,7 +1,7 @@
 //! kaizen-tui — the queue, in the terminal.
 //!
 //! A second front end to the local API, not a second implementation of anything:
-//! `@kaizen/core` still does the scanning, categorising and scoring, and the server
+//! `@kaizen/core` still does the scanning, grouping and scoring, and the server
 //! still owns the writes and their guards.
 
 mod api;

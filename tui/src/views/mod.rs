@@ -8,6 +8,5 @@
 //! of its own, and moving it would have been churn for symmetry's sake.
 
 pub mod board;
-pub mod categories;
 pub mod settings;
 pub mod skills;

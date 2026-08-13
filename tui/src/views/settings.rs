@@ -160,22 +160,6 @@ pub fn rows(cfg: &Value) -> Vec<Row> {
         help: "untriaged suggestions are never hidden, whatever this says",
     });
 
-    out.push(heading("promotion"));
-    out.push(Row {
-        path: "categoryPromotion.members".into(),
-        label: "members".into(),
-        kind: Kind::Number(n("categoryPromotion.members"), 2, 20),
-        heading: false,
-        help: "a promoted category must be fixed at rung 0 or 1 — prose already failed there",
-    });
-    out.push(Row {
-        path: "categoryPromotion.incidents".into(),
-        label: "incidents".into(),
-        kind: Kind::Number(n("categoryPromotion.incidents"), 2, 50),
-        heading: false,
-        help: "",
-    });
-
     out.push(heading("scan"));
     out.push(Row {
         path: "scan.enabled".into(),
@@ -201,7 +185,7 @@ pub fn rows(cfg: &Value) -> Vec<Row> {
         label: "session line".into(),
         kind: Kind::Toggle(b("cadence.sessionHook")),
         heading: false,
-        help: "one line per session — untriaged count and the costliest category",
+        help: "one line per session — untriaged count and the busiest skill",
     });
     out.push(Row {
         path: "asks.enabled".into(),
@@ -351,7 +335,6 @@ mod tests {
             "targets": [{ "name": "user", "skills": "/s", "feedback": "/f", "writable": true }],
             "applyGuards": { "requireCleanTree": true, "requireDiffApplies": false },
             "surface": { "types": ["determinism"], "objectives": [], "minSeverity": "low" },
-            "categoryPromotion": { "members": 3, "incidents": 5 },
             "scan": { "enabled": false, "roots": [], "depth": 3 },
             "cadence": { "weekly": "SUN 09:00", "sessionHook": true },
             "server": { "host": "127.0.0.1", "port": 7777 }

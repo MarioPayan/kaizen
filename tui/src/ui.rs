@@ -26,7 +26,7 @@ pub fn titled(title: &str, area: Rect, focused: bool) -> Block<'static> {
 }
 
 /// No leading space: the badge row is the detail pane's first line and has to
-/// start on the same column as the `scope` and `category` labels under it.
+/// start on the same column as the `scope` and `skill` labels under it.
 pub fn badge(label: &str, colour: Color) -> Span<'static> {
     Span::styled(format!("{label}  "), Style::new().fg(colour))
 }

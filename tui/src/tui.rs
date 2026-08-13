@@ -30,7 +30,7 @@ use crate::api::{Client, Config, State, Suggestion};
 use crate::theme::{self, severity_colour, status_colour, tone_colour};
 use crate::ui::{badge, fit_parts, titled, truncate, wrapped};
 use crate::keys::{self, Action, Tab};
-use crate::views::{board, categories, settings, skills};
+use crate::views::{board, settings, skills};
 use crate::lifecycle::{
     awaits_pass, can_transition, decision_status, has_landed, is_before_decision, is_terminal,
     lifecycle, next_statuses, status_icon, status_spec,
@@ -102,7 +102,7 @@ enum Focus {
 enum Req {
     Refresh,
     SetStatus { id: String, status: String },
-    SetCategory { id: String, status: String },
+    SetGroup { skill: String, status: String },
     /// `id` fences the run to one suggestion; `None` takes the backlog.
     Dispatch { id: Option<String> },
     Apply { id: String },
@@ -129,10 +129,14 @@ fn spawn_worker(client: Client, rx: mpsc::Receiver<Req>, tx: mpsc::Sender<Res>) 
                 Req::SetStatus { id, status } => Res::Acted(
                     client.set_status(&id, &status).map(|_| format!("{status}: {}", short(&id))),
                 ),
-                Req::SetCategory { id, status } => Res::Acted(
-                    client
-                        .set_category_status(&id, &status)
-                        .map(|n| format!("{status} {n} in category {id}")),
+                Req::SetGroup { skill, status } => Res::Acted(
+                    client.set_group(&skill, &status).map(|(moved, skipped)| {
+                        if skipped == 0 {
+                            format!("{status} {moved} in {skill}")
+                        } else {
+                            format!("{status} {moved} in {skill} — {skipped} not ready")
+                        }
+                    }),
                 ),
                 Req::Dispatch { id } => Res::Acted(client.dispatch(id.as_deref()).map(|n| {
                     match &id {
@@ -203,20 +207,18 @@ enum Overlay {
 
 /// Where you were, precisely enough to put you back.
 ///
-/// Not just the tab: returning to the categories list with the cursor reset to the
-/// top is still losing your place, and the whole complaint about `esc` was that
-/// it did not take you back to where you actually were.
+/// Not just the tab: returning to a list with the cursor reset to the top is
+/// still losing your place, and the whole complaint about `esc` was that it
+/// did not take you back to where you actually were.
 #[derive(Clone, PartialEq)]
 struct Place {
     tab: Tab,
     focus: Focus,
-    category_filter: Option<String>,
     query: String,
     filter: Filter,
     sel: usize,
     board_lane: usize,
     board_sel: usize,
-    category_sel: usize,
     skill_sel: usize,
     setting_sel: u16,
 }
@@ -239,10 +241,6 @@ struct App {
     /// worth announcing — the flag is what tells an ending from never-ran.
     dispatch_seen: bool,
     filter: Filter,
-    /// Set by opening a category. Membership, not text — a category id is the key
-    /// its members share (a pin, a scope path, or `skill:<name>`) and is
-    /// frequently in none of their slugs.
-    category_filter: Option<String>,
     query: String,
     searching: bool,
     focus: Focus,
@@ -251,7 +249,6 @@ struct App {
     /// The board has two — which lane, and which card in it.
     board_lane: usize,
     board_sel: usize,
-    category_sel: usize,
     skill_sel: usize,
     setting_sel: u16,
     /// The config being edited. Edits land here and are POSTed on `s`, so a
@@ -276,14 +273,12 @@ impl App {
             busy: true,
             dispatch_seen: false,
             filter: Filter::Open,
-            category_filter: None,
             query: String::new(),
             searching: false,
             focus: Focus::Queue,
             tab: Tab::Queue,
             board_lane: 0,
             board_sel: 0,
-            category_sel: 0,
             skill_sel: 0,
             setting_sel: 0,
             config: None,
@@ -298,18 +293,9 @@ impl App {
     fn visible(&self) -> Vec<&Suggestion> {
         let Some(state) = self.state.as_ref() else { return Vec::new() };
         let needle = self.query.to_lowercase();
-        let members: Option<std::collections::HashSet<&str>> = self.category_filter.as_ref().map(|id| {
-            state
-                .categories
-                .iter()
-                .find(|c| &c.id == id)
-                .map(|c| c.members.iter().map(String::as_str).collect())
-                .unwrap_or_default()
-        });
         state
             .queue()
             .into_iter()
-            .filter(|s| members.as_ref().is_none_or(|m| m.contains(s.id.as_str())))
             .filter(|s| self.filter.keeps(s))
             .filter(|s| {
                 needle.is_empty()
@@ -346,12 +332,13 @@ impl App {
         }
     }
 
-    fn selected_category(&self) -> Option<String> {
-        let pin = match self.tab {
-            Tab::Board => self.board_selected()?.category_pin.clone(),
-            _ => self.visible().get(self.sel)?.category_pin.clone(),
+    /// The skill of the row the wide keys act on — `A` approves its whole pile.
+    fn selected_skill(&self) -> Option<String> {
+        let skill = match self.tab {
+            Tab::Board => self.board_selected()?.skill.clone(),
+            _ => self.visible().get(self.sel)?.skill.clone(),
         };
-        (!pin.is_empty()).then_some(pin)
+        (!skill.is_empty()).then_some(skill)
     }
 
     /// Anything that can shrink the list — a refresh, a filter, a keystroke in the
@@ -398,9 +385,6 @@ impl App {
                     .unwrap_or(0);
                 self.board_sel = step(self.board_sel, cards);
             }
-            Tab::Categories => {
-                self.category_sel = step(self.category_sel, self.categories().len());
-            }
             Tab::Skills => {
                 self.skill_sel = step(self.skill_sel, self.skills().len());
             }
@@ -415,23 +399,15 @@ impl App {
         }
     }
 
-    /// The categories worth deciding, in the order the view draws them — so the
-    /// cursor index means the same thing here and there.
-    fn categories(&self) -> Vec<&crate::api::Category> {
-        self.state.as_ref().map(|s| categories::actionable(&s.categories)).unwrap_or_default()
-    }
-
     fn place(&self) -> Place {
         Place {
             tab: self.tab,
             focus: self.focus,
-            category_filter: self.category_filter.clone(),
             query: self.query.clone(),
             filter: self.filter,
             sel: self.sel,
             board_lane: self.board_lane,
             board_sel: self.board_sel,
-            category_sel: self.category_sel,
             skill_sel: self.skill_sel,
             setting_sel: self.setting_sel,
         }
@@ -456,13 +432,11 @@ impl App {
         let Some(p) = self.history.pop() else { return false };
         self.tab = p.tab;
         self.focus = p.focus;
-        self.category_filter = p.category_filter;
         self.query = p.query;
         self.filter = p.filter;
         self.sel = p.sel;
         self.board_lane = p.board_lane;
         self.board_sel = p.board_sel;
-        self.category_sel = p.category_sel;
         self.skill_sel = p.skill_sel;
         self.setting_sel = p.setting_sel;
         self.clamp();
@@ -489,19 +463,14 @@ impl App {
         self.pending_config().is_some()
     }
 
-    /// How many of a category's members could actually become approved, and how
-    /// many there are. The server's category write is all-or-nothing, so the pair
+    /// How many of a skill's suggestions could actually become approved, and
+    /// how many there are. The server skips what cannot move, so the pair
     /// is what decides whether asking is worth a round trip.
-    fn category_readiness(&self, id: &str) -> (usize, usize) {
+    fn skill_readiness(&self, skill: &str) -> (usize, usize) {
         let Some(state) = self.state.as_ref() else { return (0, 0) };
-        let Some(category) = state.categories.iter().find(|c| c.id == id) else { return (0, 0) };
-        let ready = category
-            .members
-            .iter()
-            .filter_map(|m| state.suggestions.iter().find(|s| &s.id == m))
-            .filter(|s| can_transition(&s.status, "approved"))
-            .count();
-        (ready, category.members.len())
+        let members: Vec<_> = state.suggestions.iter().filter(|s| s.skill == skill).collect();
+        let ready = members.iter().filter(|s| can_transition(&s.status, "approved")).count();
+        (ready, members.len())
     }
 
     fn skills(&self) -> Vec<&crate::api::Skill> {
@@ -618,7 +587,7 @@ fn draw_queue(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
     }
 }
 
-fn detail_lines(state: &State, s: &Suggestion) -> Vec<Line<'static>> {
+fn detail_lines(s: &Suggestion) -> Vec<Line<'static>> {
     // The slug is the block's title, so the body opens on the facts rather than on
     // three wrapped lines of the id — which is kept, dimmed, at the bottom.
     let mut lines = vec![Line::from(vec![
@@ -641,27 +610,6 @@ fn detail_lines(state: &State, s: &Suggestion) -> Vec<Line<'static>> {
         lines.push(Line::from(vec![
             Span::styled("scope    ", Style::new().fg(theme::dim())),
             Span::raw(s.scope.clone()),
-        ]));
-    }
-    if let Some(category) = (!s.category_pin.is_empty()).then(|| state.category(&s.category_pin)).flatten() {
-        lines.push(Line::from(vec![
-            Span::styled("category ", Style::new().fg(theme::dim())),
-            Span::styled(category.id.clone(), Style::new().fg(theme::accent())),
-            Span::styled(
-                format!(
-                    "  {} members · {} incidents · {} days{}",
-                    category.size,
-                    category.incidents,
-                    category.span_days,
-                    if category.promoted { " · promoted" } else { "" }
-                ),
-                Style::new().fg(theme::dim()),
-            ),
-        ]));
-    } else if !s.category_pin.is_empty() {
-        lines.push(Line::from(vec![
-            Span::styled("category ", Style::new().fg(theme::dim())),
-            Span::raw(s.category_pin.clone()),
         ]));
     }
 
@@ -700,11 +648,10 @@ fn draw_detail(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
     let inner = outer.inner(area);
     frame.render_widget(outer, area);
 
-    let Some(state) = app.state.as_ref() else { return };
     let Some(s) = selected else { return };
 
     frame.render_widget(
-        Paragraph::new(detail_lines(state, s))
+        Paragraph::new(detail_lines(s))
             .wrap(Wrap { trim: false })
             .scroll((app.scroll, 0)),
         inner,
@@ -750,7 +697,6 @@ fn columns_for(tab: Tab) -> &'static [(&'static str, &'static str)] {
     match tab {
         Tab::Queue => QUEUE_COLUMNS,
         Tab::Board => board::COLUMNS,
-        Tab::Categories => categories::COLUMNS,
         Tab::Skills => skills::COLUMNS,
         Tab::Settings => settings::COLUMNS,
     }
@@ -1025,11 +971,6 @@ fn draw(frame: &mut Frame, app: &App) {
     if app.state.as_ref().and_then(|s| s.dispatch.as_ref()).is_some_and(|d| d.running) {
         parts.push("\u{f135} fable triaging".into());
     }
-    parts.push(format!(
-        "{} promoted categor{}",
-        m.promoted_categories,
-        if m.promoted_categories == 1 { "y" } else { "ies" }
-    ));
     // The tab bar doubles as its own legend: the number beside each name is the
     // key that gets there, so there is nothing to look up. `Tabs` owns the
     // divider and the selected styling, which is three fewer things to align.
@@ -1087,12 +1028,6 @@ fn draw(frame: &mut Frame, app: &App) {
                 if let Some(state) = app.state.as_ref() {
                     board::draw(frame, body, state, app.board_lane, app.board_sel);
                 }
-            }
-            Tab::Categories => {
-                let list = app.state.as_ref().map(|s| s.categories.as_slice()).unwrap_or(&[]);
-                categories::draw(frame, body, list, app.category_sel, true, &|id| {
-                    app.category_readiness(id).0
-                });
             }
             Tab::Skills => {
                 let list = app.state.as_ref().map(|s| s.skills.as_slice()).unwrap_or(&[]);
@@ -1429,27 +1364,20 @@ fn run(
                     None => {}
                 }
             }
-            Action::ApproveCategory => {
-                let id = match app.tab {
-                    Tab::Categories => app.categories().get(app.category_sel).map(|c| c.id.clone()),
-                    _ => app.selected_category(),
-                };
-                match id {
-                    Some(id) => {
-                        // The server checks every member before writing any, so
-                        // one finished member refuses the whole call. Saying so
-                        // here beats a 409 that names a filename.
-                        let (ready, total) = app.category_readiness(&id);
-                        if ready == 0 {
-                            app.say(format!("nothing in {id} can be approved — all {total} are decided"), true);
-                        } else if ready < total {
-                            app.say(format!("{id}: only {ready} of {total} can move"), true);
-                        } else {
-                            app.busy = true;
-                            let _ = req.send(Req::SetCategory { id, status: "approved".into() });
-                        }
+            Action::ApproveSkill => {
+                if let Some(skill) = app.selected_skill() {
+                    // The server would skip everything and 409; saying why
+                    // here beats a wire trip that names a filename.
+                    let (ready, total) = app.skill_readiness(&skill);
+                    if ready == 0 {
+                        app.say(
+                            format!("nothing in {skill} can be approved — all {total} are elsewhere"),
+                            true,
+                        );
+                    } else {
+                        app.busy = true;
+                        let _ = req.send(Req::SetGroup { skill, status: "approved".into() });
                     }
-                    None => app.say("this suggestion is not in a category", true),
                 }
             }
             Action::Triage => match app.selected_status() {
@@ -1496,7 +1424,6 @@ fn run(
                         } else {
                             app.remember();
                             app.tab = Tab::Queue;
-                            app.category_filter = None;
                             app.query.clear();
                             app.searching = false;
                             app.scroll = 0;
@@ -1506,20 +1433,6 @@ fn run(
                             app.sel = app.visible().iter().position(|s| s.id == id).unwrap_or(0);
                             app.say("esc goes back to the board", false);
                         }
-                    }
-                }
-                Tab::Categories => {
-                    let id = app.categories().get(app.category_sel).map(|c| c.id.clone());
-                    if let Some(id) = id {
-                        app.remember();
-                        app.category_filter = Some(id.clone());
-                        app.filter = Filter::All;
-                        app.query.clear();
-                        app.tab = Tab::Queue;
-                        app.sel = 0;
-                        app.clamp();
-                        let n = app.visible().len();
-                        app.say(format!("{n} in {id} — esc goes back"), false);
                     }
                 }
                 Tab::Skills => {
@@ -1558,7 +1471,6 @@ mod tests {
                   "severity": "high", "status": "approved", "type": "structural",
                   "objective": "bug", "score": 42, "surfaced": true, "incidents": 3,
                   "rung": 1, "scope": "skills/kaizen/SKILL.md",
-                  "categoryPin": "origin-local-remote",
                   "context": "First full pass.", "suggestion": "Write the patch.",
                   "rationale": "Because approval without one is a dead end." },
                 { "id": "user/other/2026-08-01-a-second-thing.md", "skill": "other",
@@ -1573,15 +1485,7 @@ mod tests {
                   "suggestions": 0, "per100": 0, "health": "scripted",
                   "path": "/s/ts-github-triage/SKILL.md" }
               ],
-              "categories": [
-                { "id": "origin-local-remote", "size": 2, "incidents": 27,
-                  "spanDays": 70, "promoted": true, "scopes": ["_lib/pr/local-workspace.md"],
-                  "members": ["user/kaizen/2026-08-08-approval-is-a-dead-end.md",
-                              "user/other/2026-08-01-a-second-thing.md"] },
-                { "id": "quiet-pair", "size": 2, "incidents": 2,
-                  "spanDays": 3, "promoted": false, "scopes": ["_lib/pr/github.md"] }
-              ],
-              "metrics": { "open": 2, "untriaged": 0, "promotedCategories": 1 }
+              "metrics": { "open": 2, "untriaged": 0 }
             }"#,
         )
         .unwrap()
@@ -1635,14 +1539,8 @@ mod tests {
         let text = render(&app_with_state(), 120, 30);
         assert!(text.contains("Queue (2)"), "{text}");
         assert!(text.contains("approval-is-a-dead-end"), "list shows the slug");
-        assert!(text.contains("origin-local-remote"), "detail names the category");
-        // Asserted piecewise: the detail pane wraps, so the category summary can be
-        // split across rows and a single `contains` on the whole frame would miss it.
-        for part in ["2 members", "27 incidents", "70 days", "promoted"] {
-            assert!(text.contains(part), "category summary missing {part:?}: {text}");
-        }
+        assert!(text.contains("skills/kaizen/SKILL.md"), "detail names the scope");
         assert!(text.contains("2 open"), "header carries the metrics");
-        assert!(!text.contains("1 promoted categories"), "singular, not '1 categories': {text}");
         // The footer is easy to lose to a layout mistake and hard to notice.
         assert!(text.contains("a approve"), "key hints render: {text}");
         // No URL in the footer any more: it was never something anyone needed
@@ -1706,19 +1604,17 @@ mod tests {
         assert_eq!(keys::resolve(KeyCode::Char('T'), Tab::Board), Some(Action::TriageAll));
     }
 
-    /// One footer entry carries both spellings — `a approve (A category)` —
+    /// One footer entry carries both spellings — `a approve (A skill)` —
     /// so the shifted key works without costing a second slot of width.
     #[test]
     fn shifted_variants_fold_into_one_footer_entry() {
         let hints = keys::hints(Tab::Queue);
-        assert!(hints.iter().any(|(h, l)| *h == "a" && *l == "approve (A category)"));
+        assert!(hints.iter().any(|(h, l)| *h == "a" && *l == "approve (A skill)"));
         assert!(hints.iter().any(|(h, l)| *h == "t" && *l == "triage (T all)"));
         assert!(!hints.iter().any(|(h, _)| *h == "A" || *h == "T"), "no second entry: {hints:?}");
-        // Categories has no lowercase partner, so `A` keeps its own line there.
-        assert!(keys::hints(Tab::Categories).iter().any(|(h, _)| *h == "A"));
         // And the shifted keys still resolve where they are folded.
         use ratatui::crossterm::event::KeyCode;
-        assert_eq!(keys::resolve(KeyCode::Char('A'), Tab::Board), Some(Action::ApproveCategory));
+        assert_eq!(keys::resolve(KeyCode::Char('A'), Tab::Board), Some(Action::ApproveSkill));
     }
 
     /// The decide keys act on the card under the board's cursors, not on
@@ -1839,16 +1735,16 @@ mod tests {
     fn esc_returns_to_where_you_came_from_not_to_the_queue() {
         let mut app = app_with_state();
 
-        // Queue -> categories -> skills, then back down the way we came.
+        // Queue -> board -> skills, then back down the way we came.
         app.remember();
-        app.tab = Tab::Categories;
-        app.category_sel = 1;
+        app.tab = Tab::Board;
+        app.board_lane = 1;
         app.remember();
         app.tab = Tab::Skills;
 
         assert!(app.go_back());
-        assert_eq!(app.tab, Tab::Categories);
-        assert_eq!(app.category_sel, 1, "and to the row you were on, not the top");
+        assert_eq!(app.tab, Tab::Board);
+        assert_eq!(app.board_lane, 1, "and to the lane you were on, not the first");
 
         assert!(app.go_back());
         assert_eq!(app.tab, Tab::Queue);
@@ -1858,24 +1754,22 @@ mod tests {
         assert!(!app.go_back());
     }
 
-    /// Opening a category jumps to the queue with a filter; going back has to
-    /// undo both the jump and the filter, and land on the same category row.
+    /// Opening a card jumps to the queue; going back has to land on the same
+    /// board cell, not the first lane.
     #[test]
-    fn esc_undoes_opening_a_category_whole() {
+    fn esc_undoes_opening_a_card_whole() {
         let mut app = app_with_state();
-        app.tab = Tab::Categories;
-        app.category_sel = 1;
+        app.tab = Tab::Board;
+        app.board_lane = 1;
 
         app.remember();
-        app.category_filter = Some("origin-local-remote".into());
         app.tab = Tab::Queue;
         app.sel = 0;
         assert_eq!(app.visible().len(), 2);
 
         assert!(app.go_back());
-        assert_eq!(app.tab, Tab::Categories);
-        assert_eq!(app.category_sel, 1);
-        assert!(app.category_filter.is_none(), "the filter went with it");
+        assert_eq!(app.tab, Tab::Board);
+        assert_eq!(app.board_lane, 1);
     }
 
     #[test]
@@ -1916,15 +1810,15 @@ mod tests {
         // `enter` is bound three times, once per view. Each card shows its one.
         let queue = card(Tab::Queue);
         assert!(queue.contains("apply"), "{queue}");
-        assert!(!queue.contains("show members"), "and not the categories meaning: {queue}");
+        assert!(!queue.contains("open in queue"), "and not the board meaning: {queue}");
         assert!(!queue.contains("open file"), "nor the skills one: {queue}");
 
-        let categories = card(Tab::Categories);
-        assert!(categories.contains("show members"), "{categories}");
-        assert!(!categories.contains("enter   apply"), "{categories}");
+        let board = card(Tab::Board);
+        assert!(board.contains("open in queue"), "{board}");
+        assert!(!board.contains("enter   apply"), "{board}");
         // The git footnote is queue-only too — it is advice about a key that is
         // not bound here.
-        assert!(!categories.contains("clean tree"), "{categories}");
+        assert!(!board.contains("clean tree"), "{board}");
         assert!(queue.contains("clean tree"), "{queue}");
 
         assert!(card(Tab::Skills).contains("open file"));
@@ -1970,7 +1864,6 @@ mod tests {
         // Named per view, not shared: `per100` means nothing on the queue.
         assert!(card(Tab::Skills).contains("per100"));
         assert!(!card(Tab::Queue).contains("per100"));
-        assert!(card(Tab::Categories).contains("promoted"));
 
         // The status legend is generated, so a renamed status cannot leave a
         // stale abbreviation behind in the help.
@@ -1992,10 +1885,7 @@ mod tests {
     /// The tables build their header from the same list the help reads.
     #[test]
     fn a_table_header_cannot_drift_from_its_explanation() {
-        for (tab, columns) in [
-            (Tab::Categories, categories::COLUMNS),
-            (Tab::Skills, skills::COLUMNS),
-        ] {
+        for (tab, columns) in [(Tab::Skills, skills::COLUMNS)] {
             let mut app = app_with_state();
             app.tab = tab;
             let text = render(&app, 120, 20);
@@ -2036,7 +1926,7 @@ mod tests {
 
         // A column whose values are open gets no sub-list invented for it.
         assert!(column_values(Tab::Queue, "slug").is_empty());
-        assert!(column_values(Tab::Categories, "scope").is_empty());
+        assert!(column_values(Tab::Skills, "skill").is_empty());
     }
 
     /// The complaint, as a check. `DarkGray` on a black terminal is the grey
@@ -2083,51 +1973,16 @@ mod tests {
         }
     }
 
-    /// Promoted first, then by what it cost — the list is a work order.
-    #[test]
-    fn categories_rank_promoted_first_and_mark_them() {
-        let mut app = app_with_state();
-        app.tab = Tab::Categories;
-        let text = render(&app, 120, 30);
-        assert!(text.contains("Categories (2 ·"), "{text}");
-        assert!(text.contains("▲"), "the promoted one is marked: {text}");
-        assert!(text.contains("origin-local-remote"), "{text}");
-        assert!(text.contains("_lib/pr/local-workspace.md"), "the scope is the fix's address: {text}");
-        // A one-member category is not a category: nothing to decide as one.
-        assert_eq!(app.categories().len(), 2);
-        assert_eq!(app.categories()[0].id, "origin-local-remote");
-    }
-
-    /// The bug this replaced: `enter` set the search box to the category id, and
-    /// a category id is the key its members share — a pin, a scope path, or
-    /// `skill:<name>` — so it frequently appears in none of their slugs and the
-    /// queue came back empty.
-    #[test]
-    fn opening_a_category_filters_by_membership_not_by_text() {
-        let mut app = app_with_state();
-        // The id matches no member's text, which is exactly the failing case.
-        assert!(app.visible().iter().all(|s| !s.slug.contains("origin-local-remote")));
-
-        app.category_filter = Some("origin-local-remote".into());
-        assert_eq!(app.visible().len(), 2, "both members are found by id");
-
-        app.category_filter = Some("nonexistent".into());
-        assert!(app.visible().is_empty(), "an unknown category hides everything, not nothing");
-
-        app.category_filter = None;
-        assert_eq!(app.visible().len(), 2);
-    }
-
-    /// The other half of the report: `A` on a category whose members are all
+    /// The other half of the report: `A` on a skill whose suggestions are all
     /// decided produced a 409 listing filenames. It refuses locally now.
     #[test]
-    fn category_readiness_counts_what_could_actually_move() {
+    fn skill_readiness_counts_what_could_actually_move() {
         let app = app_with_state();
-        // approved -> applied is legal, recorded -> approved is not.
-        let (ready, total) = app.category_readiness("origin-local-remote");
-        assert_eq!(total, 2);
-        assert_eq!(ready, 0, "neither member can become approved from where it is");
-        assert_eq!(app.category_readiness("nope"), (0, 0));
+        // approved -> approved is not legal, so kaizen's one item cannot move.
+        assert_eq!(app.skill_readiness("kaizen"), (0, 1));
+        // other's one item is recorded, which cannot become approved either.
+        assert_eq!(app.skill_readiness("other"), (0, 1));
+        assert_eq!(app.skill_readiness("nope"), (0, 0));
     }
 
     #[test]
@@ -2175,13 +2030,12 @@ mod tests {
         app.move_by(1);
         assert_eq!(app.skill_sel, 1);
         assert_eq!(app.sel, 0, "the queue's cursor did not move");
-        app.tab = Tab::Categories;
+        app.tab = Tab::Board;
         app.move_by(1);
-        assert_eq!(app.category_sel, 1);
-        assert_eq!(app.skill_sel, 1, "and the skills cursor stayed put");
+        assert_eq!(app.skill_sel, 1, "the skills cursor stayed put");
         // Neither can walk off the end.
         app.move_by(50);
-        assert_eq!(app.category_sel, 1);
+        assert_eq!(app.skill_sel, 1);
     }
 
     #[test]
@@ -2260,11 +2114,11 @@ mod tests {
     }
 
     #[test]
-    fn category_action_needs_a_category() {
+    fn the_wide_approve_reads_the_skill_of_the_selected_row() {
         let mut app = app_with_state();
-        assert_eq!(app.selected_category().as_deref(), Some("origin-local-remote"));
+        assert_eq!(app.selected_skill().as_deref(), Some("kaizen"));
         app.move_by(1);
-        assert_eq!(app.selected_category(), None, "the second suggestion has no category pin");
+        assert_eq!(app.selected_skill().as_deref(), Some("other"));
     }
 
     /// A refusal is the interesting case, and it is shown as the server wrote it.

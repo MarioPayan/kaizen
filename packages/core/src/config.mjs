@@ -43,7 +43,6 @@ export function defaultConfig() {
     // view preference, not a filter on what gets filed — muted work stays on
     // disk and stays one click away.
     surface: defaultSurface(),
-    categoryPromotion: { members: 3, incidents: 5 },
     applyGuards: { requireCleanTree: true, requireDiffApplies: true },
     server: { host: '127.0.0.1', port: 7777 },
   };
@@ -87,12 +86,6 @@ export function validateConfig(cfg) {
     if (cfg.scan.enabled && cfg.scan.roots.length === 0) {
       errs.push('scan.enabled is true but scan.roots is empty');
     }
-  }
-
-  if (cfg.categoryPromotion) {
-    const { members, incidents } = cfg.categoryPromotion;
-    if (!Number.isInteger(members) || members < 2) errs.push('categoryPromotion.members must be >= 2');
-    if (!Number.isInteger(incidents) || incidents < 2) errs.push('categoryPromotion.incidents must be >= 2');
   }
 
   if (cfg.asks) {

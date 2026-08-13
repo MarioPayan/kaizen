@@ -35,8 +35,6 @@ pub struct Suggestion {
     pub scope: String,
     pub rung: Option<i64>,
     pub effort: String,
-    #[serde(rename = "categoryPin")]
-    pub category_pin: String,
     #[serde(rename = "appliedSha")]
     pub applied_sha: String,
     pub recurrences: u64,
@@ -52,31 +50,11 @@ pub struct Suggestion {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
-pub struct Category {
-    pub id: String,
-    pub members: Vec<String>,
-    pub size: u64,
-    pub incidents: u64,
-    pub score: f64,
-    pub skills: Vec<String>,
-    pub scopes: Vec<String>,
-    pub first: String,
-    pub last: String,
-    #[serde(rename = "spanDays")]
-    pub span_days: u64,
-    pub promoted: bool,
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(default)]
 pub struct Metrics {
     pub total: u64,
     pub open: u64,
     pub untriaged: u64,
     pub incidents: u64,
-    pub categories: u64,
-    #[serde(rename = "promotedCategories")]
-    pub promoted_categories: u64,
 }
 
 /// A skill as the scanner sees it. `health` is computed by `buildState` rather
@@ -117,7 +95,6 @@ pub struct State {
     pub warnings: Vec<String>,
     pub skills: Vec<Skill>,
     pub suggestions: Vec<Suggestion>,
-    pub categories: Vec<Category>,
     pub metrics: Metrics,
     pub dispatch: Option<Dispatch>,
 }
@@ -134,8 +111,6 @@ pub struct Config {
     pub scan: ScanConfig,
     pub surface: SurfaceConfig,
     pub cadence: Cadence,
-    #[serde(rename = "categoryPromotion")]
-    pub category_promotion: Promotion,
     #[serde(rename = "applyGuards")]
     pub apply_guards: Guards,
     pub server: ServerConfig,
@@ -178,13 +153,6 @@ pub struct Cadence {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
-pub struct Promotion {
-    pub members: u64,
-    pub incidents: u64,
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(default)]
 pub struct Guards {
     #[serde(rename = "requireCleanTree")]
     pub require_clean_tree: bool,
@@ -216,10 +184,6 @@ impl State {
                 .then_with(|| a.id.cmp(&b.id))
         });
         out
-    }
-
-    pub fn category(&self, id: &str) -> Option<&Category> {
-        self.categories.iter().find(|c| c.id == id)
     }
 }
 
@@ -294,7 +258,7 @@ fn find_cli() -> Option<std::path::PathBuf> {
 
 /// Start `kaizen serve` if nothing is listening, and wait for it to bind.
 ///
-/// The server is the engine — @kaizen/core does the scanning, categorising and
+/// The server is the engine — @kaizen/core does the scanning, grouping and
 /// scoring, and this crate is a client of it — so the TUI is useless without one.
 /// Starting it here rather than making you remember is the whole point.
 ///
@@ -398,10 +362,15 @@ impl Client {
         self.post("/api/suggestion", serde_json::json!({ "id": id, "status": status })).map(|_| ())
     }
 
-    /// Approving a category is one decision, so it is one request.
-    pub fn set_category_status(&self, id: &str, status: &str) -> Result<u64, String> {
-        let res = self.post("/api/category", serde_json::json!({ "id": id, "status": status }))?;
-        Ok(res.get("updated").and_then(|v| v.as_u64()).unwrap_or(0))
+    /// Approving a skill's pile is one decision, so it is one request. The
+    /// server moves what can legally move and skips the rest; the pair is
+    /// (moved, skipped), and both belong in the message.
+    pub fn set_group(&self, skill: &str, status: &str) -> Result<(u64, u64), String> {
+        let res = self.post("/api/group", serde_json::json!({ "skill": skill, "status": status }))?;
+        Ok((
+            res.get("moved").and_then(|v| v.as_u64()).unwrap_or(0),
+            res.get("skipped").and_then(|v| v.as_u64()).unwrap_or(0),
+        ))
     }
 
     /// Hand work to one detached claude run — one suggestion when fenced to an
@@ -518,11 +487,7 @@ mod tests {
         { "id": "user/kaizen/f.md", "skill": "kaizen", "status": "superseded",
           "score": 97, "surfaced": true }
       ],
-      "categories": [
-        { "id": "origin-local-remote", "members": ["user/kaizen/a.md"], "size": 9,
-          "incidents": 27, "score": 67, "promoted": true, "spanDays": 70 }
-      ],
-      "metrics": { "total": 4, "open": 3, "untriaged": 0, "promotedCategories": 1 }
+      "metrics": { "total": 4, "open": 3, "untriaged": 0 }
     }"#;
 
     #[test]
@@ -530,7 +495,6 @@ mod tests {
         let state: State = serde_json::from_str(STATE).expect("parses");
         assert_eq!(state.suggestions.len(), 6);
         assert_eq!(state.metrics.open, 3);
-        assert_eq!(state.categories[0].span_days, 70);
         assert_eq!(state.suggestions[0].rung, Some(1));
         assert_eq!(state.suggestions[0].kind, "structural");
     }
@@ -554,7 +518,6 @@ mod tests {
         assert_eq!(state.suggestions[0].id, "x");
         assert_eq!(state.suggestions[0].severity, "");
         assert_eq!(state.suggestions[0].rung, None);
-        assert!(state.categories.is_empty());
     }
 
     #[test]
