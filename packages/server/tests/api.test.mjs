@@ -6,6 +6,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createApp } from '@kaizen/server';
@@ -14,6 +15,18 @@ let root;
 let server;
 let base;
 let config;
+
+// Dispatch must never start a real claude run under vitest, so the app gets a
+// spawner that only looks like a child process.
+const spawned = [];
+const fakeClaude = () => {
+  const child = new EventEmitter();
+  child.pid = 4242 + spawned.length;
+  child.exitCode = null;
+  spawned.push(child);
+  process.nextTick(() => child.emit('spawn'));
+  return child;
+};
 
 const git = (cwd, ...args) =>
   execFileSync('git', ['-C', cwd, ...args], {
@@ -71,7 +84,7 @@ beforeAll(async () => {
     server: { host: '127.0.0.1', port: 0 },
   };
 
-  server = createApp(config);
+  server = createApp(config, { spawnClaude: fakeClaude });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${server.address().port}`;
 });
@@ -217,6 +230,29 @@ describe('api', () => {
   it('404s an unknown api route', async () => {
     const { status } = await api('GET', '/api/nope');
     expect(status).toBe(404);
+  });
+});
+
+/**
+ * Dispatch hands the backlog to one detached claude run. The tests cover the
+ * seat, not the agent: one run at a time, and the seat frees when it exits.
+ */
+describe('POST /api/dispatch', () => {
+  it('starts one run, refuses a second while it lives, and frees the seat on exit', async () => {
+    const first = await api('POST', '/api/dispatch');
+    expect(first.status).toBe(200);
+    expect(first.body.pid).toBe(spawned.at(-1).pid);
+    expect(first.body.untriaged).toBeGreaterThan(0);
+
+    const second = await api('POST', '/api/dispatch');
+    expect(second.status).toBe(409);
+    expect(second.body.error).toMatch(/already in flight/);
+
+    spawned.at(-1).exitCode = 0;
+    const third = await api('POST', '/api/dispatch');
+    expect(third.status).toBe(200);
+    expect(third.body.pid).not.toBe(first.body.pid);
+    spawned.at(-1).exitCode = 0;
   });
 });
 

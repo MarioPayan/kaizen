@@ -47,6 +47,8 @@ pub enum Action {
     Approve,
     Reject,
     ApproveCategory,
+    /// Send one detached fable run at the untriaged backlog.
+    Triage,
     Apply,
     Diff,
     Open,
@@ -183,6 +185,14 @@ pub const BINDINGS: &[Binding] = &[
         section: "navigate",
         tabs: SKILLS,
         action: Action::Open,
+    },
+    Binding {
+        keys: &[KeyCode::Char('t')],
+        hint: "t",
+        label: "triage backlog",
+        section: "decide",
+        tabs: QUEUE,
+        action: Action::Triage,
     },
     Binding {
         keys: &[KeyCode::Char('d')],

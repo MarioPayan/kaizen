@@ -103,6 +103,7 @@ enum Req {
     Refresh,
     SetStatus { id: String, status: String },
     SetCategory { id: String, status: String },
+    Dispatch,
     Apply { id: String },
     Diff { id: String },
     Config,
@@ -132,6 +133,9 @@ fn spawn_worker(client: Client, rx: mpsc::Receiver<Req>, tx: mpsc::Sender<Res>) 
                         .set_category_status(&id, &status)
                         .map(|n| format!("{status} {n} in category {id}")),
                 ),
+                Req::Dispatch => Res::Acted(client.dispatch().map(|n| {
+                    format!("fable is triaging {n} — rows relabel as it lands")
+                })),
                 Req::Apply { id } => Res::Acted(
                     client
                         .apply(&id)
@@ -1315,7 +1319,7 @@ fn run(
                                     .map(|p| p.title.to_lowercase())
                                     .collect::<Vec<_>>()
                                     .join(" then ");
-                                format!("{from} needs {names} first — run /kaizen")
+                                format!("{from} needs {names} first — t sends fable at the backlog")
                             } else if onward.is_empty() {
                                 format!("{from} is terminal — nothing follows it")
                             } else {
@@ -1355,6 +1359,10 @@ fn run(
                     }
                     None => app.say("this suggestion is not in a category", true),
                 }
+            }
+            Action::Triage => {
+                app.busy = true;
+                let _ = req.send(Req::Dispatch);
             }
             Action::Apply => {
                 if let Some(id) = app.selected_id() {

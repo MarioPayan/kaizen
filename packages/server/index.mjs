@@ -1,8 +1,9 @@
 /**
  * The local API.
  *
- * Seven routes, `node:http`, bound to loopback. Every route is a file read, a file
- * write, or a git call — there is no layer here worth a framework.
+ * A small route table, `node:http`, bound to loopback. Every route is a file
+ * read, a file write, or a git call — save one, which starts a detached claude
+ * run — there is no layer here worth a framework.
  *
  * Two things are not negotiable and are enforced rather than documented:
  *   - the socket binds 127.0.0.1, because these routes write files and shell out
@@ -20,9 +21,12 @@ import {
   utimesSync,
   unlinkSync,
   mkdirSync,
+  openSync,
+  closeSync,
 } from 'node:fs';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
+import { homedir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -321,6 +325,25 @@ const routes = {
     return { id, status: to, updated: members.length };
   },
 
+  // Triage is unattended by design, so the TUI can start it without leaving the
+  // terminal. The server only launches and remembers the child — progress
+  // arrives like any other edit, through the file watcher, so the queue's rows
+  // relabel themselves as the run writes frontmatter.
+  'POST /api/dispatch': async (_req, _res, ctx) => {
+    if (ctx.dispatch && ctx.dispatch.exitCode === null && !ctx.dispatch.killed) {
+      throw new HttpError(409, `a triage run is already in flight (pid ${ctx.dispatch.pid})`);
+    }
+    const untriaged = buildState(ctx.config).metrics.untriaged;
+    if (!untriaged) throw new HttpError(422, 'nothing to triage — the backlog is clear');
+    const child = ctx.spawnClaude();
+    await new Promise((launched, failed) => {
+      child.once('spawn', launched);
+      child.once('error', (e) => failed(new HttpError(500, `could not start claude — ${e.message}`)));
+    });
+    ctx.dispatch = child;
+    return { pid: child.pid, untriaged };
+  },
+
   'POST /api/apply': async (req, _res, ctx) => {
     const { id } = await readBody(req);
     const { path, target } = suggestionFile(ctx.config, id);
@@ -368,13 +391,39 @@ const routes = {
   },
 };
 
+/* ------------------------------------------------------------ dispatch ---- */
+
+/**
+ * One detached `claude` run working the whole backlog through the kaizen
+ * skill. Detached and logged to a file rather than held: triage can outlive a
+ * server restart, and the log is where a run that never wrote anything
+ * explains itself. `bypassPermissions` because the run is headless — triage
+ * labels files and changes no code, but it still reads repos and shells out,
+ * and a permission prompt nobody can see is a hang.
+ */
+// ponytail: model pinned and one agent per run — make the model config, or fan
+// out per suggestion, when one context stops covering the backlog.
+function spawnTriage() {
+  const log = join(dirname(configPath()), 'dispatch.log');
+  const out = openSync(log, 'a');
+  const child = spawn(
+    'claude',
+    ['-p', '/kaizen:triage', '--model', 'claude-fable-5', '--permission-mode', 'bypassPermissions'],
+    { cwd: homedir(), detached: true, stdio: ['ignore', out, out] },
+  );
+  child.unref();
+  closeSync(out);
+  return child;
+}
+
 /* --------------------------------------------------------------- serve ---- */
 
-export function createApp(config) {
+export function createApp(config, deps = {}) {
   const pkg = JSON.parse(readFileSync(resolve(here, '..', '..', 'package.json'), 'utf8'));
   // Normalised once here so no route has to guard against a block the caller
   // simply did not mention.
   const ctx = { config: withDefaults(config), version: pkg.version };
+  ctx.spawnClaude = deps.spawnClaude ?? spawnTriage;
   ctx.events = createEventStream(ctx);
 
   return createServer(async (req, res) => {

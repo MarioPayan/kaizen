@@ -104,9 +104,9 @@ Each module owns one thing; `index.mjs` is the public surface.
 
 ## @kaizen/server — the API
 
-Seven routes plus `GET /api/events` (SSE), `node:http`, bound to `127.0.0.1` —
-that binding **is** the security boundary, because these routes write files and
-shell out to git.
+A small route table plus `GET /api/events` (SSE), `node:http`, bound to
+`127.0.0.1` — that binding **is** the security boundary, because these routes
+write files and shell out to git.
 
 | Route                                  | Does                                              |
 | -------------------------------------- | ------------------------------------------------- |
@@ -116,6 +116,7 @@ shell out to git.
 | `GET /api/diff?id=`                    | the sibling `.patch`, if any                      |
 | `POST /api/suggestion`                 | one status move, gated (see below)                |
 | `POST /api/category`                   | one status move for every member — all-or-nothing |
+| `POST /api/dispatch`                   | one detached `claude` run triages the backlog     |
 | `POST /api/apply`                      | `git apply` + one commit + writes `applied` + sha |
 | `POST /api/revert`                     | `git revert` a kaizen commit on a writable target |
 
