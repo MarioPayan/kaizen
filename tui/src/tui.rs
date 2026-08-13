@@ -1300,8 +1300,23 @@ fn run(
                 match app.selected_status() {
                     Some(from) if !can_transition(&from, status) => {
                         let onward = next_statuses(&from);
+                        // "only triaged, rejected, superseded" reads as keys the
+                        // TUI should have. It shouldn't: the phases short of the
+                        // decision are unattended, so name who runs them instead.
+                        let owed = if status == decision_status() {
+                            crate::lifecycle::phases_until_decision(&from)
+                        } else {
+                            Vec::new()
+                        };
                         app.say(
-                            if onward.is_empty() {
+                            if !owed.is_empty() {
+                                let names = owed
+                                    .iter()
+                                    .map(|p| p.title.to_lowercase())
+                                    .collect::<Vec<_>>()
+                                    .join(" then ");
+                                format!("{from} needs {names} first — run /kaizen")
+                            } else if onward.is_empty() {
                                 format!("{from} is terminal — nothing follows it")
                             } else {
                                 format!("{from} cannot become {status} — only {}", onward.join(", "))
@@ -1518,6 +1533,26 @@ mod tests {
         // The message names where it can actually go, which is the whole point.
         assert_eq!(next_statuses("recorded"), ["triaged", "rejected", "superseded"]);
         assert!(next_statuses("verified").is_empty());
+    }
+
+    /// A refused approve must not read as a missing keybinding: there is no
+    /// triage key on purpose, so the message names the unattended phases owed
+    /// and who runs them instead of listing statuses.
+    #[test]
+    fn a_premature_approve_names_the_phases_still_owed() {
+        let owed: Vec<_> = crate::lifecycle::phases_until_decision("recorded")
+            .iter()
+            .map(|p| p.title.as_str())
+            .collect();
+        assert_eq!(owed, ["Triage", "Plan"], "a bare capture owes both unattended phases");
+        assert!(
+            crate::lifecycle::phases_until_decision("planned").is_empty(),
+            "a plan owes nothing — it is the decision's own doorstep"
+        );
+        assert!(
+            crate::lifecycle::phases_until_decision("verified").is_empty(),
+            "a terminal owes nothing either"
+        );
     }
 
     /// Every abbreviation and colour in the list comes from `lifecycle.json`, so

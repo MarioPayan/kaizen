@@ -139,3 +139,17 @@ pub fn is_before_decision(status: &str) -> bool {
     let attended = lifecycle().phases.iter().position(|p| p.attended);
     matches!((phase_index(status), attended), (Some(a), Some(b)) if a < b)
 }
+
+/// The unattended phases that still owe work before this status can reach the
+/// decision. What "why can't I approve this" is actually asking: none of these
+/// are keys in the TUI, they belong to whoever each phase names as its actor.
+pub fn phases_until_decision(status: &str) -> Vec<&'static PhaseSpec> {
+    if !is_before_decision(status) {
+        return Vec::new();
+    }
+    let l = lifecycle();
+    match (phase_index(status), l.phases.iter().position(|p| p.attended)) {
+        (Some(here), Some(decide)) => l.phases[here + 1..decide].iter().collect(),
+        _ => Vec::new(),
+    }
+}
