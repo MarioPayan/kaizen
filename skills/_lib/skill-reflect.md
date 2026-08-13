@@ -156,4 +156,4 @@ The single line keeps this step light in the visible output. The substance lives
 
 - **Several suggestions in one run.** One file each, separate slugs. Dedup applies per suggestion.
 - **The skill errored before this step.** This module does not run. That is expected; the skill's own error path surfaces it.
-- **Cross-skill suggestions.** File under the skill that surfaced it and name the shared module in the body. Clustering will find the others.
+- **Cross-skill suggestions.** File under the skill that surfaced it and name the shared module in the body. Its scope makes it land in that module’s category with the others.

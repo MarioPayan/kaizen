@@ -219,3 +219,35 @@ describe('api', () => {
     expect(status).toBe(404);
   });
 });
+
+/**
+ * The pidfile is what turns "port in use" into a diagnosis. No auto-kill —
+ * these assert the three sentences, not a replacement policy.
+ */
+describe('pidfile', () => {
+  it('writes a pidfile on listen, removes it on close, and names a live holder', async () => {
+    const { startServer, describePortHolder } = await import('@kaizen/server');
+    const dir = mkdtempSync(join(tmpdir(), 'kaizen-pid-'));
+    const pidfile = join(dir, 'server.pid');
+    const port = 17000 + Math.floor(Math.random() * 1000);
+    const srv = await startServer({ ...config, server: { host: '127.0.0.1', port } }, { pidfile });
+    try {
+      expect(Number(readFileSync(pidfile, 'utf8').trim())).toBe(process.pid);
+      expect(describePortHolder(port, pidfile)).toMatch(/already running \(pid \d+, heartbeat \ds ago\)/);
+    } finally {
+      await new Promise((r) => srv.close(r));
+    }
+    expect(() => readFileSync(pidfile)).toThrow();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('tells a dead holder from a missing pidfile', async () => {
+    const { describePortHolder } = await import('@kaizen/server');
+    const dir = mkdtempSync(join(tmpdir(), 'kaizen-pid-'));
+    const pidfile = join(dir, 'server.pid');
+    expect(describePortHolder(7777, pidfile)).toContain('no pidfile to confirm');
+    writeFileSync(pidfile, '999999999\n'); // beyond pid_max: guaranteed dead
+    expect(describePortHolder(7777, pidfile)).toContain('is gone');
+    rmSync(dir, { recursive: true, force: true });
+  });
+});

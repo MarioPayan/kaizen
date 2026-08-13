@@ -19,6 +19,10 @@ export default [
         Response: 'readonly',
         Buffer: 'readonly',
         TextDecoder: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        setInterval: 'readonly',
+        clearInterval: 'readonly',
       },
     },
     rules: {

@@ -35,8 +35,8 @@ pub struct Suggestion {
     pub scope: String,
     pub rung: Option<i64>,
     pub effort: String,
-    #[serde(rename = "clusterPin")]
-    pub cluster_pin: String,
+    #[serde(rename = "categoryPin")]
+    pub category_pin: String,
     #[serde(rename = "appliedSha")]
     pub applied_sha: String,
     pub recurrences: u64,
@@ -52,7 +52,7 @@ pub struct Suggestion {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
-pub struct Cluster {
+pub struct Category {
     pub id: String,
     pub members: Vec<String>,
     pub size: u64,
@@ -74,9 +74,9 @@ pub struct Metrics {
     pub open: u64,
     pub untriaged: u64,
     pub incidents: u64,
-    pub clusters: u64,
-    #[serde(rename = "promotedClusters")]
-    pub promoted_clusters: u64,
+    pub categories: u64,
+    #[serde(rename = "promotedCategories")]
+    pub promoted_categories: u64,
 }
 
 /// A skill as the scanner sees it. `health` is computed by `buildState` rather
@@ -106,7 +106,7 @@ pub struct State {
     pub warnings: Vec<String>,
     pub skills: Vec<Skill>,
     pub suggestions: Vec<Suggestion>,
-    pub clusters: Vec<Cluster>,
+    pub categories: Vec<Category>,
     pub metrics: Metrics,
 }
 
@@ -122,8 +122,8 @@ pub struct Config {
     pub scan: ScanConfig,
     pub surface: SurfaceConfig,
     pub cadence: Cadence,
-    #[serde(rename = "clusterPromotion")]
-    pub cluster_promotion: Promotion,
+    #[serde(rename = "categoryPromotion")]
+    pub category_promotion: Promotion,
     #[serde(rename = "applyGuards")]
     pub apply_guards: Guards,
     pub server: ServerConfig,
@@ -206,8 +206,8 @@ impl State {
         out
     }
 
-    pub fn cluster(&self, id: &str) -> Option<&Cluster> {
-        self.clusters.iter().find(|c| c.id == id)
+    pub fn category(&self, id: &str) -> Option<&Category> {
+        self.categories.iter().find(|c| c.id == id)
     }
 }
 
@@ -282,7 +282,7 @@ fn find_cli() -> Option<std::path::PathBuf> {
 
 /// Start `kaizen serve` if nothing is listening, and wait for it to bind.
 ///
-/// The server is the engine — @kaizen/core does the scanning, clustering and
+/// The server is the engine — @kaizen/core does the scanning, categorising and
 /// scoring, and this crate is a client of it — so the TUI is useless without one.
 /// Starting it here rather than making you remember is the whole point.
 ///
@@ -386,9 +386,9 @@ impl Client {
         self.post("/api/suggestion", serde_json::json!({ "id": id, "status": status })).map(|_| ())
     }
 
-    /// Approving a cluster is one decision, so it is one request.
-    pub fn set_cluster_status(&self, id: &str, status: &str) -> Result<u64, String> {
-        let res = self.post("/api/cluster", serde_json::json!({ "id": id, "status": status }))?;
+    /// Approving a category is one decision, so it is one request.
+    pub fn set_category_status(&self, id: &str, status: &str) -> Result<u64, String> {
+        let res = self.post("/api/category", serde_json::json!({ "id": id, "status": status }))?;
         Ok(res.get("updated").and_then(|v| v.as_u64()).unwrap_or(0))
     }
 
@@ -493,11 +493,11 @@ mod tests {
         { "id": "user/kaizen/f.md", "skill": "kaizen", "status": "superseded",
           "score": 97, "surfaced": true }
       ],
-      "clusters": [
+      "categories": [
         { "id": "origin-local-remote", "members": ["user/kaizen/a.md"], "size": 9,
           "incidents": 27, "score": 67, "promoted": true, "spanDays": 70 }
       ],
-      "metrics": { "total": 4, "open": 3, "untriaged": 0, "promotedClusters": 1 }
+      "metrics": { "total": 4, "open": 3, "untriaged": 0, "promotedCategories": 1 }
     }"#;
 
     #[test]
@@ -505,7 +505,7 @@ mod tests {
         let state: State = serde_json::from_str(STATE).expect("parses");
         assert_eq!(state.suggestions.len(), 6);
         assert_eq!(state.metrics.open, 3);
-        assert_eq!(state.clusters[0].span_days, 70);
+        assert_eq!(state.categories[0].span_days, 70);
         assert_eq!(state.suggestions[0].rung, Some(1));
         assert_eq!(state.suggestions[0].kind, "structural");
     }
@@ -529,7 +529,7 @@ mod tests {
         assert_eq!(state.suggestions[0].id, "x");
         assert_eq!(state.suggestions[0].severity, "");
         assert_eq!(state.suggestions[0].rung, None);
-        assert!(state.clusters.is_empty());
+        assert!(state.categories.is_empty());
     }
 
     #[test]

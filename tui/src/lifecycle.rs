@@ -103,6 +103,19 @@ fn phase_index(status: &str) -> Option<usize> {
     lifecycle().phases.iter().position(|p| &p.produces == id)
 }
 
+/// A commit already exists behind this status — the problem is addressed, even
+/// while verify has yet to confirm it. Derived from which phase first requires
+/// `applied_sha` rather than from a list of names, for the same reason as
+/// `is_before_decision` below.
+pub fn has_landed(status: &str) -> bool {
+    let Some(apply) =
+        lifecycle().phases.iter().position(|p| p.requires.iter().any(|r| r == "applied_sha"))
+    else {
+        return false;
+    };
+    phase_index(status).is_some_and(|i| i >= apply)
+}
+
 /// The status the one attended phase produces — what "you said yes" looks like.
 pub fn decision_status() -> &'static str {
     lifecycle()

@@ -7,6 +7,7 @@
  *   status    one line, for the session hook
  *   validate  check suggestion frontmatter against the schema (--fix normalises)
  *   triage    apply a batch of triage decisions to frontmatter (--self-check)
+ *   asks      the asks you keep repeating (--json for the weekly pass)
  *   doctor    run kaizen's own rubric against kaizen (--file queues findings)
  *   docs      regenerate what lifecycle.json implies (--check fails on drift)
  *   serve     start the local app + API
@@ -37,8 +38,19 @@ import {
   validateLifecycle,
   awaitingDecision,
   entryStatus,
+  discoverSuggestions,
+  surfaceOf,
+  passesSurface,
+  categorize,
+  readAsks,
+  passDue,
+  windowDays,
+  stampPath,
   canonicalStatus,
+  isTerminal,
+  hasLanded,
   canTransition,
+  nextStatuses,
   missingRequirements,
   renderMarkdown,
 } from '@kaizen/core';
@@ -178,7 +190,7 @@ async function cmdInit() {
   for (const w of state.warnings) console.log(`  warning: ${w}`);
   console.log(
     `\nFound ${state.skills.length} skills and ${state.metrics.total} suggestions ` +
-      `(${state.metrics.incidents} incidents, ${state.metrics.clusters} clusters).`,
+      `(${state.metrics.incidents} incidents, ${state.metrics.categories} categories).`,
   );
   console.log('\nNext: `kaizen serve` to open the app, or run /kaizen:triage in Claude Code.\n');
 }
@@ -207,7 +219,68 @@ function cmdScan() {
  * The session hook calls this. It must stay cheap and quiet: one line, no model,
  * and silence when there is genuinely nothing to say.
  */
+/**
+ * The status bar segment — concept A of the 2026-08-09 proposals: pile shapes.
+ *
+ *   改 ○17 ●1 ◐22 ▲9
+ *
+ * The dot's fill IS the state: ○ unjudged (to triage), ● a decision that is
+ * yours — the only amber thing, because it is the only thing that ever needs
+ * you — ◐ half-done (landed, unverified), ▲ the hottest promoted category
+ * with open work. Zero segments vanish; an empty backlog is a dim 改, which
+ * proves the segment is alive without saying anything.
+ *
+ * Runs on every status-line refresh, so it reads suggestions only — no skills
+ * discovery, no project scan, no git. And it never errors out loud: a bar that
+ * prints a stack trace every few seconds is worse than no bar.
+ */
+function cmdBar() {
+  const paint = (code, text) => `\x1b[${code}m${text}\x1b[0m`;
+  try {
+    const { config, exists, errors } = loadConfig();
+    if (!exists || errors.length) return;
+
+    const suggestions = [];
+    const seen = new Set();
+    for (const t of resolveTargets(config)) {
+      if (!t.feedback || seen.has(t.feedback)) continue;
+      seen.add(t.feedback);
+      suggestions.push(...discoverSuggestions(t.feedback, t.name));
+    }
+
+    const surface = surfaceOf(config);
+    const surfaced = suggestions.filter((s) => passesSurface(s, surface));
+    const entry = entryStatus();
+    const wants = awaitingDecision();
+    const toTriage = surfaced.filter((s) => s.status === entry).length;
+    const deciding = surfaced.filter((s) => wants.includes(s.status)).length;
+    const landed = surfaced.filter((s) => hasLanded(s.status) && !isTerminal(s.status)).length;
+
+    // Same rule as the session line: a category is only worth pointing at
+    // while something in it is still open work.
+    const open = new Set(
+      surfaced.filter((s) => !isTerminal(s.status) && !hasLanded(s.status)).map((s) => s.id),
+    );
+    const categories = categorize(suggestions, { promotion: config.categoryPromotion });
+    const top = categories.find((c) => c.promoted && c.members.some((m) => open.has(m)));
+
+    const parts = [];
+    if (toTriage) parts.push(paint('36', `○${toTriage}`));
+    if (deciding) parts.push(paint('1;33', `●${deciding}`));
+    if (landed) parts.push(paint('34', `◐${landed}`));
+    if (top) parts.push(paint('31', `▲${top.incidents}`));
+
+    if (parts.length === 0) return console.log(paint('2', '改'));
+    console.log(`${paint('36', '改')} ${parts.join(' ')}`);
+  } catch {
+    /* silence — the bar has no business breaking a prompt */
+  }
+}
+
 function cmdStatus() {
+  // The bar ignores the sessionHook toggle on purpose: it only ever renders
+  // because the user wired it into their statusLine command themselves.
+  if (has('--bar')) return cmdBar();
   const { config, exists, errors } = loadConfig();
   if (!exists) return;
   // The Settings toggle has to mean something, and this is its only reader. It
@@ -224,7 +297,7 @@ function cmdStatus() {
   } catch {
     return;
   }
-  const { clusters } = state;
+  const { categories } = state;
 
   // Counted over what the user asked to see, not over everything on disk. The
   // dashboard's header still reports the full totals; this line is the one that
@@ -247,10 +320,11 @@ function cmdStatus() {
   const wants = awaitingDecision();
   const ready = surfaced.filter((s) => wants.includes(s.status)).length;
   if (ready) parts.push(`${ready} awaiting you`);
-  // A cluster is worth naming if any part of it is something you asked to see —
-  // re-clustering the filtered set would invent groups that do not exist on disk.
-  const ids = new Set(surfaced.map((s) => s.id));
-  const top = clusters.find((c) => c.promoted && c.members.some((m) => ids.has(m)));
+  // A category is worth naming only while something in it is still open work —
+  // surfaced, no commit landed, not terminal. One whose members are all applied
+  // or superseded is history, and it was headlining every session as "top".
+  const ids = new Set(surfaced.filter((s) => !isTerminal(s.status) && !hasLanded(s.status)).map((s) => s.id));
+  const top = categories.find((c) => c.promoted && c.members.some((m) => ids.has(m)));
   if (top) parts.push(`top: ${top.id} (${top.incidents})`);
   if (parts.length === 0) return;
   console.log(`kaizen: ${parts.join(' · ')}`);
@@ -261,7 +335,7 @@ function cmdStatus() {
 /**
  * What the *capture* step owes us. Not the taxonomy — that is triage's job — but
  * `scope` is here on purpose: the skill that just ran is the only thing that
- * knows which file it would have fixed, and without it clustering runs on slug
+ * knows which file it would have fixed, and without it a suggestion can only group under its skill
  * vocabulary alone. It went unwritten 66 times while being merely requested.
  */
 const REQUIRED = ['skill', 'date', 'severity', 'scope'];
@@ -352,7 +426,7 @@ const TRIAGE_FIELDS = {
   status: STATUSES,
   rung: ['0', '1', '2', '3'],
   scope: null, // free text: a path, checked for being non-empty only
-  cluster: null,
+  category: null,
   // The triage phase's own output: which commit the problem was last confirmed
   // to still exist at. Without it a pass cannot legally reach `triaged`, and the
   // 27 already-fixed suggestions this check exists for stay invisible.
@@ -361,6 +435,10 @@ const TRIAGE_FIELDS = {
   // edge-case list already calls for it. The folder is the scanner's signal, so
   // a remap is a move plus this field.
   skill: null,
+  // The verify phase's own output: when the validation plan ran and what it
+  // returned. Without this key the unattended verify pass had no mechanical
+  // writer and Step 7 forced the hand-editing the skill forbids.
+  verified_at: null,
 };
 
 /** Turn a decision list into writes, or into every reason it cannot be one. */
@@ -397,6 +475,110 @@ function validateDecisions(decisions, byId) {
     if (Object.keys(patch).length) writes.push({ file: found.file, id: found.id, patch });
   }
   return { errors, writes };
+}
+
+/* --------------------------------------------------------------- drain ---- */
+
+/** Shortest legal path from a status to `verified`, straight off the spec. */
+function drainPath(from) {
+  const start = canonicalStatus(from) ?? 'recorded';
+  const queue = [[start]];
+  const seen = new Set([start]);
+  while (queue.length) {
+    const path = queue.shift();
+    const cur = path.at(-1);
+    if (cur === 'verified') return path.slice(1);
+    for (const n of nextStatuses(cur)) {
+      if (!seen.has(n)) {
+        seen.add(n);
+        queue.push([...path, n]);
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Walk one suggestion all the way to `verified`, in one call.
+ *
+ * The 2026-08-09 pass did this by hand: four `triage --apply` batches plus an
+ * ad-hoc script for `applied_sha`, twice. That walk is pure mechanics — the
+ * path comes from the spec, every hop's requirements are the same checks the
+ * server runs, and the two stamps are fixed keys. What stays with the model is
+ * everything before this: the patch, the commit, and the validation run whose
+ * result `verified_at` records.
+ *
+ *   kaizen drain --apply stamps.json    # [{ id, sha, verified_at }]
+ *   kaizen drain --apply - < stamps.json
+ */
+function cmdDrain() {
+  const i = args.indexOf('--apply');
+  const source = i === -1 ? null : args[i + 1];
+  if (!source) {
+    console.error('usage: kaizen drain --apply <file.json|-> [--dry-run]');
+    exit(1);
+  }
+  let entries;
+  try {
+    entries = JSON.parse(source === '-' ? readFileSync(0, 'utf8') : readFileSync(source, 'utf8'));
+  } catch (e) {
+    console.error(`could not read stamps: ${e.message}`);
+    exit(1);
+  }
+  if (!Array.isArray(entries)) {
+    console.error('stamps must be a JSON array of { id, sha, verified_at }');
+    exit(1);
+  }
+
+  const config = requireConfig();
+  const byId = new Map(buildState(config).suggestions.map((s) => [s.id, s]));
+  const errors = [];
+  const writes = [];
+
+  for (const [n, e] of entries.entries()) {
+    const where = `stamps[${n}]`;
+    const found = byId.get(e?.id);
+    if (!found) {
+      errors.push(`${where}: no suggestion with id "${e?.id}"`);
+      continue;
+    }
+    if (!/^[0-9a-f]{7,40}$/i.test(String(e.sha ?? ''))) {
+      errors.push(`${where}.sha: not a commit hash`);
+      continue;
+    }
+    if (!String(e.verified_at ?? '').trim()) {
+      errors.push(`${where}.verified_at: must say when the validation ran and what it returned`);
+      continue;
+    }
+    const path = drainPath(found.status);
+    if (path === null) {
+      errors.push(`${where}: "${found.status}" cannot reach verified (terminal, or off the pipeline)`);
+      continue;
+    }
+    // The same gates the server holds: every hop's phase must have what it
+    // requires, judged against the file as it will be after the stamps land.
+    const text = readFileSync(found.file, 'utf8');
+    const { data, body } = parseFrontmatter(text);
+    const merged = { ...data, applied_sha: e.sha, verified_at: e.verified_at };
+    const hasPatch = existsSync(found.file.replace(/\.md$/, '.patch'));
+    for (const step of path) {
+      for (const f of missingRequirements(step, { data: merged, body, hasPatch })) {
+        errors.push(`${where}: cannot pass "${step}" — missing ${f}`);
+      }
+    }
+    writes.push({
+      file: found.file,
+      patch: { status: 'verified', applied_sha: e.sha, verified_at: e.verified_at },
+    });
+  }
+
+  if (errors.length) {
+    console.error(`refusing to write — ${errors.length} problem(s):\n  ${errors.join('\n  ')}`);
+    exit(1);
+  }
+  const dry = has('--dry-run');
+  for (const w of writes) if (!dry) writeFrontmatter(w.file, w.patch);
+  console.log(`${dry ? 'would stamp' : 'stamped'} ${writes.length} suggestion(s) verified`);
 }
 
 /**
@@ -494,6 +676,76 @@ function triageSelfCheck() {
 
   rmSync(root, { recursive: true, force: true });
   if (failed) exit(1);
+}
+
+/* ---------------------------------------------------------------- asks ---- */
+
+/** No skill ran, so asks file under a reserved name rather than inventing one. */
+const ASKS_SKILL = 'session';
+
+/**
+ * The asks corpus, and the schedule that decides when to look at it.
+ *
+ * Three modes, because the session hook needs an exit code and a stamp before it
+ * needs any output:
+ *
+ *   kaizen asks              # what you keep asking for, human-readable
+ *   kaizen asks --json       # the same corpus, for the naming pass to read
+ *   kaizen asks --due        # exit 0 when the weekly slot has been missed
+ *   kaizen asks --stamp      # record that the pass ran
+ *   kaizen asks --window 90  # override the window for a one-off look
+ *
+ * `--due` stays silent and cheap: it runs on every session start, so it reads
+ * one small file and answers with a status code.
+ */
+function cmdAsks() {
+  const { config, exists } = loadConfig();
+  const enabled = exists && config.asks?.enabled === true;
+
+  if (has('--due')) {
+    if (!enabled) exit(1);
+    const stamp = stampPath();
+    const last = existsSync(stamp) ? readFileSync(stamp, 'utf8').trim() : '';
+    exit(passDue({ weekly: config.cadence?.weekly, last }) ? 0 : 1);
+  }
+
+  if (has('--stamp')) {
+    // Stamped before the pass runs, never after. A pass that dies — no `claude`
+    // on PATH, no network — must not re-fire on every session until it works.
+    mkdirSync(dirname(stampPath()), { recursive: true });
+    writeFileSync(stampPath(), new Date().toISOString() + '\n');
+    return;
+  }
+
+  if (!enabled) {
+    console.error('asks is off. Enable it in Settings (asks.enabled) — it reads ~/.claude/history.jsonl.');
+    exit(1);
+  }
+
+  // `--window N` overrides for a one-off look; the pass itself never passes it.
+  const stamp = existsSync(stampPath()) ? readFileSync(stampPath(), 'utf8').trim() : '';
+  const days = Number(flag('window')) || windowDays({ days: config.asks.days, last: stamp });
+  const asks = readAsks({ days });
+
+  if (has('--json')) {
+    // What has already been filed travels *with* the corpus rather than being
+    // something the pass has to remember to go and read. Dedup is the one rule
+    // that, when skipped, buries the queue it exists to fill — so it does not
+    // get to depend on an instruction being followed.
+    const known = resolveTargets(config)
+      .filter((t) => t.writable && t.feedback)
+      .flatMap((t) => discoverSuggestions(t.feedback, t.name))
+      .filter((s) => s.skill === ASKS_SKILL)
+      .map((s) => ({ slug: s.slug, scope: s.scope, seen: s.incidents }));
+
+    return stdout.write(JSON.stringify({ window: days, max: config.asks.max, known, asks }, null, 0));
+  }
+
+  if (asks.length === 0) return console.log('No asks in the window.');
+  console.log(`${asks.length} distinct asks in the last ${days} days:\n`);
+  for (const a of asks.slice(0, 30)) {
+    console.log(`${String(a.n).padStart(3)}×  ${a.last}  ${a.project}  ${a.text.slice(0, 90)}`);
+  }
 }
 
 /* -------------------------------------------------------------- doctor ---- */
@@ -665,16 +917,21 @@ const commands = {
   status: cmdStatus,
   validate: cmdValidate,
   triage: cmdTriage,
+  drain: cmdDrain,
+  asks: cmdAsks,
   doctor: cmdDoctor,
   docs: cmdDocs,
   serve: cmdServe,
   tui: cmdTui,
   help: () =>
     console.log(
-      'usage: kaizen <init|scan|status|validate|triage|doctor|docs|serve|tui> [--fix] [--pretty]\n' +
+      'usage: kaizen <init|scan|status|validate|triage|drain|asks|doctor|docs|serve|tui> [--fix] [--pretty]\n' +
         '       kaizen doctor [--file]\n' +
+        '       kaizen asks [--json|--due|--stamp]                # asks you keep repeating\n' +
         '       kaizen triage --apply <file.json|-> [--dry-run]\n' +
         '       kaizen triage --self-check\n' +
+        '       kaizen drain --apply <file.json|-> [--dry-run]   # [{ id, sha, verified_at }]\n' +
+        '       kaizen status --bar                              # 改 ○17 ●1 ◐22 ▲9, for the status line\n' +
         '       kaizen docs [--check] [--self-check]\n' +
         '       kaizen validate [--fix] [--strict]',
     ),

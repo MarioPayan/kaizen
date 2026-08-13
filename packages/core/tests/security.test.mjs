@@ -99,9 +99,15 @@ describe('config validation', () => {
     expect(validateConfig(cfg)).toContain('scan.enabled is true but scan.roots is empty');
   });
 
-  it('requires both paths on every target', () => {
+  it('allows a discovery-only target, but never a writable one', () => {
     const cfg = defaultConfig();
+    // Skills without feedback is legal: the target contributes to the
+    // inventory so its feedback folders elsewhere stop reading as orphans.
     cfg.targets = [{ name: 'a', skills: '/tmp/s' }];
-    expect(validateConfig(cfg)).toContain('targets[0].feedback is required');
+    expect(validateConfig(cfg)).toEqual([]);
+    // Writable without feedback is a place to land patches with no
+    // suggestions to land — a contradiction, not a preference.
+    cfg.targets = [{ name: 'a', skills: '/tmp/s', writable: true }];
+    expect(validateConfig(cfg)).toContain('targets[0]: writable requires a feedback path');
   });
 });

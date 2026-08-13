@@ -231,47 +231,47 @@ function patchesThatNoLongerApply(state, config) {
 }
 
 /**
- * A cluster fix closes one member and orphans the rest.
+ * A category fix closes one member and orphans the rest.
  *
  * Found by hand, expensively. Step 4 says to write **one** proposal for a
- * cluster because one artefact fixes every member — but the drain marks only the
+ * category because one artefact fixes every member — but the drain marks only the
  * suggestion named in the commit, so the siblings sit at their old status
  * forever. Two commits did exactly this and left 27 suggestions reading as open
  * work months after the code that fixed them had shipped; the queue said 39
  * awaiting a decision when the true number was 12.
  *
- * The signal is cheap: an unfinished member of a cluster that already has a
- * finished one. That is not proof — a cluster can legitimately be fixed in
+ * The signal is cheap: an unfinished member of a category that already has a
+ * finished one. That is not proof — a category can legitimately be fixed in
  * stages — so this reports rather than rewrites, and names the sha to check
  * against.
  */
-function clusterFixOrphansSiblings(state) {
+function categoryFixOrphansSiblings(state) {
   const findings = [];
-  for (const cluster of state.clusters) {
-    if (cluster.size < 2) continue;
-    // Only a cluster whose members converge on ONE file. The premise here is
+  for (const category of state.categories) {
+    if (category.size < 2) continue;
+    // Only a category whose members converge on ONE file. The premise here is
     // "one artefact fixes all of these", and that is exactly what a single scope
     // means. Without this gate the check fired on `self-script-without` — nine
     // findings grouped by slug vocabulary across seven different scripts, each
     // needing its own fix and none of them orphaned by the others.
-    if (cluster.scopes.length !== 1) continue;
-    const members = cluster.members.map((id) => state.suggestions.find((s) => s.id === id)).filter(Boolean);
+    if (category.scopes.length !== 1) continue;
+    const members = category.members.map((id) => state.suggestions.find((s) => s.id === id)).filter(Boolean);
     const done = members.filter((s) => hasLanded(s.status) || s.status === 'superseded');
     const openOnes = members.filter((s) => !isTerminal(s.status) && !hasLanded(s.status));
     if (done.length === 0 || openOnes.length === 0) continue;
 
     const sha = done.find((s) => s.appliedSha)?.appliedSha;
     findings.push({
-      slug: `cluster-${cluster.id}-has-orphaned-siblings`.slice(0, 80),
+      slug: `category-${category.id}-has-orphaned-siblings`.replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 80),
       severity: openOnes.length > 3 ? 'medium' : 'low',
-      scope: cluster.scopes[0] || 'skills/kaizen/SKILL.md',
+      scope: category.scopes[0] || 'skills/kaizen/SKILL.md',
       context:
-        `Cluster \`${cluster.id}\`: ${done.length} of ${members.length} members are finished, ` +
+        `Category \`${category.id}\`: ${done.length} of ${members.length} members are finished, ` +
         `${openOnes.length} are not — ${openOnes
           .slice(0, 5)
           .map((s) => s.slug)
           .join(', ')}${openOnes.length > 5 ? `, +${openOnes.length - 5} more` : ''}. ` +
-        `One fix closes a cluster, so the rest are probably already fixed and unmarked.`,
+        `One fix closes a category, so the rest are probably already fixed and unmarked.`,
       suggestion:
         `Re-read the scope file at HEAD${sha ? ` (the fix landed in ${sha.slice(0, 7)})` : ''} ` +
         'and mark each sibling superseded with a note naming where the fix lives, or confirm it is ' +
@@ -284,7 +284,7 @@ function clusterFixOrphansSiblings(state) {
 
 export const CHECKS = [
   { id: 'dead-config-key', run: () => deadConfigKeys() },
-  { id: 'cluster-fix-orphans-siblings', run: (ctx) => clusterFixOrphansSiblings(ctx.state) },
+  { id: 'category-fix-orphans-siblings', run: (ctx) => categoryFixOrphansSiblings(ctx.state) },
   { id: 'patch-no-longer-applies', run: (ctx) => patchesThatNoLongerApply(ctx.state, ctx.config) },
   { id: 'decided-without-a-patch', run: (ctx) => decidedWithoutAPatch(ctx.state) },
   { id: 'stale-decision', run: (ctx) => staleDecisions(ctx.state, ctx.today) },

@@ -12,7 +12,15 @@
  */
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
-import { existsSync, readFileSync } from 'node:fs';
+import {
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  statSync,
+  utimesSync,
+  unlinkSync,
+  mkdirSync,
+} from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { join, dirname, resolve } from 'node:path';
@@ -20,6 +28,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   buildState,
+  configPath,
   resolveTargets,
   saveConfig,
   validateConfig,
@@ -91,6 +100,7 @@ function suggestionFile(config, id) {
   const { target, skill, file } = parsed;
   const t = resolveTargets(config).find((x) => x.name === target);
   if (!t) throw new HttpError(404, `unknown target "${target}"`);
+  if (!t.feedback) throw new HttpError(404, `target "${target}" is discovery-only — it holds no suggestions`);
   const candidate = join(t.feedback, skill, file);
   try {
     assertInside([t.feedback], candidate, 'suggestion');
@@ -238,7 +248,9 @@ const routes = {
   'GET /api/skill': async (req, _res, ctx) => {
     const path = new URL(req.url, 'http://localhost').searchParams.get('path');
     if (!path) throw new HttpError(400, 'path is required');
-    const roots = resolveTargets(ctx.config).flatMap((t) => [t.skills, t.feedback]);
+    const roots = resolveTargets(ctx.config)
+      .flatMap((t) => [t.skills, t.feedback])
+      .filter(Boolean);
     let file;
     try {
       file = assertInside(roots, path, 'skill');
@@ -276,20 +288,20 @@ const routes = {
   },
 
   /**
-   * Approving a cluster is one decision, so applying one is one call.
+   * Approving a category is one decision, so applying one is one call.
    *
-   * Every member is checked before any member is written. A cluster where one
+   * Every member is checked before any member is written. A category where one
    * suggestion is further along than the rest would otherwise be half-moved,
    * and there is no transaction to roll back a partial write of eleven files.
    */
-  'POST /api/cluster': async (req, _res, ctx) => {
+  'POST /api/category': async (req, _res, ctx) => {
     const { id, status } = await readBody(req);
     const to = assertSettable(status);
     const state = buildState(ctx.config);
-    const cluster = state.clusters.find((c) => c.id === id);
-    if (!cluster) throw new HttpError(404, `no such cluster: ${id}`);
+    const category = state.categories.find((c) => c.id === id);
+    if (!category) throw new HttpError(404, `no such category: ${id}`);
 
-    const members = cluster.members.map((m) => ({
+    const members = category.members.map((m) => ({
       member: m,
       from: state.suggestions.find((s) => s.id === m)?.status,
     }));
@@ -304,7 +316,7 @@ const routes = {
     for (const { member } of members) assertRequirements(ctx.config, member, to);
     for (const { member } of members) {
       const { path } = suggestionFile(ctx.config, member);
-      writeFrontmatter(path, { status: to, cluster: cluster.id });
+      writeFrontmatter(path, { status: to, category: category.id });
     }
     return { id, status: to, updated: members.length };
   },
@@ -393,20 +405,80 @@ export function createApp(config) {
   });
 }
 
-export function startServer(config) {
+/* ------------------------------------------------------------- pidfile ---- */
+
+const HEARTBEAT_TOUCH_MS = 15_000;
+const HEARTBEAT_STALE_MS = 60_000;
+
+/**
+ * Nothing ties a server to the session that started it, so a stale one can
+ * outlive its terminal and the next `serve` only sees EADDRINUSE. The pidfile
+ * plus a heartbeat mtime turns that into a diagnosis. Deliberately no
+ * auto-kill: replacing a live process is a decision, not a default.
+ */
+// Beside the config, because that is where kaizen state lives — and configPath
+// honours KAIZEN_CONFIG, so tests get an isolated pidfile for free.
+function pidfilePath(explicit) {
+  return explicit ?? join(dirname(configPath()), 'server.pid');
+}
+
+/** One human sentence about who holds the port, from the pidfile if any. */
+export function describePortHolder(port, pidfile = pidfilePath()) {
+  if (!existsSync(pidfile)) {
+    return `Port ${port} is in use — kaizen may already be running (no pidfile to confirm)`;
+  }
+  const pid = Number(readFileSync(pidfile, 'utf8').trim());
+  const age = Math.round((Date.now() - statSync(pidfile).mtimeMs) / 1000);
+  let alive = false;
+  try {
+    process.kill(pid, 0);
+    alive = true;
+  } catch {
+    /* ESRCH: gone; EPERM would mean alive-but-not-ours, impossible on loopback-local use */
+  }
+  if (!alive)
+    return `Port ${port} is in use by another process — the last kaizen server (pid ${pid}) is gone`;
+  if (age * 1000 > HEARTBEAT_STALE_MS) {
+    return `A kaizen server (pid ${pid}) holds port ${port} but its heartbeat is ${age}s old — it may be hung. Kill ${pid} to replace it.`;
+  }
+  return `kaizen is already running (pid ${pid}, heartbeat ${age}s ago) on port ${port}`;
+}
+
+export function startServer(config, { pidfile } = {}) {
   const { host, port } = config.server ?? { host: '127.0.0.1', port: 7777 };
   const server = createApp(config);
+  const pidPath = pidfilePath(pidfile);
 
   return new Promise((resolvePromise, reject) => {
     server.once('error', (e) => {
-      if (e.code === 'EADDRINUSE') {
-        // Almost always an instance already running. Say that rather than
-        // starting a second one on a port the user has to go looking for.
-        console.error(`Port ${port} is in use — kaizen may already be running at http://${host}:${port}`);
-      }
+      if (e.code === 'EADDRINUSE') console.error(describePortHolder(port, pidPath));
       reject(e);
     });
     server.listen(port, host, () => {
+      try {
+        mkdirSync(dirname(pidPath), { recursive: true });
+        writeFileSync(pidPath, `${process.pid}\n`);
+        const beat = setInterval(() => {
+          const now = new Date();
+          try {
+            utimesSync(pidPath, now, now);
+          } catch {
+            /* removed underneath us — recreated on next start */
+          }
+        }, HEARTBEAT_TOUCH_MS);
+        beat.unref();
+        server.on('close', () => {
+          clearInterval(beat);
+          try {
+            unlinkSync(pidPath);
+          } catch {
+            /* already gone */
+          }
+        });
+      } catch (e) {
+        // A server that runs without a pidfile is degraded, not broken.
+        console.error(`kaizen: no pidfile — ${e.message}`);
+      }
       console.log(`kaizen api → http://${host}:${port}   (front end: kaizen tui)`);
       resolvePromise(server);
     });

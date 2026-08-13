@@ -63,7 +63,13 @@ export function createEventStream(ctx) {
   function startWatchers() {
     // Two targets may name the same feedback directory; two watchers on one
     // directory means two events per change.
-    const dirs = [...new Set(resolveTargets(ctx.config).map((t) => t.feedback))];
+    const dirs = [
+      ...new Set(
+        resolveTargets(ctx.config)
+          .map((t) => t.feedback)
+          .filter(Boolean),
+      ),
+    ];
     for (const dir of dirs) {
       try {
         const w = watch(dir, { recursive: true }, (_event, filename) => bump(dir, filename));

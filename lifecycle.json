@@ -200,7 +200,7 @@
       "id": "scope",
       "phase": "triage",
       "where": "frontmatter",
-      "help": "The file the fix lands in. The strongest clustering signal there is — name the path a script would live at even when it does not exist yet."
+      "help": "The file the fix lands in — it IS the category, so one category is one fix. Name the path a script would live at even when it does not exist yet."
     },
     {
       "id": "rung",

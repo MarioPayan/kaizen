@@ -24,7 +24,7 @@ const suggestion = (over = {}) => ({
   ...over,
 });
 
-const stateWith = (suggestions) => ({ suggestions, clusters: [], skills: [], metrics: {} });
+const stateWith = (suggestions) => ({ suggestions, categories: [], skills: [], metrics: {} });
 
 // A config with no targets keeps the script-scanning check off the real machine,
 // so these assertions are about the checks and not about this laptop's contents.
@@ -42,15 +42,15 @@ describe('kaizen doctor', () => {
   });
 
   /**
-   * The shape of this session's 27. A cluster fix closes one member and the
+   * The shape of this session's 27. A category fix closes one member and the
    * drain marks only the suggestion named in its commit trailer, so the rest
    * sit at their old status reading as open work — for months, in the real
    * case, while the code that fixed them had long shipped.
    */
-  describe('cluster-fix-orphans-siblings', () => {
-    const clustered = (members, over = {}) => ({
+  describe('category-fix-orphans-siblings', () => {
+    const categorized = (members, over = {}) => ({
       suggestions: members,
-      clusters: [
+      categories: [
         {
           id: 'origin-local-remote',
           members: members.map((s) => s.id),
@@ -67,12 +67,12 @@ describe('kaizen doctor', () => {
 
     it('flags the unfinished members when a sibling has already landed', () => {
       const found = only(
-        clustered([
+        categorized([
           suggestion({ id: 'user/demo/a.md', slug: 'a', status: 'applied', appliedSha: 'c9168b6dead' }),
           suggestion({ id: 'user/demo/b.md', slug: 'b', status: 'recorded' }),
           suggestion({ id: 'user/demo/c.md', slug: 'c', status: 'approved' }),
         ]),
-        'cluster-fix-orphans-siblings',
+        'category-fix-orphans-siblings',
       );
       expect(found).toHaveLength(1);
       expect(found[0].context).toMatch(/1 of 3 members are finished, 2 are not/);
@@ -83,33 +83,33 @@ describe('kaizen doctor', () => {
 
     it('counts superseded as finished, since that is how a sibling gets closed', () => {
       const found = only(
-        clustered([
+        categorized([
           suggestion({ id: 'user/demo/a.md', slug: 'a', status: 'superseded' }),
           suggestion({ id: 'user/demo/b.md', slug: 'b', status: 'triaged' }),
         ]),
-        'cluster-fix-orphans-siblings',
+        'category-fix-orphans-siblings',
       );
       expect(found).toHaveLength(1);
     });
 
-    it('says nothing when the whole cluster is still open', () => {
+    it('says nothing when the whole category is still open', () => {
       const found = only(
-        clustered([
+        categorized([
           suggestion({ id: 'user/demo/a.md', slug: 'a', status: 'recorded' }),
           suggestion({ id: 'user/demo/b.md', slug: 'b', status: 'recorded' }),
         ]),
-        'cluster-fix-orphans-siblings',
+        'category-fix-orphans-siblings',
       );
       expect(found).toEqual([]);
     });
 
     it('says nothing when the whole cluster is finished', () => {
       const found = only(
-        clustered([
+        categorized([
           suggestion({ id: 'user/demo/a.md', slug: 'a', status: 'applied' }),
           suggestion({ id: 'user/demo/b.md', slug: 'b', status: 'verified' }),
         ]),
-        'cluster-fix-orphans-siblings',
+        'category-fix-orphans-siblings',
       );
       expect(found).toEqual([]);
     });
@@ -122,22 +122,22 @@ describe('kaizen doctor', () => {
      */
     it('ignores a cluster whose members do not share one scope', () => {
       const found = only(
-        clustered(
+        categorized(
           [
             suggestion({ id: 'user/demo/a.md', slug: 'a', status: 'applied' }),
             suggestion({ id: 'user/demo/b.md', slug: 'b', status: 'recorded' }),
           ],
           { scopes: ['one/a.sh', 'two/b.sh'] },
         ),
-        'cluster-fix-orphans-siblings',
+        'category-fix-orphans-siblings',
       );
       expect(found).toEqual([]);
     });
 
     it('ignores a cluster of one, which cannot orphan anything', () => {
       const found = only(
-        clustered([suggestion({ id: 'user/demo/a.md', slug: 'a', status: 'applied' })]),
-        'cluster-fix-orphans-siblings',
+        categorized([suggestion({ id: 'user/demo/a.md', slug: 'a', status: 'applied' })]),
+        'category-fix-orphans-siblings',
       );
       expect(found).toEqual([]);
     });

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parseFrontmatter, parseSuggestion, score, splitFilename } from '../src/suggestion.mjs';
-import { clusterSuggestions, termFrequencies } from '../src/cluster.mjs';
+import { categorize } from '../src/categories.mjs';
 
 const suggestion = ({ slug, body = '', ...fm }) => {
   const front = Object.entries(fm)
@@ -73,102 +73,68 @@ describe('scoring', () => {
   });
 });
 
-describe('clustering', () => {
-  it('groups suggestions that share rare vocabulary', () => {
+describe('categories', () => {
+  it('groups by scope, because the category is where the fix lands', () => {
     const items = [
-      suggestion({
-        slug: 'push-remote-not-always-origin',
-        body: 'the git remote is not named origin, resolve the remote name',
-      }),
-      suggestion({
-        slug: 'find-local-clone-checks-only-origin',
-        body: 'validate the clone against any remote matching owner repo, not origin',
-      }),
-      suggestion({
-        slug: 'standup-posts-at-wrong-hour',
-        body: 'the slackbot reminder fires earlier than the constant says',
-      }),
+      suggestion({ slug: 'push-remote-not-always-origin', scope: '_lib/pr/local-workspace.md' }),
+      suggestion({ slug: 'find-local-clone-checks-only-origin', scope: '_lib/pr/local-workspace.md' }),
+      suggestion({ slug: 'ci-watch-times-out', scope: '_lib/pr/ci-settle.sh' }),
     ];
-    const clusters = clusterSuggestions(items);
-    const withRemote = clusters.find((c) => c.size > 1);
-    expect(withRemote.size).toBe(2);
-    expect(clusters).toHaveLength(2);
+    const cats = categorize(items);
+    expect(cats).toHaveLength(2);
+    expect(cats[0].id).toBe('_lib/pr/local-workspace.md');
+    expect(cats[0].size).toBe(2);
   });
 
-  it('does not chain unrelated groups through one weak link', () => {
-    // Single linkage merged these on the real corpus; average linkage must not.
-    const items = [
-      suggestion({
-        slug: 'ci-watch-hangs',
-        body: 'the ci watch loop hangs on a pending external status check',
-      }),
-      suggestion({
-        slug: 'ci-watch-absent',
-        body: 'ci watch concludes checks are absent before they register',
-      }),
-      suggestion({
-        slug: 'finding-severity-out-of-diff',
-        body: 'a finding outside the diff takes severity relative to this change set',
-      }),
-      suggestion({
-        slug: 'duplicate-open-finding',
-        body: 'a finding duplicating another reviewer open finding should not post',
-      }),
-    ];
-    const clusters = clusterSuggestions(items);
-    expect(clusters).toHaveLength(2);
-    expect(clusters.every((c) => c.size === 2)).toBe(true);
+  it('falls back to the skill for a suggestion with no scope yet', () => {
+    const cats = categorize([suggestion({ slug: 'vague-thing' })]);
+    expect(cats).toHaveLength(1);
+    expect(cats[0].id).toBe('skill:skill');
   });
 
-  it('honours an explicit pin over computed similarity', () => {
+  it('honours an explicit pin over the scope key, old and new spelling alike', () => {
     const items = [
-      suggestion({ slug: 'alpha-one', cluster: 'manual', body: 'entirely unrelated words about breakfast' }),
-      suggestion({
-        slug: 'beta-two',
-        cluster: 'manual',
-        body: 'nothing whatsoever in common with the above',
-      }),
+      suggestion({ slug: 'alpha-one', category: 'manual', scope: 'a.md' }),
+      suggestion({ slug: 'beta-two', cluster: 'manual', scope: 'b.md' }),
     ];
-    const clusters = clusterSuggestions(items);
-    expect(clusters).toHaveLength(1);
-    expect(clusters[0].id).toBe('manual');
-    expect(clusters[0].pinned).toBe(true);
+    const cats = categorize(items);
+    expect(cats).toHaveLength(1);
+    expect(cats[0].id).toBe('manual');
+    expect(cats[0].pinned).toBe(true);
   });
 
-  it('keeps differently-pinned suggestions apart however alike they read', () => {
+  it('keeps differently-pinned suggestions apart however alike their scope', () => {
     const items = [
-      suggestion({
-        slug: 'remote-origin-resolve',
-        cluster: 'left',
-        body: 'resolve the git remote origin name',
-      }),
-      suggestion({
-        slug: 'remote-origin-resolve-two',
-        cluster: 'right',
-        body: 'resolve the git remote origin name',
-      }),
+      suggestion({ slug: 'left-one', category: 'left', scope: 'same.md' }),
+      suggestion({ slug: 'right-one', category: 'right', scope: 'same.md' }),
     ];
-    expect(clusterSuggestions(items)).toHaveLength(2);
+    expect(categorize(items)).toHaveLength(2);
   });
 
-  it('promotes a cluster once it crosses the members or incidents threshold', () => {
-    const body = 'the git remote origin name must be resolved from the repo remotes';
+  it('promotes a category once it crosses the members or incidents threshold', () => {
     const items = [
-      suggestion({ slug: 'remote-origin-a', severity: 'medium', effort: 'S', body }),
-      suggestion({ slug: 'remote-origin-b', severity: 'medium', effort: 'S', body }),
-      suggestion({ slug: 'remote-origin-c', severity: 'medium', effort: 'S', body }),
+      suggestion({ slug: 'a-first', scope: 'x.md' }),
+      suggestion({ slug: 'a-second', scope: 'x.md' }),
+      suggestion({ slug: 'a-third', scope: 'x.md' }),
     ];
-    const [cluster] = clusterSuggestions(items, { promotion: { members: 3, incidents: 5 } });
-    expect(cluster.size).toBe(3);
-    expect(cluster.promoted).toBe(true);
+    const [cat] = categorize(items, { promotion: { members: 3, incidents: 5 } });
+    expect(cat.size).toBe(3);
+    expect(cat.promoted).toBe(true);
   });
 
-  it('weights slug words above body prose', () => {
-    const tf = termFrequencies({ slug: 'origin', scope: '', context: 'origin', suggestion: '' });
-    expect(tf.get('origin')).toBe(4); // 3 from the slug, 1 from the body
+  it('is deterministic: same corpus, same categories, worst first', () => {
+    const items = [
+      suggestion({ slug: 'quiet-one', scope: 'quiet.md' }),
+      suggestion({ slug: 'busy-one', scope: 'busy.md', severity: 'high', effort: 'S' }),
+      suggestion({ slug: 'busy-two', scope: 'busy.md', severity: 'high', effort: 'S' }),
+    ];
+    const a = categorize(items).map((c) => c.id);
+    const b = categorize(items).map((c) => c.id);
+    expect(a).toEqual(b);
+    expect(a[0]).toBe('busy.md');
   });
 
   it('returns nothing for an empty corpus', () => {
-    expect(clusterSuggestions([])).toEqual([]);
+    expect(categorize([])).toEqual([]);
   });
 });

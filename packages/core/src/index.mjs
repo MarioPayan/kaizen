@@ -43,5 +43,6 @@ export {
   inPatchWindow,
   hasLanded,
 } from './lifecycle.mjs';
-export { clusterSuggestions, DEFAULT_THRESHOLD } from './cluster.mjs';
+export { categorize } from './categories.mjs';
+export { readAsks, passDue, parseCadence, lastSlot, windowDays, historyPath, stampPath } from './asks.mjs';
 export { assertInside, isInside, parseSuggestionId, suggestionId } from './paths.mjs';

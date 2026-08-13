@@ -29,17 +29,17 @@ A proposal at rung 2 or 3 has to say why the rung below it does not work. That c
 
 ## Use
 
-| Command                | Does                                          |
-| ---------------------- | --------------------------------------------- |
-| `/kaizen:triage`       | triage the backlog, cluster it, propose fixes |
-| `/kaizen:triage drain` | apply what you have already approved          |
-| `/kaizen:init`         | change what is watched                        |
+| Command                | Does                                             |
+| ---------------------- | ------------------------------------------------ |
+| `/kaizen:triage`       | triage the backlog, categorise it, propose fixes |
+| `/kaizen:triage drain` | apply what you have already approved             |
+| `/kaizen:init`         | change what is watched                           |
 
-A `SessionStart` hook prints one line per session — untriaged count, and the cluster that has cost you the most. No model runs, so it costs nothing, and it means the backlog cannot be forgotten. It opens nothing: `SessionStart` fires for every terminal and scheduled run, and anything that launches itself all day stops being read.
+A `SessionStart` hook prints one line per session — untriaged count, and the category that has cost you the most. No model runs, so it costs nothing, and it means the backlog cannot be forgotten. It opens nothing: `SessionStart` fires for every terminal and scheduled run, and anything that launches itself all day stops being read.
 
 ## How it decides
 
-**Grouping** is mechanical, so the same corpus always produces the same clusters. Suggestions join a group when they name the same target file, or when their vocabulary overlaps — weighted so that rare words like `origin` or `worktree` count and common ones like `check` or `step` do not. Grouping uses average linkage rather than single linkage, because single linkage chains: one borderline pair drags two unrelated groups together. Over-merging is worse than under-merging, since a wrong merge produces a confident wrong conclusion. You can always pin a grouping explicitly with `cluster:` in frontmatter, and a pin beats anything computed.
+**Grouping** is a key, not an algorithm: a suggestion's category is its `category:` pin if a human set one, else its `scope` — the file the fix lands in — else its skill. One category is one fix, which is the only grouping question that matters here. There used to be a TF-IDF clusterer with a tuned threshold behind this; once capture required `scope`, it was rediscovering what the frontmatter already said, so it went. A pin still beats everything.
 
 **Ranking** is arithmetic, not judgement:
 
@@ -49,13 +49,13 @@ score = impact x (1 + recurrences) / effort
 
 Recurrence is the honest signal. A suggestion filed six times is six incidents, not one loud opinion. Untriaged items score zero so they sort below anything actually assessed.
 
-**Promotion.** Once a cluster reaches 3 members or 5 incidents, patching one skill's prose stops being an acceptable fix — the cluster is evidence that prose already failed there repeatedly. Its fix must land at rung 0 or 1.
+**Promotion.** Once a category reaches 3 members or 5 incidents, patching one skill's prose stops being an acceptable fix — the category is evidence that prose already failed there repeatedly. Its fix must land at rung 0 or 1.
 
 ## Approval
 
 Nothing applies without you, and there is no setting that changes that.
 
-Approval happens per _cluster_, not per suggestion. Seven suggestions that share one fix are one decision. Requiring a click per row is how a backlog stops being drained, which is the exact failure this tool exists to correct.
+Approval happens per _category_, not per suggestion. Seven suggestions that share one fix are one decision. Requiring a click per row is how a backlog stops being drained, which is the exact failure this tool exists to correct.
 
 Your approval is the authorisation — what happens after it can be automatic. A proposal that is already a validated patch is applied by the server with no model involved. One that still needs authoring waits for the next `/kaizen` run.
 
@@ -73,12 +73,12 @@ Ratatui over the same `node:http` API, bound to `127.0.0.1`. `kaizen tui` starts
 the server itself if the port is dead, so there is one command. Four tabs, on
 `1`–`4`:
 
-| Tab          | What it is                                                                                                                                                            |
-| ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Queue**    | Every suggestion, ranked, with its detail beside it. `f` cycles the filter, `/` searches, `a`/`r` decide — and only where the model allows, so a key never just 409s. |
-| **Clusters** | Suggestions that share one fix. `A` approves the whole cluster as one decision, which is the fastest thing in the tool.                                               |
-| **Skills**   | What exists on disk, how much prose each carries, and how often it has failed per 100 lines. Worst ratio first.                                                       |
-| **Settings** | The config, read-only, and whether each apply guard is _actually_ on right now. `e` hands the file to `$EDITOR`; the server validates what comes back.                |
+| Tab            | What it is                                                                                                                                                                                                                                          |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Queue**      | Open work, ranked, with its detail beside it. It starts on the `open` filter — suggestions whose fix already landed or closed sit behind `f`, never gone. `/` searches, `a`/`r` decide — and only where the model allows, so a key never just 409s. |
+| **Categories** | Suggestions that share one fix — the pin, the scope file, or the skill. `A` approves the whole category as one decision, which is the fastest thing in the tool.                                                                                    |
+| **Skills**     | What exists on disk, how much prose each carries, and how often it has failed per 100 lines. Worst ratio first.                                                                                                                                     |
+| **Settings**   | The config, read-only, and whether each apply guard is _actually_ on right now. `e` hands the file to `$EDITOR`; the server validates what comes back.                                                                                              |
 
 `h` is help, `D` is the lifecycle, `d` is the patch under the cursor. There used
 to be a React dashboard as well; two front ends over one API meant every change
@@ -102,14 +102,14 @@ Nothing leaves your machine and nothing user-specific lives in this repository. 
 
 npm workspaces for the engine, one Rust crate for the front end.
 
-| Package          | Holds                                                            | Depends on |
-| ---------------- | ---------------------------------------------------------------- | ---------- |
-| `@kaizen/core`   | the engine: parse, cluster, score, discover. Plain Node, no deps | nothing    |
-| `@kaizen/server` | the local API on loopback                                        | core       |
-| `tui/`           | the terminal UI, over that API                                   | the API    |
+| Package          | Holds                                                               | Depends on |
+| ---------------- | ------------------------------------------------------------------- | ---------- |
+| `@kaizen/core`   | the engine: parse, categorise, score, discover. Plain Node, no deps | nothing    |
+| `@kaizen/server` | the local API on loopback                                           | core       |
+| `tui/`           | the terminal UI, over that API                                      | the API    |
 
 The boundary that matters: the engine decides, the TUI draws. Every derived fact
-a view needs — a skill's health, a cluster's promotion, whether a status may
+a view needs — a skill's health, a category's promotion, whether a status may
 become another — is computed in `core` or read from `lifecycle.json`, so the
 front end has nothing to re-derive and nothing to disagree with.
 

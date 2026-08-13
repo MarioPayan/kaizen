@@ -16,18 +16,18 @@ use ratatui::crossterm::event::KeyCode;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tab {
     Queue,
-    Clusters,
+    Categories,
     Skills,
     Settings,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 4] = [Tab::Queue, Tab::Clusters, Tab::Skills, Tab::Settings];
+    pub const ALL: [Tab; 4] = [Tab::Queue, Tab::Categories, Tab::Skills, Tab::Settings];
 
     pub fn label(self) -> &'static str {
         match self {
             Tab::Queue => "queue",
-            Tab::Clusters => "clusters",
+            Tab::Categories => "categories",
             Tab::Skills => "skills",
             Tab::Settings => "settings",
         }
@@ -46,7 +46,7 @@ pub enum Action {
     Guide,
     Approve,
     Reject,
-    ApproveCluster,
+    ApproveCategory,
     Apply,
     Diff,
     Open,
@@ -71,7 +71,7 @@ pub struct Binding {
 
 const ALL: &[Tab] = &[];
 const QUEUE: &[Tab] = &[Tab::Queue];
-const CLUSTERS: &[Tab] = &[Tab::Clusters];
+const CATEGORIES: &[Tab] = &[Tab::Categories];
 const SKILLS: &[Tab] = &[Tab::Skills];
 const SETTINGS: &[Tab] = &[Tab::Settings];
 
@@ -154,10 +154,10 @@ pub const BINDINGS: &[Binding] = &[
     Binding {
         keys: &[KeyCode::Char('A')],
         hint: "A",
-        label: "approve cluster",
+        label: "approve category",
         section: "decide",
-        tabs: &[Tab::Queue, Tab::Clusters],
-        action: Action::ApproveCluster,
+        tabs: &[Tab::Queue, Tab::Categories],
+        action: Action::ApproveCategory,
     },
     Binding {
         keys: &[KeyCode::Enter],
@@ -172,7 +172,7 @@ pub const BINDINGS: &[Binding] = &[
         hint: "enter",
         label: "show members",
         section: "decide",
-        tabs: CLUSTERS,
+        tabs: CATEGORIES,
         action: Action::Open,
     },
     Binding {
@@ -238,7 +238,7 @@ pub const BINDINGS: &[Binding] = &[
         label: "",
         section: "tabs",
         tabs: ALL,
-        action: Action::Go(Tab::Clusters),
+        action: Action::Go(Tab::Categories),
     },
     Binding {
         keys: &[KeyCode::Char('3')],
@@ -328,7 +328,7 @@ pub fn hints(tab: Tab) -> Vec<(&'static str, &'static str)> {
 /// Filtered to the tab rather than listing everything with a "where" column.
 /// That is what lets one key carry a different meaning per view without the
 /// card reading as a contradiction: on the queue `enter` is "apply", on
-/// clusters it is "show members", and you only ever see the one that is true
+/// categories it is "show members", and you only ever see the one that is true
 /// where you are standing.
 pub fn sections(tab: Tab) -> Vec<(&'static str, Vec<&'static Binding>)> {
     let mut out: Vec<(&'static str, Vec<&'static Binding>)> = Vec::new();

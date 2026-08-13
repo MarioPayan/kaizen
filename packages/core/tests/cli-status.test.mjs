@@ -110,4 +110,84 @@ describe('kaizen status', () => {
     const out = run(base());
     expect(out).not.toMatch(/awaiting you/);
   });
+
+  /**
+   * `top:` has to name work, not history. A promoted cluster whose members are
+   * all applied or superseded is fully addressed — and one of exactly that shape
+   * was headlining every session with 27 incidents nobody could act on.
+   */
+  it('names a top cluster only while some of it is still open', () => {
+    mkdirSync(join(root, 'feedback', 'demo2'), { recursive: true });
+    const member = (slug, status) =>
+      writeFileSync(
+        join(root, 'feedback', 'demo2', `2026-01-02-${slug}.md`),
+        [
+          '---',
+          'skill: demo2',
+          'date: 2026-01-02',
+          'severity: low',
+          'cluster: pinned-pair',
+          `status: ${status}`,
+          '---',
+          '',
+          '## Suggestion',
+          '',
+          // Vocabulary the demo file above does not share — otherwise its
+          // still-open member drifts into this cluster and keeps `top:` honest.
+          'normalise the remote before comparing',
+          '',
+          '## Recurrence — 2026-01-03',
+          '',
+          '## Recurrence — 2026-01-04',
+          '',
+        ].join('\n'),
+      );
+
+    // 3 incidents each → 6 ≥ 5: promoted. Both landed or terminal → silent.
+    member('origin-first', 'applied');
+    member('origin-second', 'superseded');
+    expect(run(base())).not.toMatch(/top:/);
+
+    // One member back in play → the cluster is work again.
+    member('origin-first', 'recorded');
+    expect(run(base())).toMatch(/top: pinned-pair/);
+  });
+});
+
+/**
+ * `--bar` is concept A of the status-bar proposals: pile shapes, ANSI color,
+ * dim 改 when clear. Asserted on the glyph grammar with the color stripped.
+ */
+describe('kaizen status --bar', () => {
+  const bar = (config) => {
+    const path = join(root, 'config.json');
+    writeFileSync(path, JSON.stringify(config));
+    const out = execFileSync('node', [cli, 'status', '--bar'], {
+      encoding: 'utf8',
+      env: { ...process.env, KAIZEN_CONFIG: path },
+    });
+    // eslint-disable-next-line no-control-regex
+    return { raw: out, plain: out.replace(/\x1b\[[0-9;]*m/g, '').trim() };
+  };
+
+  it('draws one dot per pile and points at the hottest open category', () => {
+    // The corpus built up by the tests above: pinned-pair holds a recorded
+    // member (3 incidents) plus superseded/approved siblings from demo.
+    const { plain } = bar(base());
+    expect(plain).toMatch(/^改 ○\d+/);
+    expect(plain).toContain('▲');
+  });
+
+  it('is a dim 改 when there is nothing to say, and ignores the hook toggle', () => {
+    const quiet = mkdtempSync(join(tmpdir(), 'kaizen-bar-'));
+    mkdirSync(join(quiet, 'skills'), { recursive: true });
+    mkdirSync(join(quiet, 'feedback'), { recursive: true });
+    const { raw, plain } = bar({
+      targets: [{ name: 'user', skills: join(quiet, 'skills'), feedback: join(quiet, 'feedback') }],
+      cadence: { weekly: 'SUN 09:00', sessionHook: false },
+    });
+    expect(plain).toBe('改');
+    expect(raw).toContain('\x1b[2m');
+    rmSync(quiet, { recursive: true, force: true });
+  });
 });

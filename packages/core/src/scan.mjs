@@ -9,7 +9,7 @@ import { readdirSync, readFileSync, statSync, existsSync } from 'node:fs';
 import { join, relative, dirname, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { parseSuggestion } from './suggestion.mjs';
-import { clusterSuggestions } from './cluster.mjs';
+import { categorize } from './categories.mjs';
 import { resolveTargets, expandPath } from './config.mjs';
 import { surfaceOf, passesSurface } from './taxonomy.mjs';
 import { suggestionId } from './paths.mjs';
@@ -234,7 +234,9 @@ export function buildState(config) {
 
   for (const t of targets) {
     if (!existsSync(t.skills)) warnings.push(`target "${t.name}": skills path not found — ${t.skills}`);
-    if (!existsSync(t.feedback)) warnings.push(`target "${t.name}": feedback path not found — ${t.feedback}`);
+    if (t.feedback && !existsSync(t.feedback)) {
+      warnings.push(`target "${t.name}": feedback path not found — ${t.feedback}`);
+    }
 
     for (const skill of discoverSkills(t.skills, { target: t.name })) {
       if (seenSkillFiles.has(skill.path)) continue;
@@ -242,6 +244,10 @@ export function buildState(config) {
       skills.push(skill);
     }
 
+    // Discovery-only: the target contributes skills to the inventory and
+    // nothing else, which is exactly what stops their feedback folders
+    // elsewhere from reading as orphans.
+    if (!t.feedback) continue;
     if (seenFeedback.has(t.feedback)) {
       warnings.push(`target "${t.name}": shares a feedback directory with an earlier target — counted once`);
       continue;
@@ -262,7 +268,7 @@ export function buildState(config) {
   const surface = surfaceOf(config);
   for (const s of suggestions) s.surfaced = passesSurface(s, surface);
 
-  const clusters = clusterSuggestions(suggestions, { promotion: config.clusterPromotion });
+  const categories = categorize(suggestions, { promotion: config.categoryPromotion });
 
   // A feedback folder whose skill no longer exists still holds real findings —
   // often the same live problem filed under a name that has since been renamed.
@@ -290,9 +296,9 @@ export function buildState(config) {
       return { ...s, suggestions, per100, health: health(s, suggestions, per100) };
     }),
     suggestions,
-    clusters,
+    categories,
     orphans,
-    metrics: metrics(suggestions, skills, clusters, open),
+    metrics: metrics(suggestions, skills, categories, open),
   };
 }
 
@@ -311,7 +317,7 @@ function health(skill, suggestions, per100) {
   return 'quiet';
 }
 
-function metrics(suggestions, skills, clusters, open) {
+function metrics(suggestions, skills, categories, open) {
   const incidents = suggestions.reduce((sum, s) => sum + s.incidents, 0);
   const recurrences = suggestions.reduce((sum, s) => sum + s.recurrences, 0);
   const byRung = {};
@@ -326,8 +332,8 @@ function metrics(suggestions, skills, clusters, open) {
     untriaged: suggestions.filter((s) => !s.triaged).length,
     incidents,
     recurrences,
-    clusters: clusters.length,
-    promotedClusters: clusters.filter((c) => c.promoted).length,
+    categories: categories.length,
+    promotedCategories: categories.filter((c) => c.promoted).length,
     incidentsByRung: byRung,
     proseLines,
     scriptCount: skills.reduce((sum, s) => sum + s.scripts, 0),

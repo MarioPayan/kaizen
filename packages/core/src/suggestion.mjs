@@ -86,9 +86,10 @@ export function parseSuggestion({ id, file, skill, target, text }) {
     scope: data.scope || '',
     rung,
     effort,
-    // A cluster pinned in frontmatter is a human decision and always wins over
-    // whatever the automatic pass would have grouped this with.
-    clusterPin: data.cluster || '',
+    // A category pinned in frontmatter is a human decision and always wins over
+    // the scope/skill key. `cluster:` is the key's pre-rename spelling, still
+    // read so older files keep their pins.
+    categoryPin: data.category || data.cluster || '',
     appliedSha: data.applied_sha || '',
     outcome: data.outcome || '',
     recurrences,

@@ -35,11 +35,15 @@ export function defaultConfig() {
     // Project-level `.claude/skills` discovery. Opt-in — never scan blindly.
     scan: { enabled: false, roots: [], depth: 3, writable: false },
     cadence: { weekly: 'SUN 09:00', sessionHook: true },
+    // The weekly pass reads your prompt log to find asks you keep repeating.
+    // Off by default and never anything but local: that file is everything you
+    // have ever typed, so watching it is a decision, not a default.
+    asks: { enabled: false, days: 90, max: 12 },
     // Which suggestions the queue and the session line put in front of you. A
     // view preference, not a filter on what gets filed — muted work stays on
     // disk and stays one click away.
     surface: defaultSurface(),
-    clusterPromotion: { members: 3, incidents: 5 },
+    categoryPromotion: { members: 3, incidents: 5 },
     applyGuards: { requireCleanTree: true, requireDiffApplies: true },
     server: { host: '127.0.0.1', port: 7777 },
   };
@@ -60,7 +64,13 @@ export function validateConfig(cfg) {
     cfg.targets.forEach((t, i) => {
       if (!t || typeof t !== 'object') return errs.push(`targets[${i}] is not an object`);
       if (!t.skills) errs.push(`targets[${i}].skills is required`);
-      if (!t.feedback) errs.push(`targets[${i}].feedback is required`);
+      // No feedback path means discovery-only: the skills are listed (so their
+      // feedback folders elsewhere stop reading as orphans) but nothing is read
+      // or written there. A writable target with no feedback would be a place
+      // to land patches with no suggestions to land — a contradiction.
+      if (!t.feedback && t.writable === true) {
+        errs.push(`targets[${i}]: writable requires a feedback path`);
+      }
       if (t.writable !== undefined && typeof t.writable !== 'boolean') {
         errs.push(`targets[${i}].writable must be a boolean`);
       }
@@ -79,10 +89,18 @@ export function validateConfig(cfg) {
     }
   }
 
-  if (cfg.clusterPromotion) {
-    const { members, incidents } = cfg.clusterPromotion;
-    if (!Number.isInteger(members) || members < 2) errs.push('clusterPromotion.members must be >= 2');
-    if (!Number.isInteger(incidents) || incidents < 2) errs.push('clusterPromotion.incidents must be >= 2');
+  if (cfg.categoryPromotion) {
+    const { members, incidents } = cfg.categoryPromotion;
+    if (!Number.isInteger(members) || members < 2) errs.push('categoryPromotion.members must be >= 2');
+    if (!Number.isInteger(incidents) || incidents < 2) errs.push('categoryPromotion.incidents must be >= 2');
+  }
+
+  if (cfg.asks) {
+    const { days, max } = cfg.asks;
+    if (!Number.isInteger(days) || days < 1 || days > 365) errs.push('asks.days must be 1-365');
+    // A pass with no ceiling is the one unattended thing here that both spends
+    // tokens and creates work, so the ceiling is not optional.
+    if (!Number.isInteger(max) || max < 1 || max > 50) errs.push('asks.max must be 1-50');
   }
 
   if (cfg.surface) {
@@ -174,7 +192,8 @@ export function resolveTargets(config) {
   return (config.targets ?? []).map((t, i) => ({
     name: t.name ?? `target-${i}`,
     skills: expandPath(t.skills),
-    feedback: expandPath(t.feedback),
+    // Empty means discovery-only: skills are listed, no suggestions live here.
+    feedback: t.feedback ? expandPath(t.feedback) : '',
     writable: t.writable === true,
   }));
 }

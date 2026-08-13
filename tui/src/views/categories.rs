@@ -1,11 +1,11 @@
-//! Clusters, because one fix closes all of them.
+//! Categories, because one fix closes all of them.
 //!
 //! This is the highest-value screen in the tool: approving nine suggestions that
 //! share one file is one decision, not nine. The queue can only ever show you
-//! the cluster of the row you happen to be on.
+//! the category of the row you happen to be on.
 //!
 //! Read-only apart from `A`. Deciding still happens in the queue, where the plan
-//! and the validation plan are visible — approving a cluster from a list of ids
+//! and the validation plan are visible — approving a category from a list of ids
 //! alone would be the un-evidenced yes the model exists to prevent.
 
 use ratatui::layout::{Constraint, Rect};
@@ -13,7 +13,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Cell, Paragraph, Row, Table, TableState, Wrap};
 use ratatui::Frame;
 
-use crate::api::Cluster;
+use crate::api::Category;
 use crate::theme;
 use crate::ui::titled;
 
@@ -21,17 +21,17 @@ use crate::ui::titled;
 /// each pair and the help card from both, so a column cannot be labelled one way
 /// and explained another.
 pub const COLUMNS: &[(&str, &str)] = &[
-    ("", "▲ marks a promoted cluster — its fix must land at rung 0 or 1"),
+    ("", "▲ marks a promoted category — its fix must land at rung 0 or 1"),
     ("open", "members that could still be approved, of the total"),
     ("inc", "incidents: how many times this actually happened"),
     ("span", "days between the first filing and the last"),
-    ("cluster", "its id, built from the words its members share"),
+    ("category", "its id — the pin, the scope file, or skill:<name> — the key its members share"),
     ("scope", "the one file a single fix lands in"),
 ];
 
 /// Worth acting on: more than one member, promoted first, then by what it cost.
-pub fn actionable(clusters: &[Cluster]) -> Vec<&Cluster> {
-    let mut out: Vec<&Cluster> = clusters.iter().filter(|c| c.size > 1).collect();
+pub fn actionable(categories: &[Category]) -> Vec<&Category> {
+    let mut out: Vec<&Category> = categories.iter().filter(|c| c.size > 1).collect();
     out.sort_by(|a, b| {
         b.promoted
             .cmp(&a.promoted)
@@ -44,24 +44,24 @@ pub fn actionable(clusters: &[Cluster]) -> Vec<&Cluster> {
 pub fn draw(
     frame: &mut Frame,
     area: Rect,
-    clusters: &[Cluster],
+    categories: &[Category],
     sel: usize,
     focused: bool,
     // How many members could still be approved. Shown because the server's
-    // cluster write is all-or-nothing: a cluster whose members have all been
+    // category write is all-or-nothing: a category whose members have all been
     // decided refuses the whole call, and reading that off a 409 that names one
     // file is a poor way to find out.
     ready: &dyn Fn(&str) -> usize,
 ) {
-    let rows = actionable(clusters);
+    let rows = actionable(categories);
     let live = rows.iter().filter(|c| ready(&c.id) > 0).count();
-    let outer = titled(&format!("Clusters ({} · {live} actionable)", rows.len()), area, focused);
+    let outer = titled(&format!("Categories ({} · {live} actionable)", rows.len()), area, focused);
     let inner = outer.inner(area);
     frame.render_widget(outer, area);
 
     if rows.is_empty() {
         frame.render_widget(
-            Paragraph::new("nothing has been filed twice — no cluster to decide as one")
+            Paragraph::new("nothing has been filed twice — no category to decide as one")
                 .wrap(Wrap { trim: false })
                 .style(Style::new().fg(theme::dim())),
             inner,
@@ -73,7 +73,7 @@ pub fn draw(
         .iter()
         .map(|c| {
             let open = ready(&c.id);
-            // A cluster with nothing left to decide is dimmed whole, so the eye
+            // A category with nothing left to decide is dimmed whole, so the eye
             // skips it rather than landing there and pressing A.
             let done = open == 0;
             let tone = |c: Color| if done { theme::dim() } else { c };

@@ -162,16 +162,16 @@ pub fn rows(cfg: &Value) -> Vec<Row> {
 
     out.push(heading("promotion"));
     out.push(Row {
-        path: "clusterPromotion.members".into(),
+        path: "categoryPromotion.members".into(),
         label: "members".into(),
-        kind: Kind::Number(n("clusterPromotion.members"), 2, 20),
+        kind: Kind::Number(n("categoryPromotion.members"), 2, 20),
         heading: false,
-        help: "a promoted cluster must be fixed at rung 0 or 1 — prose already failed there",
+        help: "a promoted category must be fixed at rung 0 or 1 — prose already failed there",
     });
     out.push(Row {
-        path: "clusterPromotion.incidents".into(),
+        path: "categoryPromotion.incidents".into(),
         label: "incidents".into(),
-        kind: Kind::Number(n("clusterPromotion.incidents"), 2, 50),
+        kind: Kind::Number(n("categoryPromotion.incidents"), 2, 50),
         heading: false,
         help: "",
     });
@@ -201,7 +201,14 @@ pub fn rows(cfg: &Value) -> Vec<Row> {
         label: "session line".into(),
         kind: Kind::Toggle(b("cadence.sessionHook")),
         heading: false,
-        help: "one line per session — untriaged count and the costliest cluster",
+        help: "one line per session — untriaged count and the costliest category",
+    });
+    out.push(Row {
+        path: "asks.enabled".into(),
+        label: "watch asks".into(),
+        kind: Kind::Toggle(b("asks.enabled")),
+        heading: false,
+        help: "weekly pass reads your prompt log for asks you keep repeating; off by default",
     });
     out.push(fact("weekly pass", s("cadence.weekly"), ""));
     out.push(fact("api", format!("{}:{}", s("server.host"), n("server.port")), ""));
@@ -344,7 +351,7 @@ mod tests {
             "targets": [{ "name": "user", "skills": "/s", "feedback": "/f", "writable": true }],
             "applyGuards": { "requireCleanTree": true, "requireDiffApplies": false },
             "surface": { "types": ["determinism"], "objectives": [], "minSeverity": "low" },
-            "clusterPromotion": { "members": 3, "incidents": 5 },
+            "categoryPromotion": { "members": 3, "incidents": 5 },
             "scan": { "enabled": false, "roots": [], "depth": 3 },
             "cadence": { "weekly": "SUN 09:00", "sessionHook": true },
             "server": { "host": "127.0.0.1", "port": 7777 }

@@ -30,10 +30,10 @@ use crate::api::{Client, Config, State, Suggestion};
 use crate::theme::{self, severity_colour, severity_letter, status_colour, tone_colour};
 use crate::ui::{badge, fit_parts, titled, truncate, wrapped};
 use crate::keys::{self, Action, Tab};
-use crate::views::{clusters, settings, skills};
+use crate::views::{categories, settings, skills};
 use crate::lifecycle::{
-    can_transition, decision_status, is_before_decision, lifecycle, next_statuses, status_abbrev,
-    status_spec,
+    can_transition, decision_status, has_landed, is_before_decision, is_terminal, lifecycle,
+    next_statuses, status_abbrev, status_spec,
 };
 
 const TICK: Duration = Duration::from_millis(250);
@@ -45,27 +45,34 @@ const WIDE: u16 = 90;
 
 /* ------------------------------------------------------------------ filter ---- */
 
+/// `Open` is the default: a queue is for deciding, and a suggestion whose fix
+/// has already landed is not a decision — it is history that was drowning the
+/// eighteen rows that still wanted one. `f` cycles to `All` when the history is
+/// wanted.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Filter {
-    All,
+    Open,
     Undecided,
     Approved,
+    All,
 }
 
 impl Filter {
     fn next(self) -> Self {
         match self {
-            Filter::All => Filter::Undecided,
+            Filter::Open => Filter::Undecided,
             Filter::Undecided => Filter::Approved,
             Filter::Approved => Filter::All,
+            Filter::All => Filter::Open,
         }
     }
 
     fn label(self) -> Option<&'static str> {
         match self {
-            Filter::All => None,
+            Filter::Open => Some("open"),
             Filter::Undecided => Some("undecided"),
             Filter::Approved => Some("approved"),
+            Filter::All => None,
         }
     }
 
@@ -75,6 +82,9 @@ impl Filter {
     fn keeps(self, s: &Suggestion) -> bool {
         match self {
             Filter::All => true,
+            Filter::Open => {
+                s.status.is_empty() || (!is_terminal(&s.status) && !has_landed(&s.status))
+            }
             Filter::Undecided => s.status.is_empty() || is_before_decision(&s.status),
             Filter::Approved => status_spec(&s.status).is_some_and(|x| x.id == decision_status()),
         }
@@ -92,7 +102,7 @@ enum Focus {
 enum Req {
     Refresh,
     SetStatus { id: String, status: String },
-    SetCluster { id: String, status: String },
+    SetCategory { id: String, status: String },
     Apply { id: String },
     Diff { id: String },
     Config,
@@ -117,10 +127,10 @@ fn spawn_worker(client: Client, rx: mpsc::Receiver<Req>, tx: mpsc::Sender<Res>) 
                 Req::SetStatus { id, status } => Res::Acted(
                     client.set_status(&id, &status).map(|_| format!("{status}: {}", short(&id))),
                 ),
-                Req::SetCluster { id, status } => Res::Acted(
+                Req::SetCategory { id, status } => Res::Acted(
                     client
-                        .set_cluster_status(&id, &status)
-                        .map(|n| format!("{status} {n} in cluster {id}")),
+                        .set_category_status(&id, &status)
+                        .map(|n| format!("{status} {n} in category {id}")),
                 ),
                 Req::Apply { id } => Res::Acted(
                     client
@@ -185,18 +195,18 @@ enum Overlay {
 
 /// Where you were, precisely enough to put you back.
 ///
-/// Not just the tab: returning to the clusters list with the cursor reset to the
+/// Not just the tab: returning to the categories list with the cursor reset to the
 /// top is still losing your place, and the whole complaint about `esc` was that
 /// it did not take you back to where you actually were.
 #[derive(Clone, PartialEq)]
 struct Place {
     tab: Tab,
     focus: Focus,
-    cluster_filter: Option<String>,
+    category_filter: Option<String>,
     query: String,
     filter: Filter,
     sel: usize,
-    cluster_sel: usize,
+    category_sel: usize,
     skill_sel: usize,
     setting_sel: u16,
 }
@@ -216,15 +226,16 @@ struct App {
     live: bool,
     busy: bool,
     filter: Filter,
-    /// Set by opening a cluster. Membership, not text — the cluster id is built
-    /// from its members' shared vocabulary and is frequently in none of them.
-    cluster_filter: Option<String>,
+    /// Set by opening a category. Membership, not text — a category id is the key
+    /// its members share (a pin, a scope path, or `skill:<name>`) and is
+    /// frequently in none of their slugs.
+    category_filter: Option<String>,
     query: String,
     searching: bool,
     focus: Focus,
     tab: Tab,
     /// One cursor per list, so switching tabs does not move the other one.
-    cluster_sel: usize,
+    category_sel: usize,
     skill_sel: usize,
     setting_sel: u16,
     /// The config being edited. Edits land here and are POSTed on `s`, so a
@@ -247,13 +258,13 @@ impl App {
             notice: None,
             live: false,
             busy: true,
-            filter: Filter::All,
-            cluster_filter: None,
+            filter: Filter::Open,
+            category_filter: None,
             query: String::new(),
             searching: false,
             focus: Focus::Queue,
             tab: Tab::Queue,
-            cluster_sel: 0,
+            category_sel: 0,
             skill_sel: 0,
             setting_sel: 0,
             config: None,
@@ -268,9 +279,9 @@ impl App {
     fn visible(&self) -> Vec<&Suggestion> {
         let Some(state) = self.state.as_ref() else { return Vec::new() };
         let needle = self.query.to_lowercase();
-        let members: Option<std::collections::HashSet<&str>> = self.cluster_filter.as_ref().map(|id| {
+        let members: Option<std::collections::HashSet<&str>> = self.category_filter.as_ref().map(|id| {
             state
-                .clusters
+                .categories
                 .iter()
                 .find(|c| &c.id == id)
                 .map(|c| c.members.iter().map(String::as_str).collect())
@@ -303,8 +314,8 @@ impl App {
         self.visible().get(self.sel).map(|s| s.status.clone())
     }
 
-    fn selected_cluster(&self) -> Option<String> {
-        let pin = self.visible().get(self.sel)?.cluster_pin.clone();
+    fn selected_category(&self) -> Option<String> {
+        let pin = self.visible().get(self.sel)?.category_pin.clone();
         (!pin.is_empty()).then_some(pin)
     }
 
@@ -339,8 +350,8 @@ impl App {
                     self.scroll = 0;
                 }
             }
-            Tab::Clusters => {
-                self.cluster_sel = step(self.cluster_sel, self.clusters().len());
+            Tab::Categories => {
+                self.category_sel = step(self.category_sel, self.categories().len());
             }
             Tab::Skills => {
                 self.skill_sel = step(self.skill_sel, self.skills().len());
@@ -356,21 +367,21 @@ impl App {
         }
     }
 
-    /// The clusters worth deciding, in the order the view draws them — so the
+    /// The categories worth deciding, in the order the view draws them — so the
     /// cursor index means the same thing here and there.
-    fn clusters(&self) -> Vec<&crate::api::Cluster> {
-        self.state.as_ref().map(|s| clusters::actionable(&s.clusters)).unwrap_or_default()
+    fn categories(&self) -> Vec<&crate::api::Category> {
+        self.state.as_ref().map(|s| categories::actionable(&s.categories)).unwrap_or_default()
     }
 
     fn place(&self) -> Place {
         Place {
             tab: self.tab,
             focus: self.focus,
-            cluster_filter: self.cluster_filter.clone(),
+            category_filter: self.category_filter.clone(),
             query: self.query.clone(),
             filter: self.filter,
             sel: self.sel,
-            cluster_sel: self.cluster_sel,
+            category_sel: self.category_sel,
             skill_sel: self.skill_sel,
             setting_sel: self.setting_sel,
         }
@@ -379,7 +390,7 @@ impl App {
     /// Remember where we are, before going somewhere else.
     ///
     /// Capped, and never twice in a row for the same place: holding `2` should
-    /// not bury the way back under forty copies of the clusters tab.
+    /// not bury the way back under forty copies of the categories tab.
     fn remember(&mut self) {
         let here = self.place();
         if self.history.last() == Some(&here) {
@@ -395,11 +406,11 @@ impl App {
         let Some(p) = self.history.pop() else { return false };
         self.tab = p.tab;
         self.focus = p.focus;
-        self.cluster_filter = p.cluster_filter;
+        self.category_filter = p.category_filter;
         self.query = p.query;
         self.filter = p.filter;
         self.sel = p.sel;
-        self.cluster_sel = p.cluster_sel;
+        self.category_sel = p.category_sel;
         self.skill_sel = p.skill_sel;
         self.setting_sel = p.setting_sel;
         self.clamp();
@@ -426,19 +437,19 @@ impl App {
         self.pending_config().is_some()
     }
 
-    /// How many of a cluster's members could actually become approved, and how
-    /// many there are. The server's cluster write is all-or-nothing, so the pair
+    /// How many of a category's members could actually become approved, and how
+    /// many there are. The server's category write is all-or-nothing, so the pair
     /// is what decides whether asking is worth a round trip.
-    fn cluster_readiness(&self, id: &str) -> (usize, usize) {
+    fn category_readiness(&self, id: &str) -> (usize, usize) {
         let Some(state) = self.state.as_ref() else { return (0, 0) };
-        let Some(cluster) = state.clusters.iter().find(|c| c.id == id) else { return (0, 0) };
-        let ready = cluster
+        let Some(category) = state.categories.iter().find(|c| c.id == id) else { return (0, 0) };
+        let ready = category
             .members
             .iter()
             .filter_map(|m| state.suggestions.iter().find(|s| &s.id == m))
             .filter(|s| can_transition(&s.status, "approved"))
             .count();
-        (ready, cluster.members.len())
+        (ready, category.members.len())
     }
 
     fn skills(&self) -> Vec<&crate::api::Skill> {
@@ -576,29 +587,29 @@ fn detail_lines(state: &State, s: &Suggestion) -> Vec<Line<'static>> {
     ])];
     if !s.scope.is_empty() {
         lines.push(Line::from(vec![
-            Span::styled("scope   ", Style::new().fg(theme::dim())),
+            Span::styled("scope    ", Style::new().fg(theme::dim())),
             Span::raw(s.scope.clone()),
         ]));
     }
-    if let Some(cluster) = (!s.cluster_pin.is_empty()).then(|| state.cluster(&s.cluster_pin)).flatten() {
+    if let Some(category) = (!s.category_pin.is_empty()).then(|| state.category(&s.category_pin)).flatten() {
         lines.push(Line::from(vec![
-            Span::styled("cluster ", Style::new().fg(theme::dim())),
-            Span::styled(cluster.id.clone(), Style::new().fg(theme::accent())),
+            Span::styled("category ", Style::new().fg(theme::dim())),
+            Span::styled(category.id.clone(), Style::new().fg(theme::accent())),
             Span::styled(
                 format!(
                     "  {} members · {} incidents · {} days{}",
-                    cluster.size,
-                    cluster.incidents,
-                    cluster.span_days,
-                    if cluster.promoted { " · promoted" } else { "" }
+                    category.size,
+                    category.incidents,
+                    category.span_days,
+                    if category.promoted { " · promoted" } else { "" }
                 ),
                 Style::new().fg(theme::dim()),
             ),
         ]));
-    } else if !s.cluster_pin.is_empty() {
+    } else if !s.category_pin.is_empty() {
         lines.push(Line::from(vec![
-            Span::styled("cluster ", Style::new().fg(theme::dim())),
-            Span::raw(s.cluster_pin.clone()),
+            Span::styled("category ", Style::new().fg(theme::dim())),
+            Span::raw(s.category_pin.clone()),
         ]));
     }
 
@@ -686,7 +697,7 @@ fn column_values(tab: Tab, column: &str) -> Vec<(String, String)> {
 fn columns_for(tab: Tab) -> &'static [(&'static str, &'static str)] {
     match tab {
         Tab::Queue => QUEUE_COLUMNS,
-        Tab::Clusters => clusters::COLUMNS,
+        Tab::Categories => categories::COLUMNS,
         Tab::Skills => skills::COLUMNS,
         Tab::Settings => settings::COLUMNS,
     }
@@ -958,9 +969,9 @@ fn draw(frame: &mut Frame, app: &App) {
     }
     parts.push(format!("{} untriaged", m.untriaged));
     parts.push(format!(
-        "{} promoted cluster{}",
-        m.promoted_clusters,
-        if m.promoted_clusters == 1 { "" } else { "s" }
+        "{} promoted categor{}",
+        m.promoted_categories,
+        if m.promoted_categories == 1 { "y" } else { "ies" }
     ));
     // The tab bar doubles as its own legend: the number beside each name is the
     // key that gets there, so there is nothing to look up. `Tabs` owns the
@@ -1015,10 +1026,10 @@ fn draw(frame: &mut Frame, app: &App) {
             }
             Tab::Queue if focus == Focus::Detail => draw_detail(frame, body, app, true),
             Tab::Queue => draw_queue(frame, body, app, true),
-            Tab::Clusters => {
-                let list = app.state.as_ref().map(|s| s.clusters.as_slice()).unwrap_or(&[]);
-                clusters::draw(frame, body, list, app.cluster_sel, true, &|id| {
-                    app.cluster_readiness(id).0
+            Tab::Categories => {
+                let list = app.state.as_ref().map(|s| s.categories.as_slice()).unwrap_or(&[]);
+                categories::draw(frame, body, list, app.category_sel, true, &|id| {
+                    app.category_readiness(id).0
                 });
             }
             Tab::Skills => {
@@ -1307,27 +1318,27 @@ fn run(
                     None => {}
                 }
             }
-            Action::ApproveCluster => {
+            Action::ApproveCategory => {
                 let id = match app.tab {
-                    Tab::Clusters => app.clusters().get(app.cluster_sel).map(|c| c.id.clone()),
-                    _ => app.selected_cluster(),
+                    Tab::Categories => app.categories().get(app.category_sel).map(|c| c.id.clone()),
+                    _ => app.selected_category(),
                 };
                 match id {
                     Some(id) => {
                         // The server checks every member before writing any, so
                         // one finished member refuses the whole call. Saying so
                         // here beats a 409 that names a filename.
-                        let (ready, total) = app.cluster_readiness(&id);
+                        let (ready, total) = app.category_readiness(&id);
                         if ready == 0 {
                             app.say(format!("nothing in {id} can be approved — all {total} are decided"), true);
                         } else if ready < total {
                             app.say(format!("{id}: only {ready} of {total} can move"), true);
                         } else {
                             app.busy = true;
-                            let _ = req.send(Req::SetCluster { id, status: "approved".into() });
+                            let _ = req.send(Req::SetCategory { id, status: "approved".into() });
                         }
                     }
-                    None => app.say("this suggestion is not in a cluster", true),
+                    None => app.say("this suggestion is not in a category", true),
                 }
             }
             Action::Apply => {
@@ -1343,11 +1354,11 @@ fn run(
                 }
             }
             Action::Open => match app.tab {
-                Tab::Clusters => {
-                    let id = app.clusters().get(app.cluster_sel).map(|c| c.id.clone());
+                Tab::Categories => {
+                    let id = app.categories().get(app.category_sel).map(|c| c.id.clone());
                     if let Some(id) = id {
                         app.remember();
-                        app.cluster_filter = Some(id.clone());
+                        app.category_filter = Some(id.clone());
                         app.filter = Filter::All;
                         app.query.clear();
                         app.tab = Tab::Queue;
@@ -1393,7 +1404,7 @@ mod tests {
                   "severity": "high", "status": "approved", "type": "structural",
                   "objective": "bug", "score": 42, "surfaced": true, "incidents": 3,
                   "rung": 1, "scope": "skills/kaizen/SKILL.md",
-                  "clusterPin": "origin-local-remote",
+                  "categoryPin": "origin-local-remote",
                   "context": "First full pass.", "suggestion": "Write the patch.",
                   "rationale": "Because approval without one is a dead end." },
                 { "id": "user/other/2026-08-01-a-second-thing.md", "skill": "other",
@@ -1408,7 +1419,7 @@ mod tests {
                   "suggestions": 0, "per100": 0, "health": "scripted",
                   "path": "/s/ts-github-triage/SKILL.md" }
               ],
-              "clusters": [
+              "categories": [
                 { "id": "origin-local-remote", "size": 2, "incidents": 27,
                   "spanDays": 70, "promoted": true, "scopes": ["_lib/pr/local-workspace.md"],
                   "members": ["user/kaizen/2026-08-08-approval-is-a-dead-end.md",
@@ -1416,7 +1427,7 @@ mod tests {
                 { "id": "quiet-pair", "size": 2, "incidents": 2,
                   "spanDays": 3, "promoted": false, "scopes": ["_lib/pr/github.md"] }
               ],
-              "metrics": { "open": 2, "untriaged": 0, "promotedClusters": 1 }
+              "metrics": { "open": 2, "untriaged": 0, "promotedCategories": 1 }
             }"#,
         )
         .unwrap()
@@ -1470,14 +1481,14 @@ mod tests {
         let text = render(&app_with_state(), 120, 30);
         assert!(text.contains("Queue (2)"), "{text}");
         assert!(text.contains("approval-is-a-dead-end"), "list shows the slug");
-        assert!(text.contains("origin-local-remote"), "detail names the cluster");
-        // Asserted piecewise: the detail pane wraps, so the cluster summary can be
+        assert!(text.contains("origin-local-remote"), "detail names the category");
+        // Asserted piecewise: the detail pane wraps, so the category summary can be
         // split across rows and a single `contains` on the whole frame would miss it.
         for part in ["2 members", "27 incidents", "70 days", "promoted"] {
-            assert!(text.contains(part), "cluster summary missing {part:?}: {text}");
+            assert!(text.contains(part), "category summary missing {part:?}: {text}");
         }
         assert!(text.contains("2 open"), "header carries the metrics");
-        assert!(!text.contains("1 promoted clusters"), "singular, not '1 clusters': {text}");
+        assert!(!text.contains("1 promoted categories"), "singular, not '1 categories': {text}");
         // The footer is easy to lose to a layout mistake and hard to notice.
         assert!(text.contains("a approve"), "key hints render: {text}");
         // No URL in the footer any more: it was never something anyone needed
@@ -1574,16 +1585,16 @@ mod tests {
     fn esc_returns_to_where_you_came_from_not_to_the_queue() {
         let mut app = app_with_state();
 
-        // Queue -> clusters -> skills, then back down the way we came.
+        // Queue -> categories -> skills, then back down the way we came.
         app.remember();
-        app.tab = Tab::Clusters;
-        app.cluster_sel = 1;
+        app.tab = Tab::Categories;
+        app.category_sel = 1;
         app.remember();
         app.tab = Tab::Skills;
 
         assert!(app.go_back());
-        assert_eq!(app.tab, Tab::Clusters);
-        assert_eq!(app.cluster_sel, 1, "and to the row you were on, not the top");
+        assert_eq!(app.tab, Tab::Categories);
+        assert_eq!(app.category_sel, 1, "and to the row you were on, not the top");
 
         assert!(app.go_back());
         assert_eq!(app.tab, Tab::Queue);
@@ -1593,24 +1604,24 @@ mod tests {
         assert!(!app.go_back());
     }
 
-    /// Opening a cluster jumps to the queue with a filter; going back has to
-    /// undo both the jump and the filter, and land on the same cluster row.
+    /// Opening a category jumps to the queue with a filter; going back has to
+    /// undo both the jump and the filter, and land on the same category row.
     #[test]
-    fn esc_undoes_opening_a_cluster_whole() {
+    fn esc_undoes_opening_a_category_whole() {
         let mut app = app_with_state();
-        app.tab = Tab::Clusters;
-        app.cluster_sel = 1;
+        app.tab = Tab::Categories;
+        app.category_sel = 1;
 
         app.remember();
-        app.cluster_filter = Some("origin-local-remote".into());
+        app.category_filter = Some("origin-local-remote".into());
         app.tab = Tab::Queue;
         app.sel = 0;
         assert_eq!(app.visible().len(), 2);
 
         assert!(app.go_back());
-        assert_eq!(app.tab, Tab::Clusters);
-        assert_eq!(app.cluster_sel, 1);
-        assert!(app.cluster_filter.is_none(), "the filter went with it");
+        assert_eq!(app.tab, Tab::Categories);
+        assert_eq!(app.category_sel, 1);
+        assert!(app.category_filter.is_none(), "the filter went with it");
     }
 
     #[test]
@@ -1651,15 +1662,15 @@ mod tests {
         // `enter` is bound three times, once per view. Each card shows its one.
         let queue = card(Tab::Queue);
         assert!(queue.contains("apply"), "{queue}");
-        assert!(!queue.contains("show members"), "and not the clusters meaning: {queue}");
+        assert!(!queue.contains("show members"), "and not the categories meaning: {queue}");
         assert!(!queue.contains("open file"), "nor the skills one: {queue}");
 
-        let clusters = card(Tab::Clusters);
-        assert!(clusters.contains("show members"), "{clusters}");
-        assert!(!clusters.contains("enter   apply"), "{clusters}");
+        let categories = card(Tab::Categories);
+        assert!(categories.contains("show members"), "{categories}");
+        assert!(!categories.contains("enter   apply"), "{categories}");
         // The git footnote is queue-only too — it is advice about a key that is
         // not bound here.
-        assert!(!clusters.contains("clean tree"), "{clusters}");
+        assert!(!categories.contains("clean tree"), "{categories}");
         assert!(queue.contains("clean tree"), "{queue}");
 
         assert!(card(Tab::Skills).contains("open file"));
@@ -1705,7 +1716,7 @@ mod tests {
         // Named per view, not shared: `per100` means nothing on the queue.
         assert!(card(Tab::Skills).contains("per100"));
         assert!(!card(Tab::Queue).contains("per100"));
-        assert!(card(Tab::Clusters).contains("promoted"));
+        assert!(card(Tab::Categories).contains("promoted"));
 
         // The status legend is generated, so a renamed status cannot leave a
         // stale abbreviation behind in the help.
@@ -1728,7 +1739,7 @@ mod tests {
     #[test]
     fn a_table_header_cannot_drift_from_its_explanation() {
         for (tab, columns) in [
-            (Tab::Clusters, clusters::COLUMNS),
+            (Tab::Categories, categories::COLUMNS),
             (Tab::Skills, skills::COLUMNS),
         ] {
             let mut app = app_with_state();
@@ -1768,7 +1779,7 @@ mod tests {
 
         // A column whose values are open gets no sub-list invented for it.
         assert!(column_values(Tab::Queue, "slug").is_empty());
-        assert!(column_values(Tab::Clusters, "scope").is_empty());
+        assert!(column_values(Tab::Categories, "scope").is_empty());
     }
 
     /// The complaint, as a check. `DarkGray` on a black terminal is the grey
@@ -1817,48 +1828,49 @@ mod tests {
 
     /// Promoted first, then by what it cost — the list is a work order.
     #[test]
-    fn clusters_rank_promoted_first_and_mark_them() {
+    fn categories_rank_promoted_first_and_mark_them() {
         let mut app = app_with_state();
-        app.tab = Tab::Clusters;
+        app.tab = Tab::Categories;
         let text = render(&app, 120, 30);
-        assert!(text.contains("Clusters (2 ·"), "{text}");
+        assert!(text.contains("Categories (2 ·"), "{text}");
         assert!(text.contains("▲"), "the promoted one is marked: {text}");
         assert!(text.contains("origin-local-remote"), "{text}");
         assert!(text.contains("_lib/pr/local-workspace.md"), "the scope is the fix's address: {text}");
-        // A one-member cluster is not a cluster: nothing to decide as one.
-        assert_eq!(app.clusters().len(), 2);
-        assert_eq!(app.clusters()[0].id, "origin-local-remote");
+        // A one-member category is not a category: nothing to decide as one.
+        assert_eq!(app.categories().len(), 2);
+        assert_eq!(app.categories()[0].id, "origin-local-remote");
     }
 
-    /// The bug this replaced: `enter` set the search box to the cluster id, and
-    /// a cluster id is built out of its members' *shared* vocabulary — so it
-    /// frequently appears in none of their slugs and the queue came back empty.
+    /// The bug this replaced: `enter` set the search box to the category id, and
+    /// a category id is the key its members share — a pin, a scope path, or
+    /// `skill:<name>` — so it frequently appears in none of their slugs and the
+    /// queue came back empty.
     #[test]
-    fn opening_a_cluster_filters_by_membership_not_by_text() {
+    fn opening_a_category_filters_by_membership_not_by_text() {
         let mut app = app_with_state();
         // The id matches no member's text, which is exactly the failing case.
         assert!(app.visible().iter().all(|s| !s.slug.contains("origin-local-remote")));
 
-        app.cluster_filter = Some("origin-local-remote".into());
+        app.category_filter = Some("origin-local-remote".into());
         assert_eq!(app.visible().len(), 2, "both members are found by id");
 
-        app.cluster_filter = Some("nonexistent".into());
-        assert!(app.visible().is_empty(), "an unknown cluster hides everything, not nothing");
+        app.category_filter = Some("nonexistent".into());
+        assert!(app.visible().is_empty(), "an unknown category hides everything, not nothing");
 
-        app.cluster_filter = None;
+        app.category_filter = None;
         assert_eq!(app.visible().len(), 2);
     }
 
-    /// The other half of the report: `A` on a cluster whose members are all
+    /// The other half of the report: `A` on a category whose members are all
     /// decided produced a 409 listing filenames. It refuses locally now.
     #[test]
-    fn cluster_readiness_counts_what_could_actually_move() {
+    fn category_readiness_counts_what_could_actually_move() {
         let app = app_with_state();
         // approved -> applied is legal, recorded -> approved is not.
-        let (ready, total) = app.cluster_readiness("origin-local-remote");
+        let (ready, total) = app.category_readiness("origin-local-remote");
         assert_eq!(total, 2);
         assert_eq!(ready, 0, "neither member can become approved from where it is");
-        assert_eq!(app.cluster_readiness("nope"), (0, 0));
+        assert_eq!(app.category_readiness("nope"), (0, 0));
     }
 
     #[test]
@@ -1885,7 +1897,7 @@ mod tests {
                 r#"{"targets":[{"name":"user","skills":"/s","feedback":"/f","writable":true}],
                     "applyGuards":{"requireCleanTree":false,"requireDiffApplies":true},
                     "surface":{"types":["a"],"objectives":["b"],"minSeverity":"low"},
-                    "clusterPromotion":{"members":3,"incidents":5},
+                    "categoryPromotion":{"members":3,"incidents":5},
                     "server":{"host":"127.0.0.1","port":7777}}"#,
             )
             .unwrap(),
@@ -1906,13 +1918,13 @@ mod tests {
         app.move_by(1);
         assert_eq!(app.skill_sel, 1);
         assert_eq!(app.sel, 0, "the queue's cursor did not move");
-        app.tab = Tab::Clusters;
+        app.tab = Tab::Categories;
         app.move_by(1);
-        assert_eq!(app.cluster_sel, 1);
+        assert_eq!(app.category_sel, 1);
         assert_eq!(app.skill_sel, 1, "and the skills cursor stayed put");
         // Neither can walk off the end.
         app.move_by(50);
-        assert_eq!(app.cluster_sel, 1);
+        assert_eq!(app.category_sel, 1);
     }
 
     #[test]
@@ -1991,11 +2003,11 @@ mod tests {
     }
 
     #[test]
-    fn cluster_action_needs_a_cluster() {
+    fn category_action_needs_a_category() {
         let mut app = app_with_state();
-        assert_eq!(app.selected_cluster().as_deref(), Some("origin-local-remote"));
+        assert_eq!(app.selected_category().as_deref(), Some("origin-local-remote"));
         app.move_by(1);
-        assert_eq!(app.selected_cluster(), None, "the second suggestion has no cluster pin");
+        assert_eq!(app.selected_category(), None, "the second suggestion has no category pin");
     }
 
     /// A refusal is the interesting case, and it is shown as the server wrote it.
@@ -2128,6 +2140,25 @@ mod tests {
         assert_eq!(app.visible()[0].status, "approved");
 
         assert_eq!(app.filter.next(), Filter::All);
+        assert_eq!(Filter::All.next(), Filter::Open, "and the cycle closes");
+    }
+
+    /// The default view is for deciding. A suggestion whose fix has already
+    /// landed — `applied`, awaiting verify — is addressed, not a decision, so it
+    /// waits behind `f` rather than sitting in front of the open work.
+    #[test]
+    fn the_default_filter_hides_landed_work() {
+        let mut app = app_with_state();
+        let mut st = state();
+        st.suggestions[0].status = "applied".into();
+        app.state = Some(st);
+
+        assert_eq!(app.filter, Filter::Open);
+        assert_eq!(app.visible().len(), 1);
+        assert_eq!(app.visible()[0].status, "recorded");
+
+        app.filter = Filter::All;
+        assert_eq!(app.visible().len(), 2, "still one f-cycle away, never gone");
     }
 
     #[test]
