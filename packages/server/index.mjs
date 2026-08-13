@@ -44,6 +44,7 @@ import {
   parseFrontmatter,
   canonicalStatus,
   canTransition,
+  awaitsPass,
   nextStatuses,
   statusIds,
   missingRequirements,
@@ -344,8 +345,10 @@ const routes = {
     if (ctx.dispatch && !ctx.dispatch.done) {
       throw new HttpError(409, `a triage run is already in flight (pid ${ctx.dispatch.pid})`);
     }
-    const untriaged = buildState(ctx.config).metrics.untriaged;
-    if (!untriaged) throw new HttpError(422, 'nothing to triage — the backlog is clear');
+    // Not the untriaged count: the pass also plans the triaged and re-plans
+    // the failed, and gating on triage alone refused exactly those backlogs.
+    const pending = buildState(ctx.config).suggestions.filter((s) => awaitsPass(s.status)).length;
+    if (!pending) throw new HttpError(422, 'nothing for a pass to do — all work is decided or yours');
     const child = ctx.spawnClaude();
     await new Promise((launched, failed) => {
       child.once('spawn', launched);
@@ -360,7 +363,7 @@ const routes = {
     });
     ctx.dispatch = child;
     ctx.events.broadcast('dispatch', { pid: child.pid, running: true });
-    return { pid: child.pid, untriaged };
+    return { pid: child.pid, pending };
   },
 
   'POST /api/apply': async (req, _res, ctx) => {

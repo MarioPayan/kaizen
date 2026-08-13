@@ -35,6 +35,7 @@ export {
   canTransition,
   nextStatuses,
   awaitingDecision,
+  awaitsPass,
   entryStatus,
   section,
   requirementsFor,

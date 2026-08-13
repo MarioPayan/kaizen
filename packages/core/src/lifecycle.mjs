@@ -190,6 +190,22 @@ export function awaitingDecision(l = spec()) {
 }
 
 /**
+ * Can the unattended pre-decision pass still move this status forward?
+ *
+ * True when a legal transition leads into something a phase before the
+ * attended one produces — so `recorded` (can become triaged), `triaged` (can
+ * become planned) and `failed` (can become planned again) all qualify, while
+ * `planned` waits on you and everything later waits on the server. This is
+ * the dispatch gate: counting only the untriaged once refused to plan a
+ * backlog that was fully triaged and not planned at all.
+ */
+export function awaitsPass(value, l = spec()) {
+  const at = l.phases.findIndex((p) => p.attended);
+  if (at <= 0) return false;
+  return l.phases.slice(0, at).some((p) => canTransition(value, p.produces, l));
+}
+
+/**
  * Pull a `## Heading` section out of a suggestion body.
  *
  * Lives here because the spec is what says which headings exist and which field

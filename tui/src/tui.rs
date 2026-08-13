@@ -32,8 +32,8 @@ use crate::ui::{badge, fit_parts, titled, truncate, wrapped};
 use crate::keys::{self, Action, Tab};
 use crate::views::{categories, settings, skills};
 use crate::lifecycle::{
-    can_transition, decision_status, has_landed, is_before_decision, is_terminal, lifecycle,
-    next_statuses, status_icon, status_spec,
+    awaits_pass, can_transition, decision_status, has_landed, is_before_decision, is_terminal,
+    lifecycle, next_statuses, status_icon, status_spec,
 };
 
 const TICK: Duration = Duration::from_millis(250);
@@ -134,7 +134,7 @@ fn spawn_worker(client: Client, rx: mpsc::Receiver<Req>, tx: mpsc::Sender<Res>) 
                         .map(|n| format!("{status} {n} in category {id}")),
                 ),
                 Req::Dispatch => Res::Acted(client.dispatch().map(|n| {
-                    format!("fable is triaging {n} — rows relabel as it lands")
+                    format!("fable is on {n} — rows relabel as it lands")
                 })),
                 Req::Apply { id } => Res::Acted(
                     client
@@ -1160,14 +1160,14 @@ fn run(
                         match state.dispatch.as_ref().and_then(|d| d.exit_code) {
                             Some(0) => app.say(
                                 format!(
-                                    "triage run done — {} still untriaged",
-                                    state.metrics.untriaged
+                                    "fable pass done — {} still to advance",
+                                    state.suggestions.iter().filter(|s| awaits_pass(&s.status)).count()
                                 ),
                                 false,
                             ),
                             code => app.say(
                                 format!(
-                                    "triage run failed (exit {}) — see ~/.claude/kaizen/dispatch.log",
+                                    "fable pass failed (exit {}) — see ~/.claude/kaizen/dispatch.log",
                                     code.unwrap_or(-1)
                                 ),
                                 true,

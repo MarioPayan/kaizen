@@ -239,10 +239,16 @@ describe('api', () => {
  */
 describe('POST /api/dispatch', () => {
   it('starts one run, refuses a second while it lives, and frees the seat on exit', async () => {
+    // A fully-triaged-but-unplanned backlog must open the seat — gating on the
+    // untriaged count alone once refused exactly this file.
+    writeFileSync(
+      join(root, 'skills-feedback', 'demo', '2026-03-03-still-unplanned.md'),
+      '---\nskill: demo\ndate: 2026-03-03\nseverity: low\ntype: hygiene\nobjective: debt\neffort: S\nrung: 1\nstatus: triaged\n---\n\n## Context\n\nc\n\n## Suggestion\n\ns\n',
+    );
     const first = await api('POST', '/api/dispatch');
     expect(first.status).toBe(200);
     expect(first.body.pid).toBe(spawned.at(-1).pid);
-    expect(first.body.untriaged).toBeGreaterThan(0);
+    expect(first.body.pending).toBeGreaterThan(0);
 
     // State carries the run while it lives — this is what the TUI's chip draws.
     const during = await api('GET', '/api/state');

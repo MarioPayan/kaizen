@@ -189,7 +189,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding {
         keys: &[KeyCode::Char('t')],
         hint: "t",
-        label: "triage backlog",
+        label: "dispatch fable",
         section: "decide",
         tabs: QUEUE,
         action: Action::Triage,

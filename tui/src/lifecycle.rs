@@ -160,9 +160,32 @@ pub fn phases_until_decision(status: &str) -> Vec<&'static PhaseSpec> {
     }
 }
 
+/// Can the unattended pre-decision pass (triage, plan) still move this status
+/// forward? Mirrors the server's dispatch gate so the TUI counts the same work
+/// the server would accept a dispatch for.
+pub fn awaits_pass(status: &str) -> bool {
+    let l = lifecycle();
+    let Some(at) = l.phases.iter().position(|p| p.attended) else { return false };
+    l.phases[..at].iter().any(|p| can_transition(status, &p.produces))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The dispatch gate. `triaged` is the one that was once refused: the old
+    /// gate counted untriaged items only, and a fully-triaged backlog with no
+    /// plans read as "nothing to do".
+    #[test]
+    fn the_pass_covers_recorded_triaged_and_failed_but_not_the_decided() {
+        assert!(awaits_pass("recorded"));
+        assert!(awaits_pass("triaged"));
+        assert!(awaits_pass("failed"), "a failed item goes back for a new plan");
+        assert!(!awaits_pass("planned"), "planned waits on you");
+        assert!(!awaits_pass("approved"), "approved waits on the server");
+        assert!(!awaits_pass("verified"));
+        assert!(!awaits_pass("rejected"));
+    }
 
     /// Icons are spec data, so the spec is where a two-cell glyph would sneak
     /// in and shear every row after it. Emoji fail this on purpose.
