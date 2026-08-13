@@ -103,7 +103,8 @@ enum Req {
     Refresh,
     SetStatus { id: String, status: String },
     SetCategory { id: String, status: String },
-    Dispatch,
+    /// `id` fences the run to one suggestion; `None` takes the backlog.
+    Dispatch { id: Option<String> },
     Apply { id: String },
     Diff { id: String },
     Config,
@@ -133,8 +134,11 @@ fn spawn_worker(client: Client, rx: mpsc::Receiver<Req>, tx: mpsc::Sender<Res>) 
                         .set_category_status(&id, &status)
                         .map(|n| format!("{status} {n} in category {id}")),
                 ),
-                Req::Dispatch => Res::Acted(client.dispatch().map(|n| {
-                    format!("fable is on {n} — rows relabel as it lands")
+                Req::Dispatch { id } => Res::Acted(client.dispatch(id.as_deref()).map(|n| {
+                    match &id {
+                        Some(id) => format!("fable is on {} — its row relabels as it lands", short(id)),
+                        None => format!("fable is on {n} — rows relabel as it lands"),
+                    }
                 })),
                 Req::Apply { id } => Res::Acted(
                     client
@@ -1404,7 +1408,7 @@ fn run(
                                     .map(|p| p.title.to_lowercase())
                                     .collect::<Vec<_>>()
                                     .join(" then ");
-                                format!("{from} needs {names} first — t sends fable at the backlog")
+                                format!("{from} needs {names} first — t sends fable at it")
                             } else if onward.is_empty() {
                                 format!("{from} is terminal — nothing follows it")
                             } else {
@@ -1445,9 +1449,23 @@ fn run(
                     None => app.say("this suggestion is not in a category", true),
                 }
             }
-            Action::Triage => {
+            Action::Triage => match app.selected_status() {
+                // The same local refusal as approve: name why, before a 422
+                // travels the wire to say the same thing.
+                Some(from) if !awaits_pass(&from) => {
+                    app.say(format!("{from} needs nothing from a pass — it waits elsewhere"), true)
+                }
+                Some(_) => {
+                    if let Some(id) = app.selected_id() {
+                        app.busy = true;
+                        let _ = req.send(Req::Dispatch { id: Some(id) });
+                    }
+                }
+                None => {}
+            },
+            Action::TriageAll => {
                 app.busy = true;
-                let _ = req.send(Req::Dispatch);
+                let _ = req.send(Req::Dispatch { id: None });
             }
             Action::Apply => {
                 if let Some(id) = app.selected_id() {
@@ -1674,6 +1692,15 @@ mod tests {
         assert!(lanes[0].title.contains("recorded"));
         assert_eq!(lanes[1].title, "closed");
         assert_eq!(lanes[1].items.len(), 2);
+    }
+
+    /// Lowercase acts on the selected item, uppercase on the wider set — the
+    /// same convention as a/A, so the shifted key must resolve separately.
+    #[test]
+    fn t_is_one_item_and_shift_t_is_the_backlog() {
+        use ratatui::crossterm::event::KeyCode;
+        assert_eq!(keys::resolve(KeyCode::Char('t'), Tab::Queue), Some(Action::Triage));
+        assert_eq!(keys::resolve(KeyCode::Char('T'), Tab::Board), Some(Action::TriageAll));
     }
 
     /// The decide keys act on the card under the board's cursors, not on

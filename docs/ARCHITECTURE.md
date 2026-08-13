@@ -108,17 +108,17 @@ A small route table plus `GET /api/events` (SSE), `node:http`, bound to
 `127.0.0.1` — that binding **is** the security boundary, because these routes
 write files and shell out to git.
 
-| Route                                  | Does                                              |
-| -------------------------------------- | ------------------------------------------------- |
-| `GET /api/state`                       | `buildState(config)`                              |
-| `GET /api/config` / `POST /api/config` | read / validate-then-save (restarts watchers)     |
-| `GET /api/skill?path=`                 | raw markdown, containment-checked                 |
-| `GET /api/diff?id=`                    | the sibling `.patch`, if any                      |
-| `POST /api/suggestion`                 | one status move, gated (see below)                |
-| `POST /api/category`                   | one status move for every member — all-or-nothing |
-| `POST /api/dispatch`                   | one detached `claude` run triages the backlog     |
-| `POST /api/apply`                      | `git apply` + one commit + writes `applied` + sha |
-| `POST /api/revert`                     | `git revert` a kaizen commit on a writable target |
+| Route                                  | Does                                               |
+| -------------------------------------- | -------------------------------------------------- |
+| `GET /api/state`                       | `buildState(config)`                               |
+| `GET /api/config` / `POST /api/config` | read / validate-then-save (restarts watchers)      |
+| `GET /api/skill?path=`                 | raw markdown, containment-checked                  |
+| `GET /api/diff?id=`                    | the sibling `.patch`, if any                       |
+| `POST /api/suggestion`                 | one status move, gated (see below)                 |
+| `POST /api/category`                   | one status move for every member — all-or-nothing  |
+| `POST /api/dispatch`                   | one detached `claude` run — one id, or the backlog |
+| `POST /api/apply`                      | `git apply` + one commit + writes `applied` + sha  |
+| `POST /api/revert`                     | `git revert` a kaizen commit on a writable target  |
 
 Every status write passes two gates: the transition must be legal in the spec,
 and the destination phase's `requires` must already be present in the file

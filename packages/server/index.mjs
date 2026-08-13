@@ -341,15 +341,29 @@ const routes = {
   // terminal. The server only launches and remembers the child — progress
   // arrives like any other edit, through the file watcher, so the queue's rows
   // relabel themselves as the run writes frontmatter.
-  'POST /api/dispatch': async (_req, _res, ctx) => {
+  'POST /api/dispatch': async (req, _res, ctx) => {
     if (ctx.dispatch && !ctx.dispatch.done) {
       throw new HttpError(409, `a triage run is already in flight (pid ${ctx.dispatch.pid})`);
     }
-    // Not the untriaged count: the pass also plans the triaged and re-plans
-    // the failed, and gating on triage alone refused exactly those backlogs.
-    const pending = buildState(ctx.config).suggestions.filter((s) => awaitsPass(s.status)).length;
-    if (!pending) throw new HttpError(422, 'nothing for a pass to do — all work is decided or yours');
-    const child = ctx.spawnClaude();
+    // With an id the pass is fenced to one suggestion — the skill accepts it as
+    // an argument. Without one it takes the backlog. Either way the gate is
+    // `awaitsPass`, not the untriaged count: the pass also plans the triaged
+    // and re-plans the failed, and gating on triage alone refused exactly those.
+    const { id } = await readBody(req);
+    const state = buildState(ctx.config);
+    let pending;
+    if (id) {
+      const s = state.suggestions.find((x) => x.id === id);
+      if (!s) throw new HttpError(404, `no such suggestion: ${id}`);
+      if (!awaitsPass(s.status)) {
+        throw new HttpError(422, `${id.split('/').at(-1)} is "${s.status}" — nothing for a pass to do`);
+      }
+      pending = 1;
+    } else {
+      pending = state.suggestions.filter((s) => awaitsPass(s.status)).length;
+      if (!pending) throw new HttpError(422, 'nothing for a pass to do — all work is decided or yours');
+    }
+    const child = ctx.spawnClaude(id);
     await new Promise((launched, failed) => {
       child.once('spawn', launched);
       child.once('error', (e) => failed(new HttpError(500, `could not start claude — ${e.message}`)));
@@ -425,12 +439,21 @@ const routes = {
  */
 // ponytail: model pinned and one agent per run — make the model config, or fan
 // out per suggestion, when one context stops covering the backlog.
-function spawnTriage() {
+function spawnTriage(id) {
   const log = join(dirname(configPath()), 'dispatch.log');
   const out = openSync(log, 'a');
+  // The id rides as the skill's argument, which fences the pass to that one
+  // suggestion; no id means the whole backlog.
   const child = spawn(
     'claude',
-    ['-p', '/kaizen:triage', '--model', 'claude-fable-5', '--permission-mode', 'bypassPermissions'],
+    [
+      '-p',
+      id ? `/kaizen:triage ${id}` : '/kaizen:triage',
+      '--model',
+      'claude-fable-5',
+      '--permission-mode',
+      'bypassPermissions',
+    ],
     { cwd: homedir(), detached: true, stdio: ['ignore', out, out] },
   );
   child.unref();

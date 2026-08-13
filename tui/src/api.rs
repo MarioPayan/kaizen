@@ -404,11 +404,16 @@ impl Client {
         Ok(res.get("updated").and_then(|v| v.as_u64()).unwrap_or(0))
     }
 
-    /// Hand the backlog to one detached claude run. Returns how many items the
-    /// pass can still advance; progress comes back through the event stream as
-    /// the run writes, so there is nothing to poll.
-    pub fn dispatch(&self) -> Result<u64, String> {
-        let res = self.post("/api/dispatch", serde_json::json!({}))?;
+    /// Hand work to one detached claude run — one suggestion when fenced to an
+    /// id, the backlog otherwise. Returns how many items the pass covers;
+    /// progress comes back through the event stream as the run writes, so
+    /// there is nothing to poll.
+    pub fn dispatch(&self, id: Option<&str>) -> Result<u64, String> {
+        let body = match id {
+            Some(id) => serde_json::json!({ "id": id }),
+            None => serde_json::json!({}),
+        };
+        let res = self.post("/api/dispatch", body)?;
         Ok(res.get("pending").and_then(|v| v.as_u64()).unwrap_or(0))
     }
 

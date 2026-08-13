@@ -17,12 +17,14 @@ let base;
 let config;
 
 // Dispatch must never start a real claude run under vitest, so the app gets a
-// spawner that only looks like a child process.
+// spawner that only looks like a child process. It records the id it was
+// fenced to, which is what the item-scope tests assert on.
 const spawned = [];
-const fakeClaude = () => {
+const fakeClaude = (id) => {
   const child = new EventEmitter();
   child.pid = 4242 + spawned.length;
   child.exitCode = null;
+  child.fencedTo = id;
   spawned.push(child);
   process.nextTick(() => child.emit('spawn'));
   return child;
@@ -266,6 +268,24 @@ describe('POST /api/dispatch', () => {
     expect(third.status).toBe(200);
     expect(third.body.pid).not.toBe(first.body.pid);
     spawned.at(-1).emit('exit', 0, null);
+  });
+
+  it('fences a run to one suggestion when given an id, and gates on what a pass can move', async () => {
+    const id = 'user/demo/2026-03-03-still-unplanned.md';
+    const { status, body } = await api('POST', '/api/dispatch', { id });
+    expect(status).toBe(200);
+    expect(body.pending).toBe(1);
+    expect(spawned.at(-1).fencedTo).toBe(id);
+    spawned.at(-1).emit('exit', 0, null);
+
+    const missing = await api('POST', '/api/dispatch', { id: 'user/demo/2026-01-01-nope.md' });
+    expect(missing.status).toBe(404);
+
+    // The first fixture has been applied by the tests above — a pass owes it
+    // nothing, and the refusal names its status rather than shrugging.
+    const done = await api('POST', '/api/dispatch', { id: 'user/demo/2026-01-01-a-thing.md' });
+    expect(done.status).toBe(422);
+    expect(done.body.error).toMatch(/nothing for a pass/);
   });
 });
 
