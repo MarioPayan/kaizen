@@ -144,8 +144,10 @@ and the `D` docs overlay work with the server down.
   status names.
 - `keys.rs` — every binding declared once; the help card and footer are built
   from the same table, so a key cannot be documented one way and bound another.
-- `views/` — categories (approve as one decision), skills (failures per 100 lines
-  of prose, worst first), settings (edit via `$EDITOR`, server validates).
+- `views/` — board (a lane per live status plus one closed lane, all spec-derived,
+  empty lanes collapse), categories (approve as one decision), skills (failures
+  per 100 lines of prose, worst first), settings (edit via `$EDITOR`, server
+  validates).
 - `theme.rs` — one palette; `lifecycle.rs` — the embedded spec and its queries.
 
 The boundary that matters: **the engine decides, the TUI draws.** Every derived

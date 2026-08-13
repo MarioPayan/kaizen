@@ -30,7 +30,7 @@ use crate::api::{Client, Config, State, Suggestion};
 use crate::theme::{self, severity_colour, status_colour, tone_colour};
 use crate::ui::{badge, fit_parts, titled, truncate, wrapped};
 use crate::keys::{self, Action, Tab};
-use crate::views::{categories, settings, skills};
+use crate::views::{board, categories, settings, skills};
 use crate::lifecycle::{
     awaits_pass, can_transition, decision_status, has_landed, is_before_decision, is_terminal,
     lifecycle, next_statuses, status_icon, status_spec,
@@ -210,6 +210,8 @@ struct Place {
     query: String,
     filter: Filter,
     sel: usize,
+    board_lane: usize,
+    board_sel: usize,
     category_sel: usize,
     skill_sel: usize,
     setting_sel: u16,
@@ -242,6 +244,9 @@ struct App {
     focus: Focus,
     tab: Tab,
     /// One cursor per list, so switching tabs does not move the other one.
+    /// The board has two — which lane, and which card in it.
+    board_lane: usize,
+    board_sel: usize,
     category_sel: usize,
     skill_sel: usize,
     setting_sel: u16,
@@ -272,6 +277,8 @@ impl App {
             searching: false,
             focus: Focus::Queue,
             tab: Tab::Queue,
+            board_lane: 0,
+            board_sel: 0,
             category_sel: 0,
             skill_sel: 0,
             setting_sel: 0,
@@ -313,13 +320,26 @@ impl App {
         self.state.as_ref().map(|s| s.queue().len()).unwrap_or(0)
     }
 
+    /// The card under the board's two cursors, straight from the lanes the view
+    /// draws — same source, so the keys act on what the eye is on.
+    fn board_selected(&self) -> Option<&Suggestion> {
+        let state = self.state.as_ref()?;
+        board::lanes(state).get(self.board_lane)?.items.get(self.board_sel).copied()
+    }
+
     fn selected_id(&self) -> Option<String> {
-        self.visible().get(self.sel).map(|s| s.id.clone())
+        match self.tab {
+            Tab::Board => self.board_selected().map(|s| s.id.clone()),
+            _ => self.visible().get(self.sel).map(|s| s.id.clone()),
+        }
     }
 
     /// The status of the row the keys act on, canonical-or-raw as the file has it.
     fn selected_status(&self) -> Option<String> {
-        self.visible().get(self.sel).map(|s| s.status.clone())
+        match self.tab {
+            Tab::Board => self.board_selected().map(|s| s.status.clone()),
+            _ => self.visible().get(self.sel).map(|s| s.status.clone()),
+        }
     }
 
     fn selected_category(&self) -> Option<String> {
@@ -328,9 +348,14 @@ impl App {
     }
 
     /// Anything that can shrink the list — a refresh, a filter, a keystroke in the
-    /// search — has to leave the selection on a row that still exists.
+    /// search — has to leave the selection on a row that still exists. The board
+    /// shrinks too: a relabelled card moves lanes, and an emptied lane collapses.
     fn clamp(&mut self) {
         self.sel = self.sel.min(self.visible().len().saturating_sub(1));
+        let lanes = self.state.as_ref().map(board::lanes).unwrap_or_default();
+        self.board_lane = self.board_lane.min(lanes.len().saturating_sub(1));
+        let cards = lanes.get(self.board_lane).map(|l| l.items.len()).unwrap_or(0);
+        self.board_sel = self.board_sel.min(cards.saturating_sub(1));
     }
 
     /// j/k, dispatched to whatever the current tab is actually showing.
@@ -357,6 +382,14 @@ impl App {
                     // A new row is a new document; the old offset lands mid-sentence.
                     self.scroll = 0;
                 }
+            }
+            Tab::Board => {
+                let cards = self
+                    .state
+                    .as_ref()
+                    .and_then(|s| board::lanes(s).get(self.board_lane).map(|l| l.items.len()))
+                    .unwrap_or(0);
+                self.board_sel = step(self.board_sel, cards);
             }
             Tab::Categories => {
                 self.category_sel = step(self.category_sel, self.categories().len());
@@ -389,6 +422,8 @@ impl App {
             query: self.query.clone(),
             filter: self.filter,
             sel: self.sel,
+            board_lane: self.board_lane,
+            board_sel: self.board_sel,
             category_sel: self.category_sel,
             skill_sel: self.skill_sel,
             setting_sel: self.setting_sel,
@@ -418,6 +453,8 @@ impl App {
         self.query = p.query;
         self.filter = p.filter;
         self.sel = p.sel;
+        self.board_lane = p.board_lane;
+        self.board_sel = p.board_sel;
         self.category_sel = p.category_sel;
         self.skill_sel = p.skill_sel;
         self.setting_sel = p.setting_sel;
@@ -689,7 +726,7 @@ fn column_values(tab: Tab, column: &str) -> Vec<(String, String)> {
     };
     match (tab, column) {
         // Generated, so renaming a status cannot leave a stale legend behind.
-        (Tab::Queue, "status") => lifecycle()
+        (Tab::Queue, "status") | (Tab::Board, "lane") => lifecycle()
             .statuses
             .iter()
             .map(|s| (format!("{} {}", status_icon(&s.id), s.abbrev), s.id.clone()))
@@ -705,6 +742,7 @@ fn column_values(tab: Tab, column: &str) -> Vec<(String, String)> {
 fn columns_for(tab: Tab) -> &'static [(&'static str, &'static str)] {
     match tab {
         Tab::Queue => QUEUE_COLUMNS,
+        Tab::Board => board::COLUMNS,
         Tab::Categories => categories::COLUMNS,
         Tab::Skills => skills::COLUMNS,
         Tab::Settings => settings::COLUMNS,
@@ -1038,6 +1076,11 @@ fn draw(frame: &mut Frame, app: &App) {
             }
             Tab::Queue if focus == Focus::Detail => draw_detail(frame, body, app, true),
             Tab::Queue => draw_queue(frame, body, app, true),
+            Tab::Board => {
+                if let Some(state) = app.state.as_ref() {
+                    board::draw(frame, body, state, app.board_lane, app.board_sel);
+                }
+            }
             Tab::Categories => {
                 let list = app.state.as_ref().map(|s| s.categories.as_slice()).unwrap_or(&[]);
                 categories::draw(frame, body, list, app.category_sel, true, &|id| {
@@ -1310,6 +1353,18 @@ fn run(
                 }
             }
             Action::Move(d) => app.move_by(d),
+            Action::Lane(d) => {
+                let lanes = app.state.as_ref().map(|s| board::lanes(s).len()).unwrap_or(0);
+                if lanes > 0 {
+                    let next = (app.board_lane as isize + d).clamp(0, lanes as isize - 1) as usize;
+                    if next != app.board_lane {
+                        app.board_lane = next;
+                        // A new lane is a new list; carrying the old row index
+                        // over would land on an arbitrary card.
+                        app.board_sel = 0;
+                    }
+                }
+            }
             Action::ScrollDetail(d) => app.scroll = app.scroll.saturating_add_signed(d),
             Action::ToggleFocus => {
                 app.focus = if app.focus == Focus::Queue { Focus::Detail } else { Focus::Queue }
@@ -1407,6 +1462,31 @@ fn run(
                 }
             }
             Action::Open => match app.tab {
+                // The board locates; the queue is where one item is read whole.
+                Tab::Board => {
+                    if let Some(id) = app.selected_id() {
+                        // The queue never lists terminals or muted types, so a
+                        // closed card has no row to land on — say so instead of
+                        // silently selecting whatever sits at the top.
+                        let reachable =
+                            app.state.as_ref().is_some_and(|st| st.queue().iter().any(|q| q.id == id));
+                        if !reachable {
+                            app.say("a closed card has no queue row — it lives here", true);
+                        } else {
+                            app.remember();
+                            app.tab = Tab::Queue;
+                            app.category_filter = None;
+                            app.query.clear();
+                            app.searching = false;
+                            app.scroll = 0;
+                            if !app.visible().iter().any(|s| s.id == id) {
+                                app.filter = Filter::All;
+                            }
+                            app.sel = app.visible().iter().position(|s| s.id == id).unwrap_or(0);
+                            app.say("esc goes back to the board", false);
+                        }
+                    }
+                }
                 Tab::Categories => {
                     let id = app.categories().get(app.category_sel).map(|c| c.id.clone());
                     if let Some(id) = id {
@@ -1563,6 +1643,48 @@ mod tests {
         app.state.as_mut().unwrap().dispatch =
             Some(crate::api::Dispatch { running: false, pid: 4242, exit_code: Some(0) });
         assert!(!render(&app, 120, 30).contains("fable triaging"), "and down when it ends");
+    }
+
+    /// The board's lanes come from the spec and collapse when empty: the
+    /// fixture holds one recorded and one approved, so exactly those two lanes
+    /// exist and the untouched statuses cost no width.
+    #[test]
+    fn the_board_draws_a_lane_per_live_status_and_collapses_the_empty() {
+        let mut app = app_with_state();
+        app.tab = Tab::Board;
+        let text = render(&app, 120, 30);
+        assert!(text.contains("recorded (1)"), "{text}");
+        assert!(text.contains("approved (1)"), "{text}");
+        assert!(!text.contains("planned ("), "an empty lane is not drawn: {text}");
+    }
+
+    /// Terminals share one closed lane rather than three sliver columns.
+    #[test]
+    fn terminals_gather_in_one_closed_lane() {
+        let state: crate::api::State = serde_json::from_str(
+            r#"{"suggestions":[
+                {"id":"a.md","slug":"one","status":"recorded","score":1},
+                {"id":"b.md","slug":"two","status":"verified","score":2},
+                {"id":"c.md","slug":"three","status":"rejected","score":3}
+            ]}"#,
+        )
+        .unwrap();
+        let lanes = board::lanes(&state);
+        assert_eq!(lanes.len(), 2, "one live lane, one closed");
+        assert!(lanes[0].title.contains("recorded"));
+        assert_eq!(lanes[1].title, "closed");
+        assert_eq!(lanes[1].items.len(), 2);
+    }
+
+    /// The decide keys act on the card under the board's cursors, not on
+    /// whatever row the queue happens to have selected.
+    #[test]
+    fn board_keys_act_on_the_selected_card() {
+        let mut app = app_with_state();
+        app.tab = Tab::Board;
+        assert_eq!(app.selected_status().as_deref(), Some("recorded"), "first lane in spec order");
+        app.board_lane = 1;
+        assert_eq!(app.selected_status().as_deref(), Some("approved"));
     }
 
     #[test]

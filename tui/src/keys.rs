@@ -12,21 +12,23 @@
 
 use ratatui::crossterm::event::KeyCode;
 
-/// The four places you work. Overlays are things you consult on top of one.
+/// The five places you work. Overlays are things you consult on top of one.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tab {
     Queue,
+    Board,
     Categories,
     Skills,
     Settings,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 4] = [Tab::Queue, Tab::Categories, Tab::Skills, Tab::Settings];
+    pub const ALL: [Tab; 5] = [Tab::Queue, Tab::Board, Tab::Categories, Tab::Skills, Tab::Settings];
 
     pub fn label(self) -> &'static str {
         match self {
             Tab::Queue => "queue",
+            Tab::Board => "board",
             Tab::Categories => "categories",
             Tab::Skills => "skills",
             Tab::Settings => "settings",
@@ -37,6 +39,8 @@ impl Tab {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Action {
     Move(isize),
+    /// Board only: step across lanes; `Move` steps within one.
+    Lane(isize),
     ScrollDetail(i16),
     ToggleFocus,
     Back,
@@ -73,6 +77,9 @@ pub struct Binding {
 
 const ALL: &[Tab] = &[];
 const QUEUE: &[Tab] = &[Tab::Queue];
+const BOARD: &[Tab] = &[Tab::Board];
+/// Where the per-suggestion decide keys work: anywhere one suggestion is selected.
+const DECIDING: &[Tab] = &[Tab::Queue, Tab::Board];
 const CATEGORIES: &[Tab] = &[Tab::Categories];
 const SKILLS: &[Tab] = &[Tab::Skills];
 const SETTINGS: &[Tab] = &[Tab::Settings];
@@ -138,11 +145,27 @@ pub const BINDINGS: &[Binding] = &[
         action: Action::ScrollDetail(-3),
     },
     Binding {
+        keys: &[KeyCode::Left],
+        hint: "←/→",
+        label: "lanes",
+        section: "navigate",
+        tabs: BOARD,
+        action: Action::Lane(-1),
+    },
+    Binding {
+        keys: &[KeyCode::Right],
+        hint: "",
+        label: "",
+        section: "navigate",
+        tabs: BOARD,
+        action: Action::Lane(1),
+    },
+    Binding {
         keys: &[KeyCode::Char('a')],
         hint: "a",
         label: "approve",
         section: "decide",
-        tabs: QUEUE,
+        tabs: DECIDING,
         action: Action::Approve,
     },
     Binding {
@@ -150,7 +173,7 @@ pub const BINDINGS: &[Binding] = &[
         hint: "r",
         label: "reject",
         section: "decide",
-        tabs: QUEUE,
+        tabs: DECIDING,
         action: Action::Reject,
     },
     Binding {
@@ -168,6 +191,16 @@ pub const BINDINGS: &[Binding] = &[
         section: "decide",
         tabs: QUEUE,
         action: Action::Apply,
+    },
+    Binding {
+        keys: &[KeyCode::Enter],
+        hint: "enter",
+        label: "open in queue",
+        // The board shows where everything stands; reading and applying one
+        // item happens in the queue, where the plan and validation are visible.
+        section: "decide",
+        tabs: BOARD,
+        action: Action::Open,
     },
     Binding {
         keys: &[KeyCode::Enter],
@@ -191,7 +224,7 @@ pub const BINDINGS: &[Binding] = &[
         hint: "t",
         label: "dispatch fable",
         section: "decide",
-        tabs: QUEUE,
+        tabs: DECIDING,
         action: Action::Triage,
     },
     Binding {
@@ -199,7 +232,7 @@ pub const BINDINGS: &[Binding] = &[
         hint: "d",
         label: "patch",
         section: "decide",
-        tabs: QUEUE,
+        tabs: DECIDING,
         action: Action::Diff,
     },
     Binding {
@@ -236,7 +269,7 @@ pub const BINDINGS: &[Binding] = &[
     },
     Binding {
         keys: &[KeyCode::Char('1')],
-        hint: "1-4",
+        hint: "1-5",
         label: "tabs",
         section: "tabs",
         tabs: ALL,
@@ -248,7 +281,7 @@ pub const BINDINGS: &[Binding] = &[
         label: "",
         section: "tabs",
         tabs: ALL,
-        action: Action::Go(Tab::Categories),
+        action: Action::Go(Tab::Board),
     },
     Binding {
         keys: &[KeyCode::Char('3')],
@@ -256,10 +289,18 @@ pub const BINDINGS: &[Binding] = &[
         label: "",
         section: "tabs",
         tabs: ALL,
-        action: Action::Go(Tab::Skills),
+        action: Action::Go(Tab::Categories),
     },
     Binding {
         keys: &[KeyCode::Char('4')],
+        hint: "",
+        label: "",
+        section: "tabs",
+        tabs: ALL,
+        action: Action::Go(Tab::Skills),
+    },
+    Binding {
+        keys: &[KeyCode::Char('5')],
         hint: "",
         label: "",
         section: "tabs",
@@ -323,7 +364,7 @@ pub fn resolve(key: KeyCode, tab: Tab) -> Option<Action> {
 }
 
 /// The footer's offer for this tab. Bindings with a blank hint are alternates
-/// of the one above them — `k` is `j/k`, `2` is part of `1-4` — and are not
+/// of the one above them — `k` is `j/k`, `2` is part of `1-5` — and are not
 /// offered twice.
 pub fn hints(tab: Tab) -> Vec<(&'static str, &'static str)> {
     BINDINGS
