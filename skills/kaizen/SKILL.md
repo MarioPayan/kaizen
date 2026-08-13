@@ -205,7 +205,7 @@ first.
 
 **Nothing applies without the user's approval.** There is no bypass — the config used to declare an `autoApply` list and nothing ever read it, so the setting has been removed rather than left describing behaviour that did not exist. Say what is waiting and stop.
 
-The TUI is the other way to approve, and the faster one when the queue is long: `kaizen tui` — `A` approves everything approvable in the selected row’s skill as one decision, and tab 2 is the board when you want the whole state at a glance.
+The TUI is the other way to approve, and the faster one when the queue is long: `kaizen tui` — `A` approves everything approvable as one decision, and tab 2 is the board when you want the whole state at a glance.
 
 ## Step 7 — Apply, then verify (`MODE=drain`)
 

@@ -236,35 +236,35 @@ describe('api', () => {
 });
 
 /**
- * The wide approve: one decision moves a skill's whole pile — what can legally
- * move moves, the rest is skipped and counted, and a pile with nothing movable
- * refuses rather than pretending.
+ * The wide approve: one decision drains everything approvable — what can
+ * legally move moves, an unready candidate is skipped and counted, and a
+ * corpus with nothing movable refuses rather than pretending.
  */
-describe('POST /api/group', () => {
-  it('moves the movable, skips the rest, and refuses an immovable pile', async () => {
-    const file = (slug, status) =>
+describe('POST /api/sweep', () => {
+  it('moves the movable, counts the unready, and refuses when nothing can move', async () => {
+    const file = (slug, status, planned = '\n## Plan\n\np\n\n## Validation\n\nv\n') =>
       writeFileSync(
         join(root, 'skills-feedback', 'demo', `2026-04-04-${slug}.md`),
-        `---\nskill: demo\ndate: 2026-04-04\nseverity: low\ntype: hygiene\nobjective: debt\neffort: S\nrung: 1\nstatus: ${status}\n---\n\n## Context\n\nc\n\n## Suggestion\n\ns\n\n## Plan\n\np\n\n## Validation\n\nv\n`,
+        `---\nskill: demo\ndate: 2026-04-04\nseverity: low\ntype: hygiene\nobjective: debt\neffort: S\nrung: 1\nstatus: ${status}\n---\n\n## Context\n\nc\n\n## Suggestion\n\ns\n${planned}`,
       );
-    file('group-a', 'planned');
-    file('group-b', 'verified');
-    writeFileSync(join(root, 'skills-feedback', 'demo', '2026-04-04-group-a.patch'), 'x\n');
+    file('sweep-a', 'planned');
+    file('sweep-b', 'planned');
+    writeFileSync(join(root, 'skills-feedback', 'demo', '2026-04-04-sweep-a.patch'), 'x\n');
 
-    const { status, body } = await api('POST', '/api/group', { skill: 'demo', status: 'approved' });
+    // Only the planned move; the applied fixture from the tests above is not a
+    // candidate and must not be counted as "skipped" noise.
+    const { status, body } = await api('POST', '/api/sweep', { status: 'approved' });
     expect(status).toBe(200);
-    expect(body.moved).toBe(1);
-    expect(body.skipped).toBeGreaterThan(0);
-    expect(readFileSync(join(root, 'skills-feedback', 'demo', '2026-04-04-group-a.md'), 'utf8')).toMatch(
+    expect(body.moved).toBe(2);
+    expect(body.skipped).toBe(0);
+    expect(readFileSync(join(root, 'skills-feedback', 'demo', '2026-04-04-sweep-a.md'), 'utf8')).toMatch(
       /status: approved/,
     );
 
-    const again = await api('POST', '/api/group', { skill: 'demo', status: 'approved' });
+    // Everything approvable was just approved, so a second sweep has nothing.
+    const again = await api('POST', '/api/sweep', { status: 'approved' });
     expect(again.status).toBe(409);
-    expect(again.body.error).toMatch(/nothing under "demo"/);
-
-    const nowhere = await api('POST', '/api/group', { skill: 'ghost', status: 'approved' });
-    expect(nowhere.status).toBe(404);
+    expect(again.body.error).toMatch(/nothing can become/);
   });
 });
 

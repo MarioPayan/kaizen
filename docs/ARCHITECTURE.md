@@ -32,7 +32,7 @@ the thing together. The README covers the why; start there if you haven't.
    real patches plus validation plans. All file edits go through the CLI/server,
    never by hand-editing status fields the model forbids.
 4. **Decide.** The only attended phase. `kaizen tui` — approve per suggestion
-   (`a`) or per skill (`A`).
+   (`a`) or everything approvable (`A`).
 5. **Apply.** The server lands each approved patch as one commit with a
    `Kaizen-Suggestion:` trailer. `git log --grep=Kaizen-Suggestion` is the
    ledger; `git revert` is the undo.
@@ -110,7 +110,7 @@ write files and shell out to git.
 | `GET /api/skill?path=`                 | raw markdown, containment-checked                  |
 | `GET /api/diff?id=`                    | the sibling `.patch`, if any                       |
 | `POST /api/suggestion`                 | one status move, gated (see below)                 |
-| `POST /api/group`                      | one status move per skill — moves the movable      |
+| `POST /api/sweep`                      | one status move for all — moves the movable        |
 | `POST /api/dispatch`                   | one detached `claude` run — one id, or the backlog |
 | `POST /api/apply`                      | `git apply` + one commit + writes `applied` + sha  |
 | `POST /api/revert`                     | `git revert` a kaizen commit on a writable target  |

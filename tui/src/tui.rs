@@ -102,7 +102,7 @@ enum Focus {
 enum Req {
     Refresh,
     SetStatus { id: String, status: String },
-    SetGroup { skill: String, status: String },
+    Sweep { status: String },
     /// `id` fences the run to one suggestion; `None` takes the backlog.
     Dispatch { id: Option<String> },
     Apply { id: String },
@@ -129,12 +129,12 @@ fn spawn_worker(client: Client, rx: mpsc::Receiver<Req>, tx: mpsc::Sender<Res>) 
                 Req::SetStatus { id, status } => Res::Acted(
                     client.set_status(&id, &status).map(|_| format!("{status}: {}", short(&id))),
                 ),
-                Req::SetGroup { skill, status } => Res::Acted(
-                    client.set_group(&skill, &status).map(|(moved, skipped)| {
+                Req::Sweep { status } => Res::Acted(
+                    client.sweep(&status).map(|(moved, skipped)| {
                         if skipped == 0 {
-                            format!("{status} {moved} in {skill}")
+                            format!("{status} {moved}")
                         } else {
-                            format!("{status} {moved} in {skill} — {skipped} not ready")
+                            format!("{status} {moved} — {skipped} not ready")
                         }
                     }),
                 ),
@@ -332,15 +332,6 @@ impl App {
         }
     }
 
-    /// The skill of the row the wide keys act on — `A` approves its whole pile.
-    fn selected_skill(&self) -> Option<String> {
-        let skill = match self.tab {
-            Tab::Board => self.board_selected()?.skill.clone(),
-            _ => self.visible().get(self.sel)?.skill.clone(),
-        };
-        (!skill.is_empty()).then_some(skill)
-    }
-
     /// Anything that can shrink the list — a refresh, a filter, a keystroke in the
     /// search — has to leave the selection on a row that still exists. The board
     /// shrinks too: a relabelled card moves lanes, and an emptied lane collapses.
@@ -463,14 +454,11 @@ impl App {
         self.pending_config().is_some()
     }
 
-    /// How many of a skill's suggestions could actually become approved, and
-    /// how many there are. The server skips what cannot move, so the pair
-    /// is what decides whether asking is worth a round trip.
-    fn skill_readiness(&self, skill: &str) -> (usize, usize) {
-        let Some(state) = self.state.as_ref() else { return (0, 0) };
-        let members: Vec<_> = state.suggestions.iter().filter(|s| s.skill == skill).collect();
-        let ready = members.iter().filter(|s| can_transition(&s.status, "approved")).count();
-        (ready, members.len())
+    /// How many suggestions could actually become approved right now. Zero is
+    /// what decides whether asking the server is worth a round trip.
+    fn approvable(&self) -> usize {
+        let Some(state) = self.state.as_ref() else { return 0 };
+        state.suggestions.iter().filter(|s| can_transition(&s.status, "approved")).count()
     }
 
     fn skills(&self) -> Vec<&crate::api::Skill> {
@@ -1364,20 +1352,13 @@ fn run(
                     None => {}
                 }
             }
-            Action::ApproveSkill => {
-                if let Some(skill) = app.selected_skill() {
-                    // The server would skip everything and 409; saying why
-                    // here beats a wire trip that names a filename.
-                    let (ready, total) = app.skill_readiness(&skill);
-                    if ready == 0 {
-                        app.say(
-                            format!("nothing in {skill} can be approved — all {total} are elsewhere"),
-                            true,
-                        );
-                    } else {
-                        app.busy = true;
-                        let _ = req.send(Req::SetGroup { skill, status: "approved".into() });
-                    }
+            Action::ApproveAll => {
+                // The server would 409; saying why here beats a wire trip.
+                if app.approvable() == 0 {
+                    app.say("nothing can be approved — nothing sits at the decision".to_string(), true);
+                } else {
+                    app.busy = true;
+                    let _ = req.send(Req::Sweep { status: "approved".into() });
                 }
             }
             Action::Triage => match app.selected_status() {
@@ -1604,17 +1585,17 @@ mod tests {
         assert_eq!(keys::resolve(KeyCode::Char('T'), Tab::Board), Some(Action::TriageAll));
     }
 
-    /// One footer entry carries both spellings — `a approve (A skill)` —
+    /// One footer entry carries both spellings — `a approve (A all)` —
     /// so the shifted key works without costing a second slot of width.
     #[test]
     fn shifted_variants_fold_into_one_footer_entry() {
         let hints = keys::hints(Tab::Queue);
-        assert!(hints.iter().any(|(h, l)| *h == "a" && *l == "approve (A skill)"));
+        assert!(hints.iter().any(|(h, l)| *h == "a" && *l == "approve (A all)"));
         assert!(hints.iter().any(|(h, l)| *h == "t" && *l == "triage (T all)"));
         assert!(!hints.iter().any(|(h, _)| *h == "A" || *h == "T"), "no second entry: {hints:?}");
         // And the shifted keys still resolve where they are folded.
         use ratatui::crossterm::event::KeyCode;
-        assert_eq!(keys::resolve(KeyCode::Char('A'), Tab::Board), Some(Action::ApproveSkill));
+        assert_eq!(keys::resolve(KeyCode::Char('A'), Tab::Board), Some(Action::ApproveAll));
     }
 
     /// The decide keys act on the card under the board's cursors, not on
@@ -1973,16 +1954,13 @@ mod tests {
         }
     }
 
-    /// The other half of the report: `A` on a skill whose suggestions are all
-    /// decided produced a 409 listing filenames. It refuses locally now.
+    /// The other half of the report: `A` with nothing at the decision produced
+    /// a 409 listing filenames. It refuses locally now.
     #[test]
-    fn skill_readiness_counts_what_could_actually_move() {
+    fn the_wide_approve_counts_what_could_actually_move() {
         let app = app_with_state();
-        // approved -> approved is not legal, so kaizen's one item cannot move.
-        assert_eq!(app.skill_readiness("kaizen"), (0, 1));
-        // other's one item is recorded, which cannot become approved either.
-        assert_eq!(app.skill_readiness("other"), (0, 1));
-        assert_eq!(app.skill_readiness("nope"), (0, 0));
+        // One item approved, one recorded — neither can become approved.
+        assert_eq!(app.approvable(), 0);
     }
 
     #[test]
@@ -2113,13 +2091,6 @@ mod tests {
         assert_eq!(app.sel, 0);
     }
 
-    #[test]
-    fn the_wide_approve_reads_the_skill_of_the_selected_row() {
-        let mut app = app_with_state();
-        assert_eq!(app.selected_skill().as_deref(), Some("kaizen"));
-        app.move_by(1);
-        assert_eq!(app.selected_skill().as_deref(), Some("other"));
-    }
 
     /// A refusal is the interesting case, and it is shown as the server wrote it.
     #[test]

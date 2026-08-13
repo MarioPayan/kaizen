@@ -48,7 +48,7 @@ pub enum Action {
     Guide,
     Approve,
     Reject,
-    ApproveSkill,
+    ApproveAll,
     /// Send one detached fable run at the selected suggestion.
     Triage,
     /// Send one detached fable run at everything a pass can still move.
@@ -159,13 +159,13 @@ pub const BINDINGS: &[Binding] = &[
         tabs: BOARD,
         action: Action::Lane(1),
     },
-    // The shifted key widens the same verb — `a` this item, `A` its whole
-    // skill; `t` this item, `T` the backlog. One footer entry carries both
+    // The shifted key widens the same verb — `a` this item, `A` everything
+    // approvable; `t` this item, `T` the backlog. One footer entry carries both
     // spellings, and the shifted binding rides under it as a blank-hint alternate.
     Binding {
         keys: &[KeyCode::Char('a')],
         hint: "a",
-        label: "approve (A skill)",
+        label: "approve (A all)",
         section: "decide",
         tabs: DECIDING,
         action: Action::Approve,
@@ -176,7 +176,7 @@ pub const BINDINGS: &[Binding] = &[
         label: "",
         section: "decide",
         tabs: DECIDING,
-        action: Action::ApproveSkill,
+        action: Action::ApproveAll,
     },
     Binding {
         keys: &[KeyCode::Char('r')],

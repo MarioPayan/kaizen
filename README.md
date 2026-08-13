@@ -53,7 +53,7 @@ Recurrence is the honest signal. A suggestion filed six times is six incidents, 
 
 Nothing applies without you, and there is no setting that changes that.
 
-Approval can happen per _skill_, not only per suggestion — `A` moves everything approvable in the selected row's skill as one decision. Requiring a click per row is how a backlog stops being drained, which is the exact failure this tool exists to correct.
+Approval can happen for the _whole queue_, not only per suggestion — `A` moves everything approvable as one decision. Requiring a click per row is how a backlog stops being drained, which is the exact failure this tool exists to correct.
 
 Your approval is the authorisation — what happens after it can be automatic. A proposal that is already a validated patch is applied by the server with no model involved. One that still needs authoring waits for the next `/kaizen` run.
 
@@ -75,7 +75,7 @@ the server itself if the port is dead, so there is one command. Four tabs, on
 | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Queue**    | Open work, ranked, with its detail beside it. It starts on the `open` filter — suggestions whose fix already landed or closed sit behind `f`, never gone. `/` searches, `a`/`r` decide — and only where the model allows, so a key never just 409s. |
 | **Board**    | Every suggestion in a lane for its status, terminals gathered under `closed`. Where "what state is everything in" has one answer.                                                                                                                   |
-| **Skills**   | What exists on disk, how much prose each carries, and how often it has failed per 100 lines. Worst ratio first. `A` on a queue or board row approves everything approvable in that row's skill.                                                     |
+| **Skills**   | What exists on disk, how much prose each carries, and how often it has failed per 100 lines. Worst ratio first.                                                                                                                                     |
 | **Settings** | The config, read-only, and whether each apply guard is _actually_ on right now. `e` hands the file to `$EDITOR`; the server validates what comes back.                                                                                              |
 
 `h` is help, `D` is the lifecycle, `d` is the patch under the cursor. There used

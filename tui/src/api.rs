@@ -362,11 +362,11 @@ impl Client {
         self.post("/api/suggestion", serde_json::json!({ "id": id, "status": status })).map(|_| ())
     }
 
-    /// Approving a skill's pile is one decision, so it is one request. The
-    /// server moves what can legally move and skips the rest; the pair is
-    /// (moved, skipped), and both belong in the message.
-    pub fn set_group(&self, skill: &str, status: &str) -> Result<(u64, u64), String> {
-        let res = self.post("/api/group", serde_json::json!({ "skill": skill, "status": status }))?;
+    /// Approving everything approvable is one decision, so it is one request.
+    /// The server moves what can legally move and skips an unready candidate;
+    /// the pair is (moved, skipped), and both belong in the message.
+    pub fn sweep(&self, status: &str) -> Result<(u64, u64), String> {
+        let res = self.post("/api/sweep", serde_json::json!({ "status": status }))?;
         Ok((
             res.get("moved").and_then(|v| v.as_u64()).unwrap_or(0),
             res.get("skipped").and_then(|v| v.as_u64()).unwrap_or(0),

@@ -310,23 +310,19 @@ const routes = {
    * suggestion is further along than the rest would otherwise be half-moved,
    * and there is no transaction to roll back a partial write of eleven files.
    */
-  // One decision can close a skill's whole pile: move every suggestion of the
-  // skill that can legally make the move and meets the phase's requirements,
-  // skip the rest, and say how many of each. Not all-or-nothing like the
-  // per-suggestion route — a skill's pile mixes statuses by nature, and
-  // refusing everything because one member is already applied would make the
-  // key useless.
-  'POST /api/group': async (req, _res, ctx) => {
-    const { skill, status } = await readBody(req);
-    if (!skill) throw new HttpError(400, 'skill is required');
+  // One decision can drain the whole pile: move everything that can legally
+  // make the move and meets the phase's requirements, skip the rest, and say
+  // how many of each. `skipped` counts only true candidates — items whose
+  // transition is legal but whose requirements are missing — not the corpus's
+  // history, which would drown the number that matters.
+  'POST /api/sweep': async (req, _res, ctx) => {
+    const { status } = await readBody(req);
     const to = assertSettable(status);
     const state = buildState(ctx.config);
-    const members = state.suggestions.filter((s) => s.skill === skill);
-    if (!members.length) throw new HttpError(404, `no suggestions under skill "${skill}"`);
+    const candidates = state.suggestions.filter((s) => canTransition(s.status, to));
 
     const moved = [];
-    for (const s of members) {
-      if (!canTransition(s.status, to)) continue;
+    for (const s of candidates) {
       try {
         assertRequirements(ctx.config, s.id, to);
       } catch {
@@ -336,8 +332,8 @@ const routes = {
       writeFrontmatter(path, { status: to });
       moved.push(s.id);
     }
-    if (!moved.length) throw new HttpError(409, `nothing under "${skill}" can become ${to}`);
-    return { skill, status: to, moved: moved.length, skipped: members.length - moved.length };
+    if (!moved.length) throw new HttpError(409, `nothing can become ${to}`);
+    return { status: to, moved: moved.length, skipped: candidates.length - moved.length };
   },
 
   // Triage is unattended by design, so the TUI can start it without leaving the
