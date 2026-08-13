@@ -347,7 +347,10 @@ impl App {
     }
 
     fn selected_category(&self) -> Option<String> {
-        let pin = self.visible().get(self.sel)?.category_pin.clone();
+        let pin = match self.tab {
+            Tab::Board => self.board_selected()?.category_pin.clone(),
+            _ => self.visible().get(self.sel)?.category_pin.clone(),
+        };
         (!pin.is_empty()).then_some(pin)
     }
 
@@ -1701,6 +1704,21 @@ mod tests {
         use ratatui::crossterm::event::KeyCode;
         assert_eq!(keys::resolve(KeyCode::Char('t'), Tab::Queue), Some(Action::Triage));
         assert_eq!(keys::resolve(KeyCode::Char('T'), Tab::Board), Some(Action::TriageAll));
+    }
+
+    /// One footer entry carries both spellings — `a approve (A category)` —
+    /// so the shifted key works without costing a second slot of width.
+    #[test]
+    fn shifted_variants_fold_into_one_footer_entry() {
+        let hints = keys::hints(Tab::Queue);
+        assert!(hints.iter().any(|(h, l)| *h == "a" && *l == "approve (A category)"));
+        assert!(hints.iter().any(|(h, l)| *h == "t" && *l == "triage (T all)"));
+        assert!(!hints.iter().any(|(h, _)| *h == "A" || *h == "T"), "no second entry: {hints:?}");
+        // Categories has no lowercase partner, so `A` keeps its own line there.
+        assert!(keys::hints(Tab::Categories).iter().any(|(h, _)| *h == "A"));
+        // And the shifted keys still resolve where they are folded.
+        use ratatui::crossterm::event::KeyCode;
+        assert_eq!(keys::resolve(KeyCode::Char('A'), Tab::Board), Some(Action::ApproveCategory));
     }
 
     /// The decide keys act on the card under the board's cursors, not on

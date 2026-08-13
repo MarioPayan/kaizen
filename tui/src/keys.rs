@@ -162,13 +162,33 @@ pub const BINDINGS: &[Binding] = &[
         tabs: BOARD,
         action: Action::Lane(1),
     },
+    // The shifted key widens the same verb — `a` this item, `A` its category;
+    // `t` this item, `T` the backlog. One footer entry carries both spellings,
+    // and the shifted binding rides under it as a blank-hint alternate.
     Binding {
         keys: &[KeyCode::Char('a')],
         hint: "a",
-        label: "approve",
+        label: "approve (A category)",
         section: "decide",
         tabs: DECIDING,
         action: Action::Approve,
+    },
+    Binding {
+        keys: &[KeyCode::Char('A')],
+        hint: "",
+        label: "",
+        section: "decide",
+        tabs: DECIDING,
+        action: Action::ApproveCategory,
+    },
+    // Categories has no lowercase partner for `A`, so there it keeps its own line.
+    Binding {
+        keys: &[KeyCode::Char('A')],
+        hint: "A",
+        label: "approve category",
+        section: "decide",
+        tabs: CATEGORIES,
+        action: Action::ApproveCategory,
     },
     Binding {
         keys: &[KeyCode::Char('r')],
@@ -177,14 +197,6 @@ pub const BINDINGS: &[Binding] = &[
         section: "decide",
         tabs: DECIDING,
         action: Action::Reject,
-    },
-    Binding {
-        keys: &[KeyCode::Char('A')],
-        hint: "A",
-        label: "approve category",
-        section: "decide",
-        tabs: &[Tab::Queue, Tab::Categories],
-        action: Action::ApproveCategory,
     },
     Binding {
         keys: &[KeyCode::Enter],
@@ -224,15 +236,15 @@ pub const BINDINGS: &[Binding] = &[
     Binding {
         keys: &[KeyCode::Char('t')],
         hint: "t",
-        label: "triage",
+        label: "triage (T all)",
         section: "decide",
         tabs: DECIDING,
         action: Action::Triage,
     },
     Binding {
         keys: &[KeyCode::Char('T')],
-        hint: "T",
-        label: "triage all",
+        hint: "",
+        label: "",
         section: "decide",
         tabs: DECIDING,
         action: Action::TriageAll,
