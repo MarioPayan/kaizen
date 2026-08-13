@@ -98,6 +98,17 @@ pub struct Skill {
     pub worktrees: u64,
 }
 
+/// The triage run the server is holding, if any. `None` means none was ever
+/// dispatched this server lifetime — distinct from one that ran and ended.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct Dispatch {
+    pub running: bool,
+    pub pid: u64,
+    #[serde(rename = "exitCode")]
+    pub exit_code: Option<i64>,
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct State {
@@ -108,6 +119,7 @@ pub struct State {
     pub suggestions: Vec<Suggestion>,
     pub categories: Vec<Category>,
     pub metrics: Metrics,
+    pub dispatch: Option<Dispatch>,
 }
 
 /* ------------------------------------------------------------------ config ---- */

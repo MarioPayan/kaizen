@@ -244,15 +244,22 @@ describe('POST /api/dispatch', () => {
     expect(first.body.pid).toBe(spawned.at(-1).pid);
     expect(first.body.untriaged).toBeGreaterThan(0);
 
+    // State carries the run while it lives — this is what the TUI's chip draws.
+    const during = await api('GET', '/api/state');
+    expect(during.body.dispatch).toEqual({ running: true, pid: first.body.pid, exitCode: null });
+
     const second = await api('POST', '/api/dispatch');
     expect(second.status).toBe(409);
     expect(second.body.error).toMatch(/already in flight/);
 
-    spawned.at(-1).exitCode = 0;
+    spawned.at(-1).emit('exit', 1, null);
+    const after = await api('GET', '/api/state');
+    expect(after.body.dispatch).toEqual({ running: false, pid: first.body.pid, exitCode: 1 });
+
     const third = await api('POST', '/api/dispatch');
     expect(third.status).toBe(200);
     expect(third.body.pid).not.toBe(first.body.pid);
-    spawned.at(-1).exitCode = 0;
+    spawned.at(-1).emit('exit', 0, null);
   });
 });
 

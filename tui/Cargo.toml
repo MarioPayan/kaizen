@@ -23,3 +23,7 @@ strip = true
 
 [profile.dev]
 opt-level = 1
+
+[dev-dependencies]
+# Icons are spec data; this pins each one to a single terminal cell in tests.
+unicode-width = "0.2"

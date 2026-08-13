@@ -27,13 +27,13 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use crate::api::{Client, Config, State, Suggestion};
-use crate::theme::{self, severity_colour, severity_letter, status_colour, tone_colour};
+use crate::theme::{self, severity_colour, status_colour, tone_colour};
 use crate::ui::{badge, fit_parts, titled, truncate, wrapped};
 use crate::keys::{self, Action, Tab};
 use crate::views::{categories, settings, skills};
 use crate::lifecycle::{
     can_transition, decision_status, has_landed, is_before_decision, is_terminal, lifecycle,
-    next_statuses, status_abbrev, status_spec,
+    next_statuses, status_icon, status_spec,
 };
 
 const TICK: Duration = Duration::from_millis(250);
@@ -229,6 +229,9 @@ struct App {
     notice: Option<Notice>,
     live: bool,
     busy: bool,
+    /// A dispatch was seen alive, so its next not-running state is an ending
+    /// worth announcing — the flag is what tells an ending from never-ran.
+    dispatch_seen: bool,
     filter: Filter,
     /// Set by opening a category. Membership, not text — a category id is the key
     /// its members share (a pin, a scope path, or `skill:<name>`) and is
@@ -262,6 +265,7 @@ impl App {
             notice: None,
             live: false,
             busy: true,
+            dispatch_seen: false,
             filter: Filter::Open,
             category_filter: None,
             query: String::new(),
@@ -515,11 +519,11 @@ fn draw_queue(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
         (inner, None)
     };
 
-    // marker(2) + score(4) + severity(2) + status(5) are fixed; skill and slug
+    // marker(2) + score(4) + severity(2) + status(3) are fixed; skill and slug
     // share what is left, with the slug favoured — it is the column you actually
     // read down. A narrow pane drops the skill entirely rather than shaving both.
     const MARKER: u16 = 2;
-    const FIXED: u16 = 11;
+    const FIXED: u16 = 9;
     let spare = list_area.width.saturating_sub(MARKER + FIXED) as usize;
     let skill_w = if spare < 36 { 0 } else { (spare / 3).min(16) };
     let slug_w = spare.saturating_sub(skill_w + 2 * usize::from(skill_w > 0));
@@ -530,11 +534,11 @@ fn draw_queue(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
             let mut spans = vec![
                 Span::styled(format!("{:>3} ", s.score.round() as i64), Style::new().fg(theme::dim())),
                 Span::styled(
-                    format!("{} ", severity_letter(&s.severity)),
+                    format!("{} ", theme::severity_icon(&s.severity)),
                     Style::new().fg(severity_colour(&s.severity)),
                 ),
                 Span::styled(
-                    format!("{:<3}  ", status_abbrev(&s.status)),
+                    format!("{}  ", status_icon(&s.status)),
                     Style::new().fg(status_colour(&s.status)),
                 ),
             ];
@@ -668,8 +672,8 @@ fn draw_detail(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
 /// they are ever named.
 const QUEUE_COLUMNS: &[(&str, &str)] = &[
     ("score", "impact × (1 + recurrences) ÷ effort; untriaged score 0"),
-    ("H M L", "severity, as a letter so it survives a terminal with no colour"),
-    ("status", "how far it has got"),
+    ("▲ ► ▼", "severity — shape carries it even with no colour"),
+    ("status", "how far it has got, one icon per status"),
     ("skill", "which skill filed it"),
     ("slug", "what it is about"),
 ];
@@ -688,10 +692,10 @@ fn column_values(tab: Tab, column: &str) -> Vec<(String, String)> {
         (Tab::Queue, "status") => lifecycle()
             .statuses
             .iter()
-            .map(|s| (s.abbrev.clone(), s.id.clone()))
+            .map(|s| (format!("{} {}", status_icon(&s.id), s.abbrev), s.id.clone()))
             .collect(),
-        (Tab::Queue, "H M L") => {
-            pairs(&[("H", "high"), ("M", "medium"), ("L", "low")])
+        (Tab::Queue, "▲ ► ▼") => {
+            pairs(&[("▲", "high"), ("►", "medium"), ("▼", "low")])
         }
         (Tab::Skills, "health") => pairs(skills::HEALTH),
         _ => Vec::new(),
@@ -843,7 +847,8 @@ fn docs_lines(width: usize) -> Vec<Line<'static>> {
     out.push(head("statuses"));
     for s in &l.statuses {
         out.push(Line::from(vec![
-            Span::styled(format!("    {:<4} ", s.abbrev), Style::new().fg(tone_colour(&s.tone))),
+            Span::styled(format!("    {} ", status_icon(&s.id)), Style::new().fg(tone_colour(&s.tone))),
+            Span::styled(format!("{:<4} ", s.abbrev), Style::new().fg(tone_colour(&s.tone))),
             Span::styled(format!("{:<11}", s.id), Style::new().fg(tone_colour(&s.tone))),
             Span::styled(format!("{:<9}", s.phase), Style::new().fg(theme::dim())),
         ]));
@@ -972,6 +977,9 @@ fn draw(frame: &mut Frame, app: &App) {
         parts.push("working…".into());
     }
     parts.push(format!("{} untriaged", m.untriaged));
+    if app.state.as_ref().and_then(|s| s.dispatch.as_ref()).is_some_and(|d| d.running) {
+        parts.push("\u{f135} fable triaging".into());
+    }
     parts.push(format!(
         "{} promoted categor{}",
         m.promoted_categories,
@@ -1132,7 +1140,9 @@ fn run(
         while let Ok(event) = events.try_recv() {
             match event.as_str() {
                 "__disconnected" => app.live = false,
-                "change" => {
+                // `dispatch` fires when the run starts or dies — the one ending
+                // a crash would otherwise never show, since it writes no files.
+                "change" | "dispatch" => {
                     app.live = true;
                     app.busy = true;
                     let _ = req.send(Req::Refresh);
@@ -1145,6 +1155,26 @@ fn run(
             match message {
                 Res::State(Ok(state)) => {
                     app.error = None;
+                    let running = state.dispatch.as_ref().is_some_and(|d| d.running);
+                    if app.dispatch_seen && !running {
+                        match state.dispatch.as_ref().and_then(|d| d.exit_code) {
+                            Some(0) => app.say(
+                                format!(
+                                    "triage run done — {} still untriaged",
+                                    state.metrics.untriaged
+                                ),
+                                false,
+                            ),
+                            code => app.say(
+                                format!(
+                                    "triage run failed (exit {}) — see ~/.claude/kaizen/dispatch.log",
+                                    code.unwrap_or(-1)
+                                ),
+                                true,
+                            ),
+                        }
+                    }
+                    app.dispatch_seen = running;
                     app.state = Some(state);
                     app.clamp();
                 }
@@ -1521,11 +1551,25 @@ mod tests {
 
     /// The columns that read the same on every row are one character each, and the
     /// selected row is marked as well as highlighted.
+    /// The chip is the only sign a detached run exists — the process is not a
+    /// child of the TUI, so nothing else in the terminal says it is alive.
+    #[test]
+    fn a_live_dispatch_shows_in_the_header_and_an_ended_one_does_not() {
+        let mut app = app_with_state();
+        app.state.as_mut().unwrap().dispatch =
+            Some(crate::api::Dispatch { running: true, pid: 4242, exit_code: None });
+        assert!(render(&app, 120, 30).contains("fable triaging"), "the chip is up");
+
+        app.state.as_mut().unwrap().dispatch =
+            Some(crate::api::Dispatch { running: false, pid: 4242, exit_code: Some(0) });
+        assert!(!render(&app, 120, 30).contains("fable triaging"), "and down when it ends");
+    }
+
     #[test]
     fn rows_spend_their_width_on_the_slug() {
         let text = render(&app_with_state(), 120, 30);
-        assert!(text.contains("▸  42 H apr"), "marker, score, severity, status: {text}");
-        assert!(text.contains("   5 L rec"), "the second row draws its status: {text}");
+        assert!(text.contains("▸  42 ▲ \u{f00c}"), "marker, score, severity, status: {text}");
+        assert!(text.contains("   5 ▼ \u{f040}"), "the second row draws its status: {text}");
         assert!(!text.contains("medium   approved"), "the spelled-out columns are gone: {text}");
     }
 
@@ -1567,13 +1611,13 @@ mod tests {
     /// a status the spec does not know must degrade rather than render blank.
     #[test]
     fn statuses_resolve_through_the_spec() {
-        assert_eq!(status_abbrev("recorded"), "rec");
-        assert_eq!(status_abbrev("planned"), "pln");
-        assert_eq!(status_abbrev("verified"), "ver");
+        assert_ne!(status_icon("recorded"), "—");
+        assert_ne!(status_icon("planned"), "—");
+        assert_ne!(status_icon("verified"), "—");
         // One spelling per status: anything else is a typo, not an older name.
-        assert_eq!(status_abbrev("new"), "—");
-        assert_eq!(status_abbrev("nonsense"), "—");
-        assert_eq!(status_abbrev(""), "—");
+        assert_eq!(status_icon("new"), "—");
+        assert_eq!(status_icon("nonsense"), "—");
+        assert_eq!(status_icon(""), "—");
     }
 
     /// The embedded spec has to parse, and has to be the same document the rest
@@ -1805,10 +1849,13 @@ mod tests {
         };
 
         let queue = lines(Tab::Queue);
-        // Every status on its own line, generated from the spec.
+        // Every status on its own line — icon then abbrev — generated from the spec.
         for s in &lifecycle().statuses {
             assert!(
-                queue.iter().any(|l| l.trim_start().starts_with(&s.abbrev) && l.contains(&s.id)),
+                queue.iter().any(|l| {
+                    let l = l.trim_start();
+                    l.starts_with(status_icon(&s.id)) && l.contains(&s.abbrev) && l.contains(&s.id)
+                }),
                 "{} is its own row",
                 s.id,
             );

@@ -230,7 +230,18 @@ const routes = {
     targets: ctx.config.targets.length,
   }),
 
-  'GET /api/state': async (_req, _res, ctx) => buildState(ctx.config),
+  // `dispatch` rides on state rather than its own route: the TUI draws from
+  // state and refreshes on events, so a separate poll would be a second clock.
+  'GET /api/state': async (_req, _res, ctx) => ({
+    ...buildState(ctx.config),
+    dispatch: ctx.dispatch
+      ? {
+          running: !ctx.dispatch.done,
+          pid: ctx.dispatch.pid,
+          exitCode: ctx.dispatch.done ? (ctx.dispatch.done.code ?? -1) : null,
+        }
+      : null,
+  }),
 
   'GET /api/config': async (_req, _res, ctx) => ({ config: ctx.config, errors: validateConfig(ctx.config) }),
 
@@ -330,7 +341,7 @@ const routes = {
   // arrives like any other edit, through the file watcher, so the queue's rows
   // relabel themselves as the run writes frontmatter.
   'POST /api/dispatch': async (_req, _res, ctx) => {
-    if (ctx.dispatch && ctx.dispatch.exitCode === null && !ctx.dispatch.killed) {
+    if (ctx.dispatch && !ctx.dispatch.done) {
       throw new HttpError(409, `a triage run is already in flight (pid ${ctx.dispatch.pid})`);
     }
     const untriaged = buildState(ctx.config).metrics.untriaged;
@@ -340,7 +351,15 @@ const routes = {
       child.once('spawn', launched);
       child.once('error', (e) => failed(new HttpError(500, `could not start claude — ${e.message}`)));
     });
+    // `done` rather than `exitCode`: a signal death leaves exitCode null, which
+    // reads as still-running and would wedge the seat forever. The broadcast is
+    // what tells the TUI the run ended even when it wrote no files.
+    child.once('exit', (code, signal) => {
+      child.done = { code, signal };
+      ctx.events.broadcast('dispatch', { pid: child.pid, code, signal });
+    });
     ctx.dispatch = child;
+    ctx.events.broadcast('dispatch', { pid: child.pid, running: true });
     return { pid: child.pid, untriaged };
   },
 

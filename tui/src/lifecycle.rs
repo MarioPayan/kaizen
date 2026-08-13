@@ -41,6 +41,10 @@ pub struct PhaseSpec {
 pub struct StatusSpec {
     pub id: String,
     pub abbrev: String,
+    /// One glyph, one cell — the queue column. Spec data like the abbrev, so
+    /// swapping a glyph is a JSON edit, never a code change.
+    #[serde(default)]
+    pub icon: String,
     pub phase: String,
     pub tone: String,
     pub terminal: bool,
@@ -71,10 +75,12 @@ pub fn status_spec(s: &str) -> Option<&'static StatusSpec> {
     lifecycle().statuses.iter().find(|x| x.id == s)
 }
 
-/// Three columns instead of nine. `approved` is most of the queue most of the
-/// time, so the word was paying rent on the one column you actually read.
-pub fn status_abbrev(s: &str) -> &'static str {
-    status_spec(s).map(|x| x.abbrev.as_str()).unwrap_or("—")
+/// One cell instead of a word. Falls back to the abbrev for a status the spec
+/// gives no icon, and to a dash for one it does not know at all.
+pub fn status_icon(s: &str) -> &'static str {
+    status_spec(s)
+        .map(|x| if x.icon.is_empty() { x.abbrev.as_str() } else { x.icon.as_str() })
+        .unwrap_or("—")
 }
 
 /// No exit: the item has left the pipeline for good.
@@ -151,5 +157,23 @@ pub fn phases_until_decision(status: &str) -> Vec<&'static PhaseSpec> {
     match (phase_index(status), l.phases.iter().position(|p| p.attended)) {
         (Some(here), Some(decide)) => l.phases[here + 1..decide].iter().collect(),
         _ => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Icons are spec data, so the spec is where a two-cell glyph would sneak
+    /// in and shear every row after it. Emoji fail this on purpose.
+    #[test]
+    fn every_status_icon_is_one_cell_and_none_repeats() {
+        use unicode_width::UnicodeWidthStr;
+        let mut seen = std::collections::HashSet::new();
+        for s in &lifecycle().statuses {
+            assert!(!s.icon.is_empty(), "{} has no icon", s.id);
+            assert_eq!(s.icon.width(), 1, "{} icon {:?} is not one cell", s.id, s.icon);
+            assert!(seen.insert(&s.icon), "{} repeats another status's icon", s.id);
+        }
     }
 }

@@ -53,11 +53,13 @@ pub fn status_colour(s: &str) -> Color {
 
 /// One column instead of seven. The word is still spelled out in the detail pane,
 /// and the letter survives a terminal with no colour where a bare hue would not.
-pub fn severity_letter(s: &str) -> &'static str {
+/// One cell, pointing where the severity pulls — shape carries the meaning
+/// even on a terminal with no colour, which is why it is not a letter.
+pub fn severity_icon(s: &str) -> &'static str {
     match s {
-        "high" => "H",
-        "medium" => "M",
-        "low" => "L",
+        "high" => "▲",
+        "medium" => "►",
+        "low" => "▼",
         _ => "·",
     }
 }

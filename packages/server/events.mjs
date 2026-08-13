@@ -151,5 +151,9 @@ export function createEventStream(ctx) {
     },
 
     size: () => clients.size,
+
+    // Server-side happenings the watcher cannot see — a dispatch starting or
+    // ending is a process event, not a file event.
+    broadcast,
   };
 }
