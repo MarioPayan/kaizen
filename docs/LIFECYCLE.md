@@ -70,7 +70,7 @@ Cannot be left until these are present: `verified_at`.
 recorded   → triaged | rejected | superseded
 triaged    → planned | rejected | superseded
 planned    → approved | rejected | superseded
-approved   → applied
+approved   → applied | superseded
 applied    → verified | failed
 verified   → (terminal)
 failed     → planned

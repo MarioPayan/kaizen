@@ -100,7 +100,7 @@
       "tone": "positive",
       "terminal": false,
       "help": "You said yes to a specific patch. It lands on the next drain.",
-      "next": ["applied"]
+      "next": ["applied", "superseded"]
     },
     {
       "id": "applied",
