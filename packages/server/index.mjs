@@ -383,6 +383,10 @@ const routes = {
     const { id } = await readBody(req);
     const { path, target } = suggestionFile(ctx.config, id);
     if (!target.writable) throw new HttpError(403, `target "${target.name}" is read-only`);
+    // Apply and commit at the repo root that owns the skills dir, not the dir
+    // itself — a target whose skills sit inside a larger repo (kaizen's own
+    // skills/ folder) carries patches rooted at that repo.
+    const root = (await git(target.skills, ['rev-parse', '--show-toplevel'])).trim();
     // The same gate as any other move. Applying is the one transition the server
     // performs on its own, which is exactly why it should not be the one that
     // skips the check.
@@ -395,23 +399,41 @@ const routes = {
     const patch = path.replace(/\.md$/, '.patch');
     if (!existsSync(patch)) throw new HttpError(422, 'no proposal patch for this suggestion yet');
 
-    if (ctx.config.applyGuards?.requireCleanTree !== false) await assertCleanTree(target.skills);
+    if (ctx.config.applyGuards?.requireCleanTree !== false) await assertCleanTree(root);
     if (ctx.config.applyGuards?.requireDiffApplies !== false) {
-      await git(target.skills, ['apply', '--check', patch]);
+      await git(root, ['apply', '--check', patch]);
     }
 
-    await git(target.skills, ['apply', patch]);
-    await git(target.skills, ['add', '-A']);
-    await git(target.skills, [
+    await git(root, ['apply', patch]);
+    await git(root, ['add', '-A']);
+    await git(root, [
       'commit',
       '-m',
       `kaizen: ${id.split('/').at(-1).replace(/\.md$/, '')}`,
       '-m',
       `Kaizen-Suggestion: ${id}`,
     ]);
-    const sha = (await git(target.skills, ['rev-parse', 'HEAD'])).trim();
+    const sha = (await git(root, ['rev-parse', 'HEAD'])).trim();
     writeFrontmatter(path, { status: 'applied', applied_sha: sha });
-    return { id, sha };
+
+    // One scope is one fix, so the commit that lands it closes the siblings.
+    // This is what the 27 orphans were: the drain marked only the suggestion
+    // named in its trailer, and everything else sharing the scope rotted as
+    // open work. Mechanical now, with the sha recorded so the trail survives.
+    const { data: appliedData } = parseFrontmatter(readFileSync(path, 'utf8'));
+    let closed = 0;
+    if (appliedData.scope) {
+      for (const s of buildState(ctx.config).suggestions) {
+        if (s.id === id || s.scope !== appliedData.scope) continue;
+        if (!canTransition(s.status, 'superseded')) continue;
+        writeFrontmatter(suggestionFile(ctx.config, s.id).path, {
+          status: 'superseded',
+          superseded_by: sha,
+        });
+        closed++;
+      }
+    }
+    return { id, sha, closed };
   },
 
   'POST /api/revert': async (req, _res, ctx) => {
@@ -420,8 +442,9 @@ const routes = {
     const t = resolveTargets(ctx.config).find((x) => x.name === targetName);
     if (!t) throw new HttpError(404, `unknown target "${targetName}"`);
     if (!t.writable) throw new HttpError(403, `target "${t.name}" is read-only`);
-    await assertCleanTree(t.skills);
-    await git(t.skills, ['revert', '--no-edit', sha]);
+    const root = (await git(t.skills, ['rev-parse', '--show-toplevel'])).trim();
+    await assertCleanTree(root);
+    await git(root, ['revert', '--no-edit', sha]);
     return { reverted: sha };
   },
 };

@@ -390,11 +390,15 @@ impl Client {
         Ok(res.get("pending").and_then(|v| v.as_u64()).unwrap_or(0))
     }
 
-    /// Returns the commit sha. Can refuse three ways — dirty tree, read-only
-    /// target, no patch — and every one of them is worth showing as written.
-    pub fn apply(&self, id: &str) -> Result<String, String> {
+    /// Returns the commit sha and how many same-scope siblings the landing
+    /// closed. Can refuse three ways — dirty tree, read-only target, no patch —
+    /// and every one of them is worth showing as written.
+    pub fn apply(&self, id: &str) -> Result<(String, u64), String> {
         let res = self.post("/api/apply", serde_json::json!({ "id": id }))?;
-        Ok(res.get("sha").and_then(|v| v.as_str()).unwrap_or_default().to_string())
+        Ok((
+            res.get("sha").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+            res.get("closed").and_then(|v| v.as_u64()).unwrap_or(0),
+        ))
     }
 
     /// The live config, as both a typed view and the raw JSON.

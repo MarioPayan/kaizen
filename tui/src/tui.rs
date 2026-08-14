@@ -144,11 +144,14 @@ fn spawn_worker(client: Client, rx: mpsc::Receiver<Req>, tx: mpsc::Sender<Res>) 
                         None => format!("fable is on {n} — rows relabel as it lands"),
                     }
                 })),
-                Req::Apply { id } => Res::Acted(
-                    client
-                        .apply(&id)
-                        .map(|sha| format!("applied {} — {}", short(&id), &sha[..7.min(sha.len())])),
-                ),
+                Req::Apply { id } => Res::Acted(client.apply(&id).map(|(sha, closed)| {
+                    let sha = &sha[..7.min(sha.len())];
+                    if closed == 0 {
+                        format!("applied {} — {sha}", short(&id))
+                    } else {
+                        format!("applied {} — {sha} · closed {closed} sibling(s)", short(&id))
+                    }
+                })),
                 Req::Diff { id } => {
                     let out = client.diff(&id);
                     Res::Diff(id, out)

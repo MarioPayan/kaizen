@@ -236,6 +236,53 @@ describe('api', () => {
 });
 
 /**
+ * The commit that lands a fix closes its scope siblings — the 27-orphans
+ * defect, solved mechanically instead of by a doctor report.
+ */
+describe('apply closes the siblings of its scope', () => {
+  it('lands the lead as a commit and supersedes open siblings sharing its scope', async () => {
+    const feedback = join(root, 'skills-feedback', 'demo');
+    const suggestionFile = (slug, status, scope) =>
+      writeFileSync(
+        join(feedback, `2026-05-05-${slug}.md`),
+        `---\nskill: demo\ndate: 2026-05-05\nseverity: low\ntype: hygiene\nobjective: debt\neffort: S\nrung: 1\nscope: ${scope}\nstatus: ${status}\n---\n\n## Context\n\nc\n\n## Suggestion\n\ns\n\n## Plan\n\np\n\n## Validation\n\nv\n`,
+      );
+    suggestionFile('lead', 'approved', 'demo/SKILL.md');
+    suggestionFile('sib', 'recorded', 'demo/SKILL.md');
+    suggestionFile('far', 'recorded', 'other/file.md');
+    writeFileSync(
+      join(feedback, '2026-05-05-lead.patch'),
+      [
+        '--- a/demo/SKILL.md',
+        '+++ b/demo/SKILL.md',
+        '@@ -1,4 +1,5 @@',
+        ' ---',
+        ' name: demo',
+        ' ---',
+        ' # demo',
+        '+one guardrail line',
+        '',
+      ].join('\n'),
+    );
+
+    const { status, body } = await api('POST', '/api/apply', { id: 'user/demo/2026-05-05-lead.md' });
+    expect(status).toBe(200);
+    expect(body.sha).toMatch(/^[0-9a-f]{40}$/);
+    expect(body.closed).toBe(1);
+
+    expect(readFileSync(join(feedback, '2026-05-05-lead.md'), 'utf8')).toMatch(/status: applied/);
+    const sib = readFileSync(join(feedback, '2026-05-05-sib.md'), 'utf8');
+    expect(sib).toMatch(/status: superseded/);
+    expect(sib).toContain(`superseded_by: ${body.sha}`);
+    expect(readFileSync(join(feedback, '2026-05-05-far.md'), 'utf8')).toMatch(/status: recorded/);
+
+    // The ledger holds the trailer that makes `git log --grep` the index.
+    const log = git(join(root, 'skills'), 'log', '-1', '--format=%B');
+    expect(log).toContain('Kaizen-Suggestion: user/demo/2026-05-05-lead.md');
+  });
+});
+
+/**
  * The wide approve: one decision drains everything approvable — what can
  * legally move moves, an unready candidate is skipped and counted, and a
  * corpus with nothing movable refuses rather than pretending.

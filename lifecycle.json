@@ -89,7 +89,7 @@
       "tone": "warning",
       "terminal": false,
       "help": "A patch and a validation plan both exist. This is the only status that can be approved.",
-      "next": ["approved", "rejected"]
+      "next": ["approved", "rejected", "superseded"]
     },
     {
       "id": "approved",
