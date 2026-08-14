@@ -256,7 +256,12 @@ function scopeFixOrphansSiblings(state) {
   for (const [scope, members] of byScope) {
     if (members.length < 2) continue;
     const done = members.filter((s) => hasLanded(s.status) || s.status === 'superseded');
-    const openOnes = members.filter((s) => !isTerminal(s.status) && !hasLanded(s.status));
+    // A member inside the patch window (planned, approved) is visibly
+    // mid-pipeline — the queue already knows it is open, so "fixed and
+    // unmarked" cannot apply to it. Only a pre-plan member can be an orphan.
+    const openOnes = members.filter(
+      (s) => !isTerminal(s.status) && !hasLanded(s.status) && !inPatchWindow(s.status),
+    );
     if (done.length === 0 || openOnes.length === 0) continue;
 
     const sha = done.find((s) => s.appliedSha)?.appliedSha;
@@ -266,7 +271,7 @@ function scopeFixOrphansSiblings(state) {
       scope,
       context:
         `Scope \`${scope}\`: ${done.length} of ${members.length} suggestions are finished, ` +
-        `${openOnes.length} are not — ${openOnes
+        `${openOnes.length} sit pre-plan — ${openOnes
           .slice(0, 5)
           .map((s) => s.slug)
           .join(', ')}${openOnes.length > 5 ? `, +${openOnes.length - 5} more` : ''}. ` +

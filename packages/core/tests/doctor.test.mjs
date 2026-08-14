@@ -60,10 +60,30 @@ describe('kaizen doctor', () => {
         'scope-fix-orphans-siblings',
       );
       expect(found).toHaveLength(1);
-      expect(found[0].context).toMatch(/1 of 3 suggestions are finished, 2 are not/);
+      // c is approved — mid-pipeline, not "unmarked" — so only b is reported.
+      expect(found[0].context).toMatch(/1 of 3 suggestions are finished, 1 sit pre-plan/);
       expect(found[0].context).toMatch(/\bb\b/);
+      expect(found[0].context).not.toMatch(/\bc\b/);
       // Naming the commit is what makes the re-check cheap.
       expect(found[0].suggestion).toMatch(/c9168b6/);
+    });
+
+    /**
+     * The false positive of the 2026-08-13 pass: the only unfinished sibling
+     * was a live proposal awaiting a decision, and the check still called it
+     * probably-fixed-and-unmarked. A member in the patch window is visibly
+     * open; the premise only holds for members the pipeline has not reached.
+     */
+    it('says nothing when every open member is already planned or approved', () => {
+      const found = only(
+        stateWith([
+          suggestion({ id: 'user/demo/a.md', slug: 'a', status: 'applied', appliedSha: 'c9168b6dead' }),
+          suggestion({ id: 'user/demo/b.md', slug: 'b', status: 'planned' }),
+          suggestion({ id: 'user/demo/c.md', slug: 'c', status: 'approved' }),
+        ]),
+        'scope-fix-orphans-siblings',
+      );
+      expect(found).toEqual([]);
     });
 
     it('counts superseded as finished, since that is how a sibling gets closed', () => {
