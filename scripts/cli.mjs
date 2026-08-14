@@ -13,7 +13,15 @@
  *   serve     start the local app + API
  *   tui       the queue in the terminal (starts `serve` if the port is dead)
  */
-import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import {
+  readFileSync,
+  writeFileSync,
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+} from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir, tmpdir } from 'node:os';
@@ -786,7 +794,9 @@ function cmdAsks() {
 function cmdDoctor() {
   const config = requireConfig();
   const state = buildState(config);
-  const today = new Date().toISOString().slice(0, 10);
+  // Local date, not toISOString(): an evening run must not stamp files with
+  // tomorrow's UTC date.
+  const today = new Date().toLocaleDateString('sv');
   const findings = runDoctor({ config, state, today });
 
   if (findings.length === 0) {
@@ -818,15 +828,26 @@ function cmdDoctor() {
   mkdirSync(dir, { recursive: true });
 
   let filed = 0;
+  let recurred = 0;
   for (const f of findings) {
-    const path = join(dir, `${today}-${f.slug}.md`);
-    // Re-filing the same finding every run would bury the queue it is meant to
-    // clear. One file per finding per day; a recurrence is a real recurrence.
-    if (existsSync(path)) continue;
-    writeFileSync(path, findingToMarkdown(f, today));
+    // The same finding still open under any earlier date is the same finding —
+    // a second file would bury the queue this exists to clear. A recurrence
+    // section keeps the receipt without the burial, once per day.
+    const open = state.suggestions.find(
+      (s) => s.skill === 'kaizen' && s.slug === f.slug && !isTerminal(s.status) && !hasLanded(s.status),
+    );
+    if (open) {
+      const marker = `## Recurrence — ${today}`;
+      if (!readFileSync(open.file, 'utf8').includes(marker)) {
+        appendFileSync(open.file, `\n${marker}\n\nRe-fired by \`kaizen doctor\`.\n`);
+      }
+      recurred++;
+      continue;
+    }
+    writeFileSync(join(dir, `${today}-${f.slug}.md`), findingToMarkdown(f, today));
     filed++;
   }
-  console.log(`filed ${filed} new · ${findings.length - filed} already on disk`);
+  console.log(`filed ${filed} new · ${recurred} recurrence(s) on open findings`);
 }
 
 /* ---------------------------------------------------------------- docs ---- */
