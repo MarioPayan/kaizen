@@ -175,6 +175,15 @@ that counts as passing:
 what would prove the fix worked, that is a sign the fix is not understood yet —
 leave it at `triaged` and say so.
 
+**Parking an item is data, not prose.** Whenever you leave something short of
+the next phase because of a decision only the user can make — where content
+should live, a repo that is not writable, a structural call — record the reason
+in one line via the triage CLI: `"blocked_on": "<why>"`. The queue and the
+board flag it and show the line, which is how the user learns nine rows are
+waiting on three calls without reading a report. Clear it (empty string) when
+the call is made. A final report in prose is still welcome; it is just not the
+only place the reason lives.
+
 **3. The patch** — a real diff, not a description of one:
 
 ```bash

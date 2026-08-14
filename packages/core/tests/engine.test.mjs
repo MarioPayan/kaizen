@@ -70,4 +70,10 @@ describe('scoring', () => {
     expect(s.missing).toContain('type');
     expect(s.type).toBe('');
   });
+
+  it('carries blocked_on through as data, and its absence as empty', () => {
+    const parked = suggestion({ slug: 'parked-thing', blocked_on: 'where should this live?' });
+    expect(parked.blockedOn).toBe('where should this live?');
+    expect(suggestion({ slug: 'free-thing' }).blockedOn).toBe('');
+  });
 });

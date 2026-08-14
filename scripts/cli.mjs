@@ -448,6 +448,9 @@ const TRIAGE_FIELDS = {
   // to still exist at. Without it a pass cannot legally reach `triaged`, and the
   // 27 already-fixed suggestions this check exists for stay invisible.
   confirmed_at: null,
+  // Why an item is parked short of the next phase, when the reason is a
+  // decision only the user can make. One line; empty clears it.
+  blocked_on: null,
   // Remapping an orphan onto its successor is a triage decision, and the
   // edge-case list already calls for it. The folder is the scanner's signal, so
   // a remap is a move plus this field.

@@ -520,11 +520,11 @@ fn draw_queue(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
         (inner, None)
     };
 
-    // marker(2) + score(4) + severity(2) + status(3) are fixed; skill and slug
-    // share what is left, with the slug favoured — it is the column you actually
-    // read down. A narrow pane drops the skill entirely rather than shaving both.
+    // marker(2) + score(4) + severity(2) + status(2) + flag(2) are fixed; skill
+    // and slug share what is left, with the slug favoured — it is the column you
+    // actually read down. A narrow pane drops the skill rather than shaving both.
     const MARKER: u16 = 2;
-    const FIXED: u16 = 9;
+    const FIXED: u16 = 10;
     let spare = list_area.width.saturating_sub(MARKER + FIXED) as usize;
     let skill_w = if spare < 36 { 0 } else { (spare / 3).min(16) };
     let slug_w = spare.saturating_sub(skill_w + 2 * usize::from(skill_w > 0));
@@ -539,8 +539,14 @@ fn draw_queue(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
                     Style::new().fg(severity_colour(&s.severity)),
                 ),
                 Span::styled(
-                    format!("{}  ", status_icon(&s.status)),
+                    format!("{} ", status_icon(&s.status)),
                     Style::new().fg(status_colour(&s.status)),
+                ),
+                // The flag is what tells "parked on a call of yours" from
+                // merely "not there yet" — the detail carries the one line why.
+                Span::styled(
+                    format!("{} ", if s.blocked_on.is_empty() { ' ' } else { '⚑' }),
+                    Style::new().fg(theme::warn()),
                 ),
             ];
             if skill_w > 0 {
@@ -598,6 +604,12 @@ fn detail_lines(s: &Suggestion) -> Vec<Line<'static>> {
         lines.push(Line::from(vec![
             Span::styled("scope    ", Style::new().fg(theme::dim())),
             Span::raw(s.scope.clone()),
+        ]));
+    }
+    if !s.blocked_on.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("⚑ on you ", Style::new().fg(theme::warn())),
+            Span::styled(s.blocked_on.clone(), Style::new().fg(theme::warn())),
         ]));
     }
 
@@ -1456,7 +1468,8 @@ mod tests {
                   "rationale": "Because approval without one is a dead end." },
                 { "id": "user/other/2026-08-01-a-second-thing.md", "skill": "other",
                   "slug": "a-second-thing",
-                  "severity": "low", "status": "recorded", "score": 5, "surfaced": true }
+                  "severity": "low", "status": "recorded", "score": 5, "surfaced": true,
+                  "blockedOn": "where should the guardrails live?" }
               ],
               "skills": [
                 { "name": "ts-pr-review", "kind": "user", "lines": 700, "scripts": 0,
@@ -1607,6 +1620,18 @@ mod tests {
         assert_eq!(app.selected_status().as_deref(), Some("recorded"), "first lane in spec order");
         app.board_lane = 1;
         assert_eq!(app.selected_status().as_deref(), Some("approved"));
+    }
+
+    /// Twelve identical triaged rows once hid that nine were waiting on three
+    /// calls of the user's. The flag is the row-level tell; the detail says why.
+    #[test]
+    fn a_parked_item_is_flagged_and_its_detail_says_why() {
+        let mut app = app_with_state();
+        app.sel = 1; // the parked fixture
+        let text = render(&app, 120, 30);
+        assert!(text.contains("⚑"), "the row carries the flag: {text}");
+        assert!(text.contains("on you"), "the detail labels it: {text}");
+        assert!(text.contains("where should the guardrails live?"), "and says why: {text}");
     }
 
     #[test]

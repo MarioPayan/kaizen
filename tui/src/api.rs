@@ -35,6 +35,10 @@ pub struct Suggestion {
     pub scope: String,
     pub rung: Option<i64>,
     pub effort: String,
+    /// Why this sits where it sits, when a pass parked it on a decision only
+    /// the user can make. Empty otherwise.
+    #[serde(rename = "blockedOn")]
+    pub blocked_on: String,
     #[serde(rename = "appliedSha")]
     pub applied_sha: String,
     pub recurrences: u64,

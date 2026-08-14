@@ -86,6 +86,10 @@ export function parseSuggestion({ id, file, skill, target, text }) {
     scope: data.scope || '',
     rung,
     effort,
+    // One line of "why this sits where it sits" when a pass parks an item on a
+    // decision only the user can make. Data, not log prose: twelve identical
+    // triaged rows once hid that nine of them were waiting on three calls.
+    blockedOn: data.blocked_on || '',
     appliedSha: data.applied_sha || '',
     outcome: data.outcome || '',
     recurrences,
