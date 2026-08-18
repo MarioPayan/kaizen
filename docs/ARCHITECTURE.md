@@ -68,6 +68,14 @@ new arrival in a feedback directory is a backlog run without a key — gated on
 newcomers, so a card the pass parks does not re-trigger a run every time a seat
 frees.
 
+`blocked_on` carries two different waits, so `buildState` derives `blockedBy`:
+the open suggestion the block names, if it names one. A card waiting on another
+card parks in the `blocked` lane — no key of the user's moves it. A card waiting
+on the user stands in its own lane with the flag lit, where the key that moves
+it already is, and `b` is how the user answers or clears it. The distinction is
+data, not a reading of the sentence, and it goes stale on its own: `blockedBy`
+empties when the card it names closes.
+
 The dispatch gate is `pendingPass`, not the status alone: a card whose
 frontmatter carries `blocked_on` is parked on something outside the pipeline —
 a carrier patch, a read-only target, a file only the user can move — and a run
@@ -163,9 +171,11 @@ and the `D` docs overlay work with the server down.
   stages sit the three lanes a card _waits_ in rather than holds — `working`
   while a run has it, `blocked` while its `blocked_on` names something outside
   the pipeline, `closed` for the terminals — each shown only when occupied, so
-  `a` always visibly moves the card somewhere; lanes wrap onto a second band
-  instead of scrolling off the right, so the whole board is one glance;
-  decide/apply keys act on the selected card), agents (every fable run going —
+  `a` always visibly moves the card somewhere; `working` stands even when empty,
+  because a column that appears under you shifts every lane to its right; lanes
+  wrap onto a second band instead of scrolling off the right, so the whole board
+  is one glance; decide/apply keys act on the selected card, and `b` writes or
+  clears what a card is waiting on), agents (every fable run going —
   target, pid, age — the last few that ended with their exit code, and the line
   waiting for a seat; the log itself stays in `~/.claude/kaizen/dispatch.log`), skills
   (failures per 100 lines of prose, worst first), settings (edit via `$EDITOR`,

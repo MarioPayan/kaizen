@@ -288,6 +288,21 @@ export function buildState(config) {
   // change whose validation plan has not run is unfinished, and saying so is
   // the entire reason the verify phase exists.
   const open = suggestions.filter((s) => !isTerminal(s.status));
+
+  // Two different waits wear the one `blocked_on` field, and they want opposite
+  // things from the board. A block that names another suggestion still in play
+  // is waiting on *that card* — no key of yours moves it, so it parks out of the
+  // way. Every other block is waiting on *you*, and belongs in its own lane with
+  // the flag up, where the key that moves it already is. Derived here for the
+  // same reason uids are: it takes the whole corpus to answer. `blockedBy` goes
+  // empty again once the card it names closes, which is what surfaces a member
+  // whose carrier has landed.
+  for (const s of suggestions) {
+    s.blockedBy = s.blockedOn
+      ? (open.find((o) => o.id !== s.id && (s.blockedOn.includes(o.id) || s.blockedOn.includes(o.slug)))
+          ?.id ?? '')
+      : '';
+  }
   const byName = new Map();
   for (const s of suggestions) byName.set(s.skill, (byName.get(s.skill) ?? 0) + 1);
 

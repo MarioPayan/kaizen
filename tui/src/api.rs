@@ -46,6 +46,11 @@ pub struct Suggestion {
     /// the user can make. Empty otherwise.
     #[serde(rename = "blockedOn")]
     pub blocked_on: String,
+    /// The open suggestion the block names, when it names one. Empty when the
+    /// block is on you — which is the whole difference between a card that
+    /// parks out of the way and one that stands in its lane with the flag up.
+    #[serde(rename = "blockedBy")]
+    pub blocked_by: String,
     #[serde(rename = "appliedSha")]
     pub applied_sha: String,
     pub recurrences: u64,
@@ -368,6 +373,14 @@ impl Client {
 
     pub fn set_status(&self, id: &str, status: &str) -> Result<(), String> {
         self.post("/api/suggestion", serde_json::json!({ "id": id, "status": status })).map(|_| ())
+    }
+
+    /// Write what a card waits on, or clear it with an empty string. Its own
+    /// call rather than a flavour of `set_status`: nothing moves, and the
+    /// server tells the two apart by whether the key is there at all.
+    pub fn set_block(&self, id: &str, text: &str) -> Result<(), String> {
+        self.post("/api/suggestion", serde_json::json!({ "id": id, "blockedOn": text }))
+            .map(|_| ())
     }
 
     /// Approving everything approvable is one decision, so it is one request.

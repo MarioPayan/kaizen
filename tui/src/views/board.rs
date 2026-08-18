@@ -33,8 +33,10 @@ use crate::ui::{title_of, titled, truncate};
 /// The columns, for the help card. A lane is a column of cards, so the pair
 /// reads (what you see, what it means) like every other view's legend.
 pub const COLUMNS: &[(&str, &str)] = &[
-    ("lane", "one pipeline stage per column, in spec order and always on screen so the path to done is visible; under each title, what the lane waits for and whose move it is — which is what `a` does to a card there; after the stages come the three lanes a card waits in rather than holds — working while a run has it, blocked while its frontmatter names something only you can clear, closed for the terminals — and each appears only when occupied; lanes wrap onto a second band rather than scrolling off the right, so the whole board is one glance"),
-    ("card", "one suggestion — severity mark, its three-letter uid, then its name — newest first within the lane, under a rule for today, this week, this month and older; the uid is three letters of the name, unique across the board, and stays the same wherever the card lands; ⚑ marks a card parked on a decision only you can make (enter says which); while work is in flight, the spinner marks the card being worked, a number the card's place in line for the next run, and ◌ the ones a backlog run still owes"),
+    ("lane", "where a card stands: a pipeline stage, or one of the three it waits in"),
+    ("card", "one suggestion — severity mark, uid, name; newest first, ruled by age"),
+    ("flag", "a card waiting on something before it can move"),
+    ("mark", "what is happening to this card right now"),
 ];
 
 /// A lane the draw loop and the key handlers agree on: `title` is what the
@@ -136,7 +138,7 @@ pub fn lanes(state: &State) -> Vec<Lane<'_>> {
             Some(WORKING)
         } else if is_terminal(&s.status) {
             Some(CLOSED)
-        } else if !s.blocked_on.is_empty() {
+        } else if !s.blocked_by.is_empty() {
             Some(BLOCKED)
         } else {
             None
@@ -168,16 +170,18 @@ pub fn lanes(state: &State) -> Vec<Lane<'_>> {
         .map(|(_, lane)| lane)
         .collect();
 
-    // Appended in precedence order, and only when occupied: an empty stage is
-    // the shape of the pipeline, but an empty holding pen is just a column.
-    for (title, subtitle, tone) in [
-        (WORKING, "a run has it", "accent"),
-        (BLOCKED, "parked on you — enter says why", "warning"),
-        (CLOSED, "done or dismissed", "muted"),
+    // Appended in precedence order. `working` is drawn even when empty: it fills
+    // and empties with every run, and a column that appears under you shifts
+    // every lane to its right — you lose the card you were reading to a layout
+    // change you did not ask for. The other two are steady enough to collapse.
+    for (title, subtitle, tone, always) in [
+        (WORKING, "a run has it", "accent", true),
+        (BLOCKED, "waiting on another card", "warning", false),
+        (CLOSED, "done or dismissed", "muted", false),
     ] {
         let items: Vec<&Suggestion> =
             sorted.iter().filter(|s| home(s) == Some(title)).copied().collect();
-        if !items.is_empty() {
+        if always || !items.is_empty() {
             out.push(Lane {
                 title: title.into(),
                 subtitle: subtitle.into(),
@@ -327,11 +331,18 @@ pub fn draw(
                     Style::new().fg(theme::dim()),
                 ));
                 let mut used = if markers { 4 } else { 2 } + s.uid.chars().count() + 1;
-                // Parked on you: the flag is the one thing on a card that says
-                // "no key here moves this — you do". Only on those cards, so
-                // it reads as a signal and not a column.
-                if !s.blocked_on.is_empty() {
-                    spans.push(ratatui::text::Span::styled("⚑ ", Style::new().fg(theme::warn())));
+                // The flag says "this one needs you before it moves". It burns
+                // where that is actionable — a card standing in its own lane,
+                // waiting on something only you can do — and goes quiet in the
+                // blocked lane, where the lane title already says it and every
+                // row would otherwise wear the same mark.
+                // Never on a finished card: a superseded one keeps whatever its
+                // block last said, and a flag in the closed lane asks for
+                // something nobody owes any more.
+                if !s.blocked_on.is_empty() && !is_terminal(&s.status) {
+                    let ink =
+                        if s.blocked_by.is_empty() { theme::warn() } else { theme::dim() };
+                    spans.push(ratatui::text::Span::styled("⚑ ", Style::new().fg(ink)));
                     used += 2;
                 }
                 spans.push(ratatui::text::Span::raw(truncate(&title_of(s), inner_w.saturating_sub(used))));

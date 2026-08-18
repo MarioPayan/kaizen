@@ -45,6 +45,9 @@ enum Req {
     /// `id` fences the run to one suggestion; `None` takes the backlog.
     Dispatch { id: Option<String> },
     Apply { id: String },
+    /// Write what a card waits on, or clear it. Not a status move: the card
+    /// stays in its lane and stops asking.
+    SetBlock { id: String, text: String },
     /// Land these in order and stop at the first refusal — the reason the first
     /// one refused is the reason the rest would.
     ApplyAll { ids: Vec<String> },
@@ -71,6 +74,13 @@ fn spawn_worker(client: Client, rx: mpsc::Receiver<Req>, tx: mpsc::Sender<Res>) 
                 Req::SetStatus { id, status } => Res::Acted(
                     client.set_status(&id, &status).map(|_| format!("{status}: {}", short(&id))),
                 ),
+                Req::SetBlock { id, text } => Res::Acted(client.set_block(&id, &text).map(|_| {
+                    if text.is_empty() {
+                        format!("{} is no longer waiting on you", short(&id))
+                    } else {
+                        format!("{} now waits on: {text}", short(&id))
+                    }
+                })),
                 Req::Sweep { status } => Res::Acted(
                     client.sweep(&status).map(|(moved, skipped)| {
                         if skipped == 0 {
@@ -189,6 +199,9 @@ struct App {
     /// `/` on the board: the text typed so far. While `Some`, keys go here and
     /// the cursor follows the first card whose uid or name matches.
     find: Option<String>,
+    /// The card whose block is being written, and the text so far. Prefilled
+    /// with what it already says, because most answers are an edit of one.
+    block: Option<(String, String)>,
     /// Bumped once per loop iteration; the spinner glyph derives from it, so
     /// `draw` stays a pure function of `&App` and tests can pin a frame.
     spin: usize,
@@ -220,6 +233,7 @@ impl App {
             busy_on: None,
             runs_seen: Vec::new(),
             find: None,
+            block: None,
             spin: 0,
             tab: Tab::Board,
             board_lane: 0,
@@ -389,17 +403,18 @@ fn advance(s: &Suggestion) -> Result<Req, String> {
     let Some(to) = forward(from) else {
         return Err(format!("{from} is terminal — nothing follows it"));
     };
-    if awaits_pass(from) {
+    if !s.blocked_by.is_empty() {
+        // Waiting on another card. Nothing here is your move — the carrier
+        // landing is — and advancing anyway writes a status its own patch will
+        // contradict.
+        Err(format!("waiting on {} — {}", short(&s.blocked_by), s.blocked_on))
+    } else if awaits_pass(from) {
         if !s.blocked_on.is_empty() {
-            return Err(format!("parked — {}", s.blocked_on));
+            // The block is on you, and a pass cannot do what you have to do.
+            // `b` is how you answer it; this key would only buy a re-stamp.
+            return Err(format!("needs you — {} (b to answer)", s.blocked_on));
         }
         Ok(Req::Dispatch { id: Some(s.id.clone()) })
-    } else if !s.blocked_on.is_empty() {
-        // Past the pass the move is yours or the server's, and the block names
-        // what has to happen first — a carrier patch, a writable target, a file
-        // only you can move. Advancing anyway writes a status the next step
-        // cannot honour.
-        Err(format!("parked — {}", s.blocked_on))
     } else if to == decision_status() {
         Ok(Req::SetStatus { id: s.id.clone(), status: to.into() })
     } else if Some(to) == landed_status() {
@@ -500,9 +515,16 @@ fn detail_lines(s: &Suggestion) -> Vec<Line<'static>> {
         ]));
     }
     if !s.blocked_on.is_empty() {
+        // Which of the two waits this is, in the label rather than in the prose
+        // underneath: one of them is yours to end and the other is not.
+        let (tag, ink) = if s.blocked_by.is_empty() {
+            ("⚑ on you ", theme::warn())
+        } else {
+            ("⚑ waits on ", theme::dim())
+        };
         lines.push(Line::from(vec![
-            Span::styled("⚑ on you ", Style::new().fg(theme::warn())),
-            Span::styled(s.blocked_on.clone(), Style::new().fg(theme::warn())),
+            Span::styled(tag, Style::new().fg(ink)),
+            Span::styled(s.blocked_on.clone(), Style::new().fg(ink)),
         ]));
     }
 
@@ -544,12 +566,23 @@ fn column_values(tab: Tab, column: &str) -> Vec<(String, String)> {
     };
     match (tab, column) {
         // Generated, so renaming a status cannot leave a stale legend behind.
+        // The three lanes past the stages are the view's own and are named here.
         (Tab::Board, "lane") => lifecycle()
             .statuses
             .iter()
             .map(|s| (format!("{} {}", status_icon(&s.id), s.abbrev), s.id.clone()))
+            .chain(pairs(&[("⟳ wrk", "working"), ("⚑ blk", "blocked"), ("· cls", "closed")]))
             .collect(),
         (Tab::Board, "card") => pairs(&[("▲", "high"), ("►", "medium"), ("▼", "low")]),
+        (Tab::Board, "flag") => pairs(&[
+            ("⚑ lit", "waiting on you — b answers it, and the card stays in its lane"),
+            ("⚑ dim", "waiting on another card, over in blocked"),
+        ]),
+        (Tab::Board, "mark") => pairs(&[
+            ("⠋", "a run has this card"),
+            ("1", "its place in line for the next seat"),
+            ("◌", "a backlog run has yet to reach it"),
+        ]),
         (Tab::Skills, "health") => pairs(skills::HEALTH),
         _ => Vec::new(),
     }
@@ -953,7 +986,10 @@ fn draw_footer(frame: &mut Frame, footer: Rect, app: &App) {
     // base URL used to sit on the right; it was never something anyone needed
     // mid-decision, and it was taking the room the keys wanted.
     let width = footer.width as usize;
-    let (text, colour) = if let Some(q) = &app.find {
+    let (text, colour) = if let Some((_, b)) = &app.block {
+        // The card is still on screen behind this; the footer is the field.
+        (format!(" ⚑ {b}▏  enter saves · empty clears · esc back"), theme::warn())
+    } else if let Some(q) = &app.find {
         // The prompt takes the footer while it is open: the cursor is already
         // on the first match, so this line is the query and how to leave it.
         (format!(" /{q}▏  enter keeps · esc back"), theme::accent())
@@ -1105,6 +1141,27 @@ fn run(
         }
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return Ok(());
+        }
+
+        // The block prompt captures every key: what you type is what the card
+        // will say it waits on, empty saves as "nothing — it is free again".
+        if let Some((id, text)) = app.block.as_mut() {
+            match key.code {
+                KeyCode::Esc => app.block = None,
+                KeyCode::Enter => {
+                    let (id, text) = (id.clone(), text.clone());
+                    app.busy = true;
+                    app.busy_on = Some(id.clone());
+                    let _ = req.send(Req::SetBlock { id, text });
+                    app.block = None;
+                }
+                KeyCode::Backspace => {
+                    text.pop();
+                }
+                KeyCode::Char(c) => text.push(c),
+                _ => {}
+            }
+            continue;
         }
 
         // The find prompt captures every key: text edits the query and moves
@@ -1267,6 +1324,10 @@ fn run(
                 Some(from) => app.say(format!("{from} moves one card at a time — a on each"), true),
                 None => app.say("nothing in this lane to advance", true),
             },
+            Action::Block => match app.board_selected() {
+                Some(card) => app.block = Some((card.id.clone(), card.blocked_on.clone())),
+                None => app.say("no card here to answer for", true),
+            },
             Action::Find => {
                 // Where you were is worth keeping: esc from the prompt returns.
                 app.remember();
@@ -1329,7 +1390,8 @@ mod tests {
                 { "id": "user/other/2026-08-01-a-second-thing.md", "skill": "other",
                   "uid": "AST", "slug": "a-second-thing",
                   "severity": "low", "status": "recorded", "score": 5, "surfaced": true,
-                  "blockedOn": "where should the guardrails live?" },
+                  "blockedOn": "carried by a-third-thing — supersede once that lands",
+                  "blockedBy": "user/other/2026-08-01-a-third-thing.md" },
                 { "id": "user/other/2026-08-01-a-third-thing.md", "skill": "other",
                   "uid": "ATT", "slug": "a-third-thing",
                   "severity": "low", "status": "recorded", "score": 4, "surfaced": true }
@@ -1551,7 +1613,7 @@ mod tests {
         )
         .unwrap();
         let lanes = board::lanes(&state);
-        assert_eq!(lanes.len(), 6, "five stages, one closed");
+        assert_eq!(lanes.len(), 7, "five stages, the standing working lane, one closed");
         assert!(lanes[0].title.contains("recorded"));
         let closed = lanes.last().unwrap();
         assert_eq!(closed.title, "closed");
@@ -1569,9 +1631,9 @@ mod tests {
                 {"id":"a.md","slug":"one","status":"triaged","score":1},
                 {"id":"b.md","slug":"two","status":"triaged","score":2},
                 {"id":"c.md","slug":"three","status":"triaged","score":3,
-                 "blockedOn":"carried by the scope patch"},
+                 "blockedOn":"carried by the scope patch","blockedBy":"b.md"},
                 {"id":"d.md","slug":"four","status":"superseded","score":4,
-                 "blockedOn":"stale, and finished anyway"}
+                 "blockedOn":"stale, and finished anyway","blockedBy":"b.md"}
             ]}"#,
         )
         .unwrap();
@@ -1587,7 +1649,12 @@ mod tests {
         assert_eq!(lane(&state, "triaged"), ["b.md", "a.md"]);
         assert_eq!(lane(&state, "blocked"), ["c.md"]);
         assert_eq!(lane(&state, "closed"), ["d.md"], "finished outranks parked");
-        assert!(board::lanes(&state).iter().all(|l| !l.title.contains("working")), "no run, no lane");
+        // Standing, and empty: it fills and empties with every run, and a column
+        // that appears under you shifts every lane to its right.
+        let standing = |st: &crate::api::State| {
+            board::lanes(st).iter().any(|l| l.title.contains("working"))
+        };
+        assert!(standing(&state) && lane(&state, "working").is_empty(), "no run, no cards in it");
 
         // One card fenced to a run, one waiting for the seat: both are being
         // worked on, and neither is where it was or where it is going.
@@ -1601,7 +1668,7 @@ mod tests {
 
         // A backlog run is fenced to nothing, so it empties no lane.
         state.dispatch = Some(dispatch(vec![run(4243, None, None)], vec![]));
-        assert!(board::lanes(&state).iter().all(|l| !l.title.contains("working")));
+        assert!(standing(&state) && lane(&state, "working").is_empty());
     }
 
     /// `A` widens a stage's one move over its lane. A holding lane has no such
@@ -1614,7 +1681,11 @@ mod tests {
             .iter()
             .map(|l| l.holding)
             .collect();
-        assert_eq!(holding, [false, false, false, false, false, true], "only blocked holds");
+        assert_eq!(
+            holding,
+            [false, false, false, false, false, true, true],
+            "five stages, then working and blocked"
+        );
     }
 
     /// One card's cell of a rendered frame: the lanes sit side by side, so a
@@ -1701,7 +1772,7 @@ mod tests {
         let st = state();
         // AST is parked, so it is drawn in the blocked lane rather than in
         // recorded — which is exactly what "whichever lane" has to mean.
-        assert_eq!(find_card(&st, "as"), Some((5, 0)), "uid prefix, blocked lane");
+        assert_eq!(find_card(&st, "as"), Some((6, 0)), "uid prefix, blocked lane");
         assert_eq!(find_card(&st, "att"), Some((0, 0)), "uid prefix, recorded lane");
         assert_eq!(find_card(&st, "aid"), Some((3, 0)), "case-blind uid, approved lane");
         assert_eq!(find_card(&st, "dead end"), Some((3, 0)), "a bit of the name");
@@ -1814,19 +1885,42 @@ mod tests {
         assert!(refusal(discard(&card("rejected", ""))).contains("terminal"));
     }
 
-    /// The block is a fact about the card, so `a` reads it before the wire does.
-    /// Every one of these would otherwise be accepted — the status alone says
-    /// pending — and spend a detached model run, or a git call, to conclude what
-    /// the frontmatter already said.
+    /// Which of the two waits a card is in decides whether `a` is yours to
+    /// press. Waiting on another card, it never is. Waiting on you, it is
+    /// exactly the button you came for — but only where the next move is yours:
+    /// no pass can do what you have to do, and dispatching one buys a re-stamp.
     #[test]
-    fn a_refuses_a_parked_card_in_every_lane_and_x_still_closes_it() {
-        let why = "carried by GAA (planned) — supersede once that lands";
-        for status in ["recorded", "triaged", "failed", "planned", "approved"] {
-            match advance(&card(status, why)) {
-                Err(said) => assert!(said.contains(why), "{status}: the refusal has to name the block"),
-                Ok(_) => panic!("{status}: a parked card sent a request"),
-            }
+    fn a_is_yours_to_press_when_the_block_is_yours_to_end() {
+        let why = "the target is read-only — apply by hand or make it writable";
+        let refusal = |r: Result<Req, String>| match r {
+            Err(said) => said,
+            Ok(_) => panic!("expected a refusal"),
+        };
+
+        // Waiting on you, and the next move is yours: the key works.
+        assert!(
+            matches!(advance(&card("planned", why)), Ok(Req::SetStatus { status, .. }) if status == "approved"),
+            "the button you came for"
+        );
+        assert!(matches!(advance(&card("approved", why)), Ok(Req::Apply { .. })));
+
+        // Waiting on you, but the next move is a pass: it cannot end your block.
+        for status in ["recorded", "triaged", "failed"] {
+            let said = refusal(advance(&card(status, why)));
+            assert!(said.contains(why), "{status}: the refusal has to name the block");
+            assert!(said.contains("b to"), "{status}: and point at the key that answers it");
         }
+
+        // Waiting on another card: never yours, in any lane.
+        for status in ["recorded", "triaged", "failed", "planned", "approved"] {
+            let mut c = card(status, why);
+            c.blocked_by = "user/x/2026-08-01-carrier.md".into();
+            assert!(
+                refusal(advance(&c)).contains("waiting on"),
+                "{status}: a carried card is not yours to advance"
+            );
+        }
+
         // The way out is never blocked: a lane you cannot leave is the worse bug.
         assert!(
             matches!(discard(&card("triaged", why)), Ok(Req::SetStatus { status, .. }) if status == "rejected"),
@@ -1885,8 +1979,8 @@ mod tests {
         app.overlay =
             Some(Overlay::Detail { id: "user/other/2026-08-01-a-second-thing.md".into(), scroll: 0 });
         let text = render(&app, 120, 30);
-        assert!(text.contains("on you"), "the window labels it: {text}");
-        assert!(text.contains("where should the guardrails live?"), "and says why: {text}");
+        assert!(text.contains("waits on"), "the window labels which wait it is: {text}");
+        assert!(text.contains("carried by a-third-thing"), "and says why: {text}");
     }
 
     #[test]

@@ -295,6 +295,29 @@ describe('api', () => {
     rmSync(join(feedback, 'demo', '2026-06-06-narrow.patch'), { force: true });
   });
 
+  /**
+   * Answering a block is not a status move — the card stays where it is and
+   * stops asking — so it is its own write, and an empty string is the clear.
+   */
+  it('writes and clears blocked_on without moving the card', async () => {
+    const id = 'user/demo/2026-01-01-a-thing.md';
+    const file = join(root, 'skills-feedback', 'demo', '2026-01-01-a-thing.md');
+    const before = readFileSync(file, 'utf8').match(/^status: (\S+)/m)[1];
+
+    const set = await api('POST', '/api/suggestion', { id, blockedOn: 'the target is read-only' });
+    expect(set.status).toBe(200);
+    expect(readFileSync(file, 'utf8')).toMatch(/blocked_on: the target is read-only/);
+    expect(readFileSync(file, 'utf8')).toMatch(new RegExp(`status: ${before}`));
+
+    const cleared = await api('POST', '/api/suggestion', { id, blockedOn: '' });
+    expect(cleared.status).toBe(200);
+    expect(readFileSync(file, 'utf8')).toMatch(/blocked_on:\s*$/m);
+
+    // A body with neither is a bug in the caller, not a no-op write.
+    const empty = await api('POST', '/api/suggestion', { id });
+    expect(empty.status).toBe(400);
+  });
+
   it('rejects a revert sha that is not a hash', async () => {
     const { status } = await api('POST', '/api/revert', { sha: '; rm -rf /', target: 'user' });
     expect(status).toBe(400);

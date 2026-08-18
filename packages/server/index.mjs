@@ -354,19 +354,37 @@ const routes = {
   },
 
   // Status changes are the approval gate. They are recorded, never acted on here.
+  /**
+   * One write to one suggestion: a status move, an answer to its block, or both.
+   *
+   * `blockedOn` is settable on its own because answering a block is not a status
+   * move — the card stays exactly where it is, it just stops waiting on you. An
+   * empty string is a real value here, and the clear: the field's absence and
+   * its emptiness mean different things, so the key's presence is what decides.
+   */
   'POST /api/suggestion': async (req, _res, ctx) => {
-    const { id, status, notes } = await readBody(req);
-    const to = assertSettable(status);
+    const body = await readBody(req);
+    const { id, status, notes } = body;
     const { path } = suggestionFile(ctx.config, id);
-    const from = currentStatus(ctx.config, id);
-    // Setting a status to what it already is is a double-click, not an illegal
-    // move. Notes still land, so a re-decision can add its reason.
-    if (from !== to) {
-      assertTransition(from, to, id);
-      assertRequirements(ctx.config, id, to);
+    const patch = {};
+    if ('blockedOn' in body) patch.blocked_on = String(body.blockedOn ?? '');
+    if (status !== undefined) {
+      const to = assertSettable(status);
+      const from = currentStatus(ctx.config, id);
+      // Setting a status to what it already is is a double-click, not an illegal
+      // move. Notes still land, so a re-decision can add its reason.
+      if (from !== to) {
+        assertTransition(from, to, id);
+        assertRequirements(ctx.config, id, to);
+      }
+      patch.status = to;
+      if (notes) patch.notes = notes;
     }
-    writeFrontmatter(path, notes ? { status: to, notes } : { status: to });
-    return { id, status: to };
+    if (!Object.keys(patch).length) {
+      throw new HttpError(400, 'nothing to write — send a status, a blockedOn, or both');
+    }
+    writeFrontmatter(path, patch);
+    return { id, ...patch };
   },
 
   /**

@@ -101,6 +101,37 @@ describe('buildState', () => {
 
   afterAll(() => rmSync(root, { recursive: true, force: true }));
 
+  /**
+   * One field, two waits. A block naming another card still in play is that
+   * card's to end; anything else is the user's, and the board draws them in
+   * different places — so the distinction has to be data, not a reading of the
+   * sentence.
+   */
+  it('tells a block that waits on another card from one that waits on you', () => {
+    const parked = (name, blocked) =>
+      writeFileSync(
+        join(root, 'feedback', 'demo', `${name}.md`),
+        file('low').replace('---\n\n## Suggestion', `blocked_on: ${blocked}\n---\n\n## Suggestion`),
+      );
+    parked('2026-02-01-carrier', 'nothing, it is the carrier');
+    parked('2026-02-02-member', 'carried by 2026-02-01-carrier — supersede once it lands');
+    parked('2026-02-03-yours', 'the target is read-only — make it writable or apply by hand');
+
+    const state = buildState({
+      targets: [{ name: 'user', skills: join(root, 'skills'), feedback: join(root, 'feedback') }],
+    });
+    const by = (slug) => state.suggestions.find((s) => s.slug === slug);
+    expect(by('member').blockedBy).toBe('user/demo/2026-02-01-carrier.md');
+    expect(by('yours').blockedBy).toBe('');
+    expect(by('carrier').blockedBy).toBe('');
+    // Every card with no block at all answers empty rather than undefined.
+    expect(by('loud').blockedBy).toBe('');
+
+    rmSync(join(root, 'feedback', 'demo', '2026-02-01-carrier.md'));
+    rmSync(join(root, 'feedback', 'demo', '2026-02-02-member.md'));
+    rmSync(join(root, 'feedback', 'demo', '2026-02-03-yours.md'));
+  });
+
   it('tags each suggestion without dropping any', () => {
     const state = buildState({
       targets: [{ name: 'user', skills: join(root, 'skills'), feedback: join(root, 'feedback') }],

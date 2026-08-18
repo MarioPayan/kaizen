@@ -52,6 +52,9 @@ pub enum Action {
     AdvanceAll,
     /// Board: the card's way out that is not forward — reject, or supersede.
     Discard,
+    /// Board: write what the card is waiting on, or clear it once you have done
+    /// it. The one field on a card whose value is a sentence you own.
+    Block,
     /// Board: type a uid or a bit of a name and land on the card, any lane.
     Find,
     Diff,
@@ -160,6 +163,14 @@ pub const BINDINGS: &[Binding] = &[
         section: "decide",
         tabs: BOARD,
         action: Action::Discard,
+    },
+    Binding {
+        keys: &[KeyCode::Char('b')],
+        hint: "b",
+        label: "answer block",
+        section: "decide",
+        tabs: BOARD,
+        action: Action::Block,
     },
     Binding {
         keys: &[KeyCode::Enter],
