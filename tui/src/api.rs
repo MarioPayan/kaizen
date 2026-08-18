@@ -53,6 +53,10 @@ pub struct Suggestion {
     pub blocked_by: String,
     #[serde(rename = "appliedSha")]
     pub applied_sha: String,
+    /// When the problem was last confirmed to still exist, and at which commit.
+    /// A confirmation is worth exactly as much as the commit it names.
+    #[serde(rename = "confirmedAt")]
+    pub confirmed_at: String,
     pub recurrences: u64,
     pub incidents: u64,
     pub context: String,

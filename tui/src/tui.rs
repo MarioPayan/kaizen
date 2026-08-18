@@ -15,7 +15,7 @@
 
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph, Tabs, Wrap};
 use ratatui::Frame;
@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use crate::api::{Client, Config, State, Suggestion};
 use crate::theme::{self, severity_colour, status_colour, tone_colour};
-use crate::ui::{badge, fit_parts, short, title_of, titled, truncate, wrapped};
+use crate::ui::{fit_parts, short, title_of, titled, truncate, wrapped};
 use crate::keys::{self, Action, Tab};
 use crate::views::{agent, board, settings, skills};
 use crate::lifecycle::{
@@ -488,31 +488,83 @@ fn discard(s: &Suggestion) -> Result<Req, String> {
 
 /* -------------------------------------------------------------------- draw ---- */
 
-fn detail_lines(s: &Suggestion) -> Vec<Line<'static>> {
+/// How wide a fact cell has to be before three of them are worth having.
+const FACT_W: usize = 26;
+/// The label column inside a cell, so values line up down the window.
+const LABEL_W: usize = 10;
+
+/// One `label value` line, for the facts too long to share a row.
+fn field(label: &str, value: String, ink: Color) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{label:<LABEL_W$}"), Style::new().fg(theme::dim())),
+        Span::styled(value, Style::new().fg(ink)),
+    ])
+}
+
+/// The card's short facts, `label value`, three to a row.
+///
+/// They used to be a row of bare badges — `AID  high  approved  structural
+/// bug` — five words with nothing saying which question each answers. You had
+/// to know the vocabulary to read your own card. A label costs one column and
+/// buys that back; three to a row keeps it to a few lines rather than a form.
+///
+/// Empty facts are left out rather than dashed: an untriaged card has no type,
+/// objective, rung or effort yet, and five dashes say that worse than the
+/// `missing:` line at the bottom already does.
+fn fact_rows(s: &Suggestion, width: usize) -> Vec<Line<'static>> {
+    let rung = s.rung.map(|r| r.to_string()).unwrap_or_default();
+    let facts: Vec<(&str, String, Color)> = [
+        ("uid", s.uid.clone(), theme::dim()),
+        ("severity", s.severity.clone(), severity_colour(&s.severity)),
+        ("status", s.status.clone(), status_colour(&s.status)),
+        ("type", s.kind.clone(), theme::accent()),
+        ("objective", s.objective.clone(), theme::accent()),
+        ("rung", rung, Color::Reset),
+        ("effort", s.effort.clone(), Color::Reset),
+        ("score", format!("{}", s.score.round() as i64), Color::Reset),
+        ("incidents", s.incidents.to_string(), Color::Reset),
+    ]
+    .into_iter()
+    .filter(|(_, v, _)| !v.is_empty())
+    .collect();
+
+    // Three where there is room, fewer where there is not — a cell narrower
+    // than its label and value is two columns of nothing.
+    let cols = (width / FACT_W).clamp(1, 3);
+    let cell = width / cols;
+    facts
+        .chunks(cols)
+        .map(|row| {
+            let mut spans = Vec::with_capacity(row.len() * 3);
+            for (label, value, ink) in row {
+                spans.push(Span::styled(
+                    format!("{label:<LABEL_W$}"),
+                    Style::new().fg(theme::dim()),
+                ));
+                spans.push(Span::styled(value.clone(), Style::new().fg(*ink)));
+                let used = LABEL_W + value.chars().count();
+                spans.push(Span::raw(" ".repeat(cell.saturating_sub(used))));
+            }
+            Line::from(spans)
+        })
+        .collect()
+}
+
+fn detail_lines(s: &Suggestion, width: usize) -> Vec<Line<'static>> {
     // The slug is the block's title, so the body opens on the facts rather than on
     // three wrapped lines of the id — which is kept, dimmed, at the bottom.
-    let mut lines = vec![Line::from(vec![
-        badge(&s.uid, theme::dim()),
-        badge(&s.severity, severity_colour(&s.severity)),
-        badge(&s.status, status_colour(&s.status)),
-        badge(&s.kind, theme::accent()),
-        badge(&s.objective, theme::dim()),
-        Span::styled(
-            format!(
-                "score {} · {} incident{} · rung {}",
-                s.score.round() as i64,
-                s.incidents,
-                if s.incidents == 1 { "" } else { "s" },
-                s.rung.map(|r| r.to_string()).unwrap_or_else(|| "—".into()),
-            ),
-            Style::new().fg(theme::dim()),
-        ),
-    ])];
+    let mut lines = fact_rows(s, width);
+    // The long ones get a line each: a path, a stamp and a sha do not fit a
+    // third of a window, and truncating the answer to "which commit" is worse
+    // than spending the row.
     if !s.scope.is_empty() {
-        lines.push(Line::from(vec![
-            Span::styled("scope    ", Style::new().fg(theme::dim())),
-            Span::raw(s.scope.clone()),
-        ]));
+        lines.push(field("scope", s.scope.clone(), Color::Reset));
+    }
+    if !s.confirmed_at.is_empty() {
+        lines.push(field("confirmed", s.confirmed_at.clone(), theme::dim()));
+    }
+    if !s.applied_sha.is_empty() {
+        lines.push(field("applied", s.applied_sha.clone(), theme::dim()));
     }
     if !s.blocked_on.is_empty() {
         // Which of the two waits this is, in the label rather than in the prose
@@ -851,7 +903,7 @@ fn draw_overlay(frame: &mut Frame, area: Rect, overlay: &Overlay, tab: Tab, stat
         }
         Overlay::Detail { id, .. } => {
             let lines = match state.and_then(|st| st.suggestions.iter().find(|s| s.id == *id)) {
-                Some(s) => detail_lines(s),
+                Some(s) => detail_lines(s, inner_w),
                 // A refresh can close the file under the window; a calm line
                 // beats a popup that silently shows someone else's card.
                 None => vec![Line::styled(
@@ -1981,6 +2033,34 @@ mod tests {
         let text = render(&app, 120, 30);
         assert!(text.contains("waits on"), "the window labels which wait it is: {text}");
         assert!(text.contains("carried by a-third-thing"), "and says why: {text}");
+    }
+
+    /// The facts wear their names. A row of bare badges — `AID  high  approved
+    /// structural  bug` — needed the vocabulary in your head before you could
+    /// read your own card; three labelled columns cost a few lines and no
+    /// guessing. The long values take a line each rather than a truncated third.
+    #[test]
+    fn the_detail_window_names_the_facts_it_shows() {
+        let mut app = app_with_state();
+        app.overlay = Some(Overlay::Detail {
+            id: "user/kaizen/2026-08-08-approval-is-a-dead-end.md".into(),
+            scroll: 0,
+        });
+        let text = render(&app, 120, 30);
+        for pair in ["uid       AID", "severity  high", "status    approved"] {
+            assert!(text.contains(pair), "{pair:?} is not labelled: {text}");
+        }
+        assert!(text.contains("scope     skills/kaizen/SKILL.md"), "{text}");
+        // Three to a row, so nine facts are three lines and not nine.
+        let row = text.lines().find(|l| l.contains("uid       AID")).unwrap();
+        assert!(row.contains("severity") && row.contains("status"), "three to a row: {row}");
+
+        // An untriaged card has no type, objective, rung or effort. Leaving the
+        // cells out beats four dashes saying the same thing worse.
+        app.overlay =
+            Some(Overlay::Detail { id: "user/other/2026-08-01-a-third-thing.md".into(), scroll: 0 });
+        let bare = render(&app, 120, 30);
+        assert!(bare.contains("uid       ATT") && !bare.contains("objective"), "{bare}");
     }
 
     #[test]

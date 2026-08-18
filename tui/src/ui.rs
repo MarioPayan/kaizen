@@ -8,7 +8,7 @@
 //! is the one place it is shown as written.
 
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::Span;
 use ratatui::widgets::{Block, BorderType};
 
@@ -72,10 +72,6 @@ pub fn titled(title: &str, area: Rect, focused: bool) -> Block<'static> {
 
 /// No leading space: the badge row is the detail pane's first line and has to
 /// start on the same column as the `scope` and `skill` labels under it.
-pub fn badge(label: &str, colour: Color) -> Span<'static> {
-    Span::styled(format!("{label}  "), Style::new().fg(colour))
-}
-
 pub fn truncate(s: &str, max: usize) -> String {
     if max == 0 {
         return String::new();

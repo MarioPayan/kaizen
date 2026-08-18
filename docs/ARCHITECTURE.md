@@ -160,7 +160,9 @@ stop with the last.
 and the `D` docs overlay work with the server down.
 
 - `api.rs` — HTTP client, types, the SSE reader.
-- `tui.rs` — app state, key dispatch, the detail window (`enter` opens a card
+- `tui.rs` — app state, key dispatch, the detail window (its facts are `label
+value`, three to a row, so reading a card does not need the vocabulary in your
+  head first; `enter` opens a card
   whole in an overlay, held by id so a refresh cannot swap it), the header
   spinner (a frame counter bumped by the event loop's tick).
 - `keys.rs` — every binding declared once; the help card and footer are built
