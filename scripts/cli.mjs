@@ -59,6 +59,8 @@ import {
   hasLanded,
   nextStatuses,
   missingRequirements,
+  requirementsFor,
+  section,
   renderMarkdown,
 } from '@kaizen/core';
 
@@ -219,8 +221,27 @@ function requireConfig() {
   return config;
 }
 
+/**
+ * The whole state, or the slice a pass is fenced to. A targeted triage pass
+ * exists to be cheap; without these it paid the full-scan cost every time to
+ * find one row. Filters AND together; `metrics` stays whole-corpus so a narrowed
+ * scan still says how big the queue is.
+ */
 function cmdScan() {
+  if (has('--help')) {
+    console.log('usage: kaizen scan [--pretty] [--id <exact id>] [--skill <name>] [--scope <path>]');
+    return;
+  }
   const state = buildState(requireConfig());
+  const id = flag('id');
+  const skill = flag('skill');
+  const scope = flag('scope');
+  if (id || skill || scope) {
+    state.suggestions = state.suggestions.filter(
+      (s) => (!id || s.id === id) && (!skill || s.skill === skill) && (!scope || s.scope === scope),
+    );
+    if (skill) state.skills = state.skills.filter((k) => k.name === skill);
+  }
   stdout.write(JSON.stringify(state, null, has('--pretty') ? 2 : 0));
 }
 
@@ -472,6 +493,49 @@ const TRIAGE_FIELDS = {
   verified_at: null,
 };
 
+/**
+ * The plan phase's own output lives in the body, not the frontmatter: `## Plan`
+ * and `## Validation`, straight off the spec's body fields for that phase.
+ * Without a writer for them the "write the whole pass in one call" rule held for
+ * triage and verify and was silently false for plan — every pass rediscovered
+ * `cat >>` by reading source. Free text; the section is replaced if the heading
+ * exists and appended otherwise.
+ */
+const BODY_FIELDS = Object.fromEntries(
+  requirementsFor('planned')
+    .filter((f) => f.where === 'body')
+    .map((f) => [f.id, f.heading]),
+);
+
+/**
+ * Upsert one `## Heading` section in a suggestion body. The frontmatter block
+ * is carried through untouched, which is the counterpart of `writeFrontmatter`
+ * leaving the body alone.
+ */
+function writeSection(file, heading, text) {
+  const raw = readFileSync(file, 'utf8');
+  const head = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/.exec(raw)?.[0] ?? '';
+  const lines = raw.slice(head.length).split(/\r?\n/);
+  const isHeading = (l) => /^##\s/.test(l);
+  const wanted = heading.toLowerCase();
+  const start = lines.findIndex((l) => {
+    const m = /^##\s+(.*?)\s*$/.exec(l);
+    return !!m && m[1].toLowerCase() === wanted;
+  });
+  const block = [`## ${heading}`, '', text.trim(), ''];
+  let out;
+  if (start === -1) {
+    out = [...lines];
+    while (out.length && out.at(-1) === '') out.pop();
+    out.push('', ...block);
+  } else {
+    let end = start + 1;
+    while (end < lines.length && !isHeading(lines[end])) end++;
+    out = [...lines.slice(0, start), ...block, ...lines.slice(end)];
+  }
+  writeFileSync(file, head + out.join('\n').replace(/\n*$/, '\n'));
+}
+
 /** Turn a decision list into writes, or into every reason it cannot be one. */
 function validateDecisions(decisions, byId) {
   const errors = [];
@@ -485,8 +549,17 @@ function validateDecisions(decisions, byId) {
       continue;
     }
     const patch = {};
+    const sections = {};
     for (const [key, value] of Object.entries(d)) {
       if (key === 'id') continue;
+      if (key in BODY_FIELDS) {
+        if (!String(value).trim()) {
+          errors.push(`${where}.${key}: must not be empty`);
+          continue;
+        }
+        sections[BODY_FIELDS[key]] = String(value);
+        continue;
+      }
       if (!(key in TRIAGE_FIELDS)) {
         errors.push(`${where}: "${key}" is not a triage field`);
         continue;
@@ -497,15 +570,26 @@ function validateDecisions(decisions, byId) {
         errors.push(`${where}.${key}: "${text}" must be one of ${allowed.join(', ')}`);
         continue;
       }
-      if (!allowed && !text.trim()) {
+      // `blocked_on` is the one field whose empty value is itself a decision:
+      // the parking reason, cleared once the call is made (Step 5). Every
+      // other free-text field arriving empty is a mistake.
+      if (!allowed && !text.trim() && key !== 'blocked_on') {
         errors.push(`${where}.${key}: must not be empty`);
         continue;
       }
       patch[key] = text;
     }
-    if (Object.keys(patch).length) writes.push({ file: found.file, id: found.id, patch });
+    if (Object.keys(patch).length || Object.keys(sections).length) {
+      writes.push({ file: found.file, id: found.id, patch, sections });
+    }
   }
   return { errors, writes };
+}
+
+/** One decision's writes, frontmatter then body, on one file. */
+function applyWrite(w) {
+  if (Object.keys(w.patch).length) writeFrontmatter(w.file, w.patch);
+  for (const [heading, text] of Object.entries(w.sections ?? {})) writeSection(w.file, heading, text);
 }
 
 /* --------------------------------------------------------------- drain ---- */
@@ -660,7 +744,7 @@ function cmdTriage() {
     exit(1);
   }
 
-  for (const w of writes) if (!dry) writeFrontmatter(w.file, w.patch);
+  for (const w of writes) if (!dry) applyWrite(w);
 
   const after = dry ? null : buildState(loadConfig().config).metrics;
   console.log(
@@ -704,6 +788,55 @@ function triageSelfCheck() {
   );
   assert(bad.errors.length > 0, 'an unknown vocabulary value is rejected');
   assert(readFileSync(file, 'utf8') === before, 'a rejected batch leaves every file untouched');
+
+  // Clearing a parked item is a write, not an error: `blocked_on: ""` must land
+  // as an empty value while every other empty free-text field is still refused.
+  writeFrontmatter(file, { blocked_on: 'waiting on a call only Mario can make' });
+  const byId = new Map([['a', { id: 'a', file }]]);
+  const cleared = validateDecisions([{ id: 'a', blocked_on: '' }], byId);
+  assert(
+    cleared.errors.length === 0 && cleared.writes.length === 1,
+    'an empty blocked_on is accepted as a clear',
+  );
+  for (const w of cleared.writes) writeFrontmatter(w.file, w.patch);
+  assert(
+    parseFrontmatter(readFileSync(file, 'utf8')).data.blocked_on === '',
+    'a cleared blocked_on lands empty on disk',
+  );
+  assert(
+    validateDecisions([{ id: 'a', scope: '' }], byId).errors.length === 1,
+    'an empty scope is still refused',
+  );
+
+  // The plan phase writes body sections, through the same call and the same
+  // all-or-nothing gate: a heading is appended when absent, replaced in place
+  // when present, and the frontmatter and the other sections survive both.
+  writeFileSync(file, original);
+  const planned = validateDecisions(
+    [{ id: 'a', status: 'planned', plan: 'edit X', validation: 'run Y\n\nexit 0 passes' }],
+    byId,
+  );
+  assert(planned.errors.length === 0 && planned.writes.length === 1, 'plan and validation are accepted');
+  for (const w of planned.writes) applyWrite(w);
+  let parsed = parseFrontmatter(readFileSync(file, 'utf8'));
+  assert(
+    parsed.data.status === 'planned' && parsed.data.skill === 'demo',
+    'the frontmatter write rides along',
+  );
+  assert(
+    section(parsed.body, 'Plan') === 'edit X' &&
+      section(parsed.body, 'Validation') === 'run Y\n\nexit 0 passes',
+    'absent sections are appended with their content',
+  );
+  assert(section(parsed.body, 'Suggestion') === 'x', 'existing sections survive the append');
+  for (const w of validateDecisions([{ id: 'a', plan: 'edit Z' }], byId).writes) applyWrite(w);
+  parsed = parseFrontmatter(readFileSync(file, 'utf8'));
+  assert(
+    section(parsed.body, 'Plan') === 'edit Z' &&
+      section(parsed.body, 'Validation') === 'run Y\n\nexit 0 passes',
+    'a present section is replaced in place, its neighbours untouched',
+  );
+  assert(validateDecisions([{ id: 'a', plan: '  ' }], byId).errors.length === 1, 'an empty plan is refused');
 
   rmSync(root, { recursive: true, force: true });
   if (failed) exit(1);
@@ -794,7 +927,44 @@ function cmdAsks() {
  *   kaizen doctor            # report
  *   kaizen doctor --file     # report, and file anything new as a suggestion
  */
+/**
+ * The earlier filing a doctor finding belongs to, if any. Open under any date
+ * is the same finding; so is one that was rejected — a "no" is an answer, and
+ * re-filing it daily until the check itself is fixed is how three duplicates
+ * of one root cause got into the corpus. Superseded is not: the problem came
+ * back, and that is news. Open wins over rejected when both exist, so the
+ * recurrence lands on the file someone is still working.
+ */
+function priorFiling(suggestions, slug) {
+  const same = suggestions.filter((s) => s.skill === 'kaizen' && s.slug === slug);
+  return (
+    same.find((s) => !isTerminal(s.status) && !hasLanded(s.status)) ??
+    same.find((s) => canonicalStatus(s.status) === 'rejected') ??
+    null
+  );
+}
+
+function doctorSelfCheck() {
+  let failed = 0;
+  const assert = (ok, what) => {
+    console.log(`${ok ? 'ok  ' : 'FAIL'} ${what}`);
+    if (!ok) failed++;
+  };
+  const row = (status, slug = 'x') => ({ skill: 'kaizen', slug, status });
+  assert(priorFiling([row('recorded')], 'x')?.status === 'recorded', 'an open filing absorbs the recurrence');
+  assert(priorFiling([row('rejected')], 'x')?.status === 'rejected', 'a rejected filing absorbs it too');
+  assert(priorFiling([row('superseded')], 'x') === null, 'a superseded one does not — a comeback is news');
+  assert(priorFiling([row('verified')], 'x') === null, 'nor does a landed one');
+  assert(
+    priorFiling([row('rejected'), row('triaged')], 'x')?.status === 'triaged',
+    'open wins over rejected when both exist',
+  );
+  assert(priorFiling([row('recorded', 'y')], 'x') === null, 'a different slug is a different finding');
+  if (failed) exit(1);
+}
+
 function cmdDoctor() {
+  if (has('--self-check')) return doctorSelfCheck();
   const config = requireConfig();
   const state = buildState(config);
   // Local date, not toISOString(): an evening run must not stamp files with
@@ -833,16 +1003,15 @@ function cmdDoctor() {
   let filed = 0;
   let recurred = 0;
   for (const f of findings) {
-    // The same finding still open under any earlier date is the same finding —
-    // a second file would bury the queue this exists to clear. A recurrence
-    // section keeps the receipt without the burial, once per day.
-    const open = state.suggestions.find(
-      (s) => s.skill === 'kaizen' && s.slug === f.slug && !isTerminal(s.status) && !hasLanded(s.status),
-    );
-    if (open) {
+    // The same finding under any earlier date — open, or already rejected — is
+    // the same finding; a second file would bury the queue this exists to
+    // clear. A recurrence section keeps the receipt without the burial, once
+    // per day.
+    const prior = priorFiling(state.suggestions, f.slug);
+    if (prior) {
       const marker = `## Recurrence — ${today}`;
-      if (!readFileSync(open.file, 'utf8').includes(marker)) {
-        appendFileSync(open.file, `\n${marker}\n\nRe-fired by \`kaizen doctor\`.\n`);
+      if (!readFileSync(prior.file, 'utf8').includes(marker)) {
+        appendFileSync(prior.file, `\n${marker}\n\nRe-fired by \`kaizen doctor\`.\n`);
       }
       recurred++;
       continue;
