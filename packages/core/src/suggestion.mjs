@@ -169,6 +169,11 @@ export function parseSuggestion({ id, file, skill, target, text }) {
     // decision only the user can make. Data, not log prose: twelve identical
     // triaged rows once hid that nine of them were waiting on three calls.
     blockedOn: data.blocked_on || '',
+    // Which commit the problem was last confirmed to still exist at. Step 3
+    // says a confirmation is worth exactly as much as its commit; without this
+    // in the scan, a targeted pass had to open the file to learn the stamp,
+    // which is the read Step 2 exists to avoid.
+    confirmedAt: data.confirmed_at || '',
     appliedSha: data.applied_sha || '',
     outcome: data.outcome || '',
     recurrences,

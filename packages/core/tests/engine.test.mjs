@@ -123,4 +123,10 @@ describe('scoring', () => {
     expect(parked.blockedOn).toBe('where should this live?');
     expect(suggestion({ slug: 'free-thing' }).blockedOn).toBe('');
   });
+
+  it('carries confirmed_at through as data, so a pass can judge the stamp without opening the file', () => {
+    const stamped = suggestion({ slug: 'checked-thing', confirmed_at: '2026-08-17 @ abc1234' });
+    expect(stamped.confirmedAt).toBe('2026-08-17 @ abc1234');
+    expect(suggestion({ slug: 'unchecked-thing' }).confirmedAt).toBe('');
+  });
 });
