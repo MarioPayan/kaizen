@@ -119,7 +119,7 @@ pub fn rows(cfg: &Value) -> Vec<Row> {
         label: "clean tree required".into(),
         kind: Kind::Toggle(b("applyGuards.requireCleanTree")),
         heading: false,
-        help: "off means a fix can land on uncommitted work, and revert stops being one command",
+        help: "on means a patch refuses when its own files carry uncommitted work; off lets a fix land on top of it, and revert stops being one command",
     });
     out.push(Row {
         path: "applyGuards.requireDiffApplies".into(),
@@ -158,6 +158,22 @@ pub fn rows(cfg: &Value) -> Vec<Row> {
         kind: Kind::Choice(SEVERITIES, s("surface.minSeverity")),
         heading: false,
         help: "untriaged suggestions are never hidden, whatever this says",
+    });
+
+    out.push(heading("dispatch"));
+    out.push(Row {
+        path: "dispatch.maxAgents".into(),
+        label: "max agents".into(),
+        kind: Kind::Number(n("dispatch.maxAgents").max(1), 1, 8),
+        heading: false,
+        help: "fenced runs at once; the rest wait in line, and a backlog run always runs alone",
+    });
+    out.push(Row {
+        path: "dispatch.auto".into(),
+        label: "auto".into(),
+        kind: Kind::Toggle(b("dispatch.auto")),
+        heading: false,
+        help: "send fable at new arrivals on its own — every run is a model call; off means you press a",
     });
 
     out.push(heading("scan"));
@@ -420,6 +436,17 @@ mod tests {
         }));
         assert!(rows(&c).len() > before);
         assert_eq!(row_for(&c, "targets.1.writable").kind, Kind::Toggle(false));
+    }
+
+    /// Auto-dispatch is a toggle like any guard: off by default, and a press
+    /// writes `dispatch.auto` into the JSON the server validates.
+    #[test]
+    fn auto_dispatch_is_a_toggle_off_by_default() {
+        let mut c = cfg();
+        assert_eq!(row_for(&c, "dispatch.auto").kind, Kind::Toggle(false));
+        let row = row_for(&c, "dispatch.auto");
+        apply(&mut c, &row);
+        assert_eq!(c["dispatch"]["auto"], json!(true));
     }
 
     #[test]

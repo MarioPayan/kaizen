@@ -43,6 +43,9 @@ export function createEventStream(ctx) {
     timer = null;
     broadcast('change', { dirs: [...touched] });
     touched = new Set();
+    // The one server-side listener: auto-dispatch reads the same signal the
+    // TUI does, so a new file is a new run without a second watcher.
+    ctx.onChange?.();
   };
 
   const bump = (dir, filename) => {
@@ -61,6 +64,7 @@ export function createEventStream(ctx) {
    * either — those are unbounded and can contain `node_modules`.
    */
   function startWatchers() {
+    if (watchers.length) return;
     // Two targets may name the same feedback directory; two watchers on one
     // directory means two events per change.
     const dirs = [
@@ -73,6 +77,10 @@ export function createEventStream(ctx) {
     for (const dir of dirs) {
       try {
         const w = watch(dir, { recursive: true }, (_event, filename) => bump(dir, filename));
+        // Never the thing keeping the process alive: the http server is. This
+        // is what lets auto-dispatch watch with no client and the tests still
+        // exit on `server.close()`.
+        w.unref();
         w.on('error', (e) => {
           console.error(`kaizen: stopped watching ${dir} — ${e.message}`);
           w.close();
@@ -107,10 +115,9 @@ export function createEventStream(ctx) {
   function drop(res) {
     if (!clients.delete(res)) return;
     if (!res.writableEnded) res.end();
-    // Nobody is listening, so nothing needs watching. This is also what keeps
-    // the test suites from hanging: they call createApp() then server.close(),
-    // and eager inotify handles would hold the event loop open past both.
-    if (clients.size === 0) stopWatchers();
+    // Nobody is listening, so nothing needs watching — unless auto-dispatch
+    // is, which reads the same events with no client at all.
+    if (clients.size === 0 && !ctx.config.dispatch?.auto) stopWatchers();
   }
 
   return {
@@ -138,6 +145,11 @@ export function createEventStream(ctx) {
       send(res, `event: hello\ndata: ${JSON.stringify({ watching })}\n\n`);
       req.on('close', () => drop(res));
       res.on('error', () => drop(res));
+    },
+
+    /** Watch with no client — auto-dispatch's need. Idempotent. */
+    watch() {
+      startWatchers();
     },
 
     /** The watched set follows the target list, which Settings can change. */

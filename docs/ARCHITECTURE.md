@@ -31,8 +31,8 @@ the thing together. The README covers the why; start there if you haven't.
    the state, confirms each problem still exists at HEAD, labels it, and writes
    real patches plus validation plans. All file edits go through the CLI/server,
    never by hand-editing status fields the model forbids.
-4. **Decide.** The only attended phase. `kaizen tui` — approve per suggestion
-   (`a`) or everything approvable (`A`).
+4. **Decide.** The only attended phase. `kaizen tui` — `a` advances the
+   selected card (here, that is your yes), `A` the whole planned lane.
 5. **Apply.** The server lands each approved patch as one commit with a
    `Kaizen-Suggestion:` trailer. `git log --grep=Kaizen-Suggestion` is the
    ledger; `git revert` is the undo.
@@ -55,8 +55,26 @@ the thing together. The README covers the why; start there if you haven't.
 
 User state lives outside the repo: config in `~/.claude/kaizen/config.json`
 (`KAIZEN_CONFIG` overrides, which is how the tests isolate themselves),
-suggestions in the configured feedback directories. Nothing user-specific is
-checked in.
+suggestions in the configured feedback directories, and beside the config the
+dispatch seat and its line (`dispatch.json`) so a server restart neither drops
+the queue nor loses the run still going. Nothing user-specific is checked in.
+
+Dispatch is `dispatch.maxAgents` seats and a line: fenced runs go in parallel
+up to that many, a request with no seat free queues, each seat hands itself on
+when its run exits, and each entry is re-gated when its turn comes. A backlog
+run always runs alone — it walks every card, so it cannot share the corpus with
+a fenced run without two agents writing one file. With `dispatch.auto` on, a
+new arrival in a feedback directory is a backlog run without a key — gated on
+newcomers, so a card the pass parks does not re-trigger a run every time a seat
+frees.
+
+The dispatch gate is `pendingPass`, not the status alone: a card whose
+frontmatter carries `blocked_on` is parked on something outside the pipeline —
+a carrier patch, a read-only target, a file only the user can move — and a run
+fenced to one can do nothing but re-stamp `confirmed_at`. It is refused with a
+422 quoting the block, left out of the backlog count and out of auto-dispatch's
+newcomer set, and refused by the TUI before the request is even sent. The field
+already says why; paying a model call to rediscover it is the cost this avoids.
 
 ## @kaizen/core — the engine
 
@@ -103,17 +121,18 @@ A small route table plus `GET /api/events` (SSE), `node:http`, bound to
 `127.0.0.1` — that binding **is** the security boundary, because these routes
 write files and shell out to git.
 
-| Route                                  | Does                                               |
-| -------------------------------------- | -------------------------------------------------- |
-| `GET /api/state`                       | `buildState(config)`                               |
-| `GET /api/config` / `POST /api/config` | read / validate-then-save (restarts watchers)      |
-| `GET /api/skill?path=`                 | raw markdown, containment-checked                  |
-| `GET /api/diff?id=`                    | the sibling `.patch`, if any                       |
-| `POST /api/suggestion`                 | one status move, gated (see below)                 |
-| `POST /api/sweep`                      | one status move for all — moves the movable        |
-| `POST /api/dispatch`                   | one detached `claude` run — one id, or the backlog |
-| `POST /api/apply`                      | `git apply` + one commit + writes `applied` + sha  |
-| `POST /api/revert`                     | `git revert` a kaizen commit on a writable target  |
+| Route                                  | Does                                                                         |
+| -------------------------------------- | ---------------------------------------------------------------------------- |
+| `GET /api/state`                       | `buildState(config)`                                                         |
+| `GET /api/config` / `POST /api/config` | read / validate-then-save (restarts watchers)                                |
+| `GET /api/skill?path=`                 | raw markdown, containment-checked                                            |
+| `GET /api/diff?id=`                    | the sibling `.patch`, if any                                                 |
+| `POST /api/suggestion`                 | one status move, gated (see below)                                           |
+| `POST /api/sweep`                      | one status move for all — moves the movable                                  |
+| `POST /api/dispatch`                   | one detached `claude` run — one id, or the backlog; queues behind a live one |
+| `GET /api/dispatch/log`                | the tail of the triage log, last 200 lines                                   |
+| `POST /api/apply`                      | `git apply` + one commit + writes `applied` + sha                            |
+| `POST /api/revert`                     | `git revert` a kaizen commit on a writable target                            |
 
 Every status write passes two gates: the transition must be legal in the spec,
 and the destination phase's `requires` must already be present in the file
@@ -132,16 +151,25 @@ stop with the last.
 `lifecycle.json` at compile time (`include_str!`), so filters, abbreviations
 and the `D` docs overlay work with the server down.
 
-- `api.rs` — HTTP client, types, `queue()` (surfaced, non-terminal, score-sorted).
-- `tui.rs` — app state, key dispatch, queue/detail drawing, the `f` filter:
-  `open` (default — hides anything landed or terminal) → `undecided` →
-  `approved` → all. Filter membership is derived from the spec, never from
-  status names.
+- `api.rs` — HTTP client, types, the SSE reader.
+- `tui.rs` — app state, key dispatch, the detail window (`enter` opens a card
+  whole in an overlay, held by id so a refresh cannot swap it), the header
+  spinner (a frame counter bumped by the event loop's tick).
 - `keys.rs` — every binding declared once; the help card and footer are built
   from the same table, so a key cannot be documented one way and bound another.
-- `views/` — board (a lane per live status plus one closed lane, all spec-derived,
-  empty lanes collapse), skills (failures per 100 lines of prose, worst first),
-  settings (edit via `$EDITOR`, server validates).
+- `views/` — board (the main view: a lane per pipeline stage, all spec-derived;
+  the stages stay visible even empty and each lane is subtitled with the phase
+  it waits for and whose move it is, while loop-back lanes collapse; past the
+  stages sit the three lanes a card _waits_ in rather than holds — `working`
+  while a run has it, `blocked` while its `blocked_on` names something outside
+  the pipeline, `closed` for the terminals — each shown only when occupied, so
+  `a` always visibly moves the card somewhere; lanes wrap onto a second band
+  instead of scrolling off the right, so the whole board is one glance;
+  decide/apply keys act on the selected card), agents (every fable run going —
+  target, pid, age — the last few that ended with their exit code, and the line
+  waiting for a seat; the log itself stays in `~/.claude/kaizen/dispatch.log`), skills
+  (failures per 100 lines of prose, worst first), settings (edit via `$EDITOR`,
+  server validates).
 - `theme.rs` — one palette; `lifecycle.rs` — the embedded spec and its queries.
 
 The boundary that matters: **the engine decides, the TUI draws.** Every derived

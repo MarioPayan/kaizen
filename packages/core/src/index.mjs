@@ -19,6 +19,9 @@ export {
   writeFrontmatter,
   score,
   splitFilename,
+  assignUids,
+  ageOf,
+  localToday,
   STATUSES,
 } from './suggestion.mjs';
 export { SEVERITIES, defaultSurface, surfaceOf, passesSurface } from './taxonomy.mjs';
@@ -36,6 +39,7 @@ export {
   nextStatuses,
   awaitingDecision,
   awaitsPass,
+  pendingPass,
   entryStatus,
   section,
   requirementsFor,

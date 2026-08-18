@@ -7,6 +7,7 @@
  * a fact worth surfacing rather than a gap worth guessing at.
  */
 import { basename } from 'node:path';
+import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { TYPES, OBJECTIVES, EFFORTS, SEVERITIES } from './taxonomy.mjs';
 import { canonicalStatus, statusIds, section } from './lifecycle.mjs';
@@ -50,6 +51,84 @@ export function splitFilename(file) {
   const name = basename(file).replace(/\.md$/i, '');
   const m = /^(\d{4}-\d{2}-\d{2})-(.+)$/.exec(name);
   return m ? { date: m[1], slug: m[2] } : { date: '', slug: name };
+}
+
+/**
+ * The three-letter handles a name could wear, best first: three of its
+ * initials in order (`freshness-check-read-as-correctness` → FCR, FCA, FRA…),
+ * then any three of its letters in order (`a-thing` → ATH, ATI…). Letters of
+ * the name, so the handle is readable *as* the name; in order, so it is never
+ * an anagram of a different one.
+ */
+function* handles(slug) {
+  const words = slug
+    .split(/[^a-z0-9]+/i)
+    .filter(Boolean)
+    .map((w) => w.toUpperCase());
+  const three = function* (letters) {
+    for (let i = 0; i < letters.length; i++)
+      for (let j = i + 1; j < letters.length; j++)
+        for (let k = j + 1; k < letters.length; k++) yield letters[i] + letters[j] + letters[k];
+  };
+  yield* three(words.map((w) => w[0]).join(''));
+  yield* three(words.join(''));
+}
+
+/**
+ * Give every suggestion a three-letter uid, unique across the corpus, made of
+ * its own name. Assigned oldest-first so an arrival never takes a handle a
+ * card already wears; a handle only ever changes when an *older* card that
+ * held its first choice is removed. Nothing is stored — the corpus is the
+ * registry — so a scan on another machine assigns the same handles.
+ */
+// ponytail: recomputed per scan, not written to the file; stamp `uid` in
+// frontmatter if the churn on pruning ever bites.
+export function assignUids(suggestions) {
+  const taken = new Set();
+  const order = [...suggestions].sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
+  for (const s of order) {
+    let uid;
+    for (const h of handles(s.slug || s.id)) {
+      if (!taken.has(h)) {
+        uid = h;
+        break;
+      }
+    }
+    // A name too short or too common to yield a free handle falls back to
+    // the id's hash, which is at least stable.
+    for (let n = 0; uid === undefined; n++) {
+      const h = createHash('sha1').update(`${s.id}${n}`).digest('hex').slice(0, 3).toUpperCase();
+      if (!taken.has(h)) uid = h;
+    }
+    taken.add(uid);
+    s.uid = uid;
+  }
+  return suggestions;
+}
+
+/** Today as the files write it — `2026-08-15`, local time, not UTC's tomorrow. */
+export function localToday(now = new Date()) {
+  return now.toLocaleDateString('sv');
+}
+
+/**
+ * How recent a suggestion is, in the four words a board groups by: `today`,
+ * `this week`, `this month`, `older`. Rolling windows (7 and 30 days), not the
+ * calendar's — "this week" on a Monday morning would otherwise be empty. Both
+ * dates are `YYYY-MM-DD`; an undated or unparseable one is `older`, which is
+ * where nothing recent can hide.
+ */
+export function ageOf(date, today = localToday()) {
+  const day = (d) => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(d ?? '');
+    return m ? Date.UTC(+m[1], +m[2] - 1, +m[3]) / 86400000 : NaN;
+  };
+  const days = day(today) - day(date);
+  if (Number.isNaN(days)) return 'older';
+  if (days <= 0) return 'today';
+  if (days < 7) return 'this week';
+  if (days < 30) return 'this month';
+  return 'older';
 }
 
 export function parseSuggestion({ id, file, skill, target, text }) {

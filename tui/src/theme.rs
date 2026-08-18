@@ -34,6 +34,12 @@ pub const fn err() -> Color {
     Color::Rgb(255, 95, 95)
 }
 
+/// The age rules on the board. Its own colour, used nowhere else, so a rule
+/// reads as furniture between cards and never as one of them.
+pub const fn rule() -> Color {
+    Color::Rgb(180, 140, 255)
+}
+
 pub const fn selection_bg() -> Color {
     Color::Rgb(70, 70, 70)
 }

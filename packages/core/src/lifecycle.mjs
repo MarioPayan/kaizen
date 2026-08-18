@@ -206,6 +206,24 @@ export function awaitsPass(value, l = spec()) {
 }
 
 /**
+ * Is there anything an unattended pass can do for this card *right now*?
+ *
+ * `awaitsPass` answers for the status alone, which is not the whole question:
+ * a card carrying `blocked_on` is parked on something outside the pipeline —
+ * a carrier patch that has to land first, a read-only target, a file only you
+ * can move. A pass fenced to one of those can do nothing but re-stamp
+ * `confirmed_at`, and it costs a model run to find that out, again after every
+ * reseat. The field that says so is already in frontmatter, so the gate reads
+ * it instead of paying an agent to rediscover it.
+ *
+ * Takes a built suggestion (`blockedOn`), not raw frontmatter — both callers
+ * hold one, and the server's dispatch gate and the TUI's `a` must agree.
+ */
+export function pendingPass(s, l = spec()) {
+  return awaitsPass(s.status, l) && !s.blockedOn;
+}
+
+/**
  * Pull a `## Heading` section out of a suggestion body.
  *
  * Lives here because the spec is what says which headings exist and which field

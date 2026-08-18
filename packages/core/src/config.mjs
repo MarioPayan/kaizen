@@ -44,6 +44,11 @@ export function defaultConfig() {
     // disk and stays one click away.
     surface: defaultSurface(),
     applyGuards: { requireCleanTree: true, requireDiffApplies: true },
+    // `auto` sends fable at new arrivals on its own, so the board you open is
+    // already at the decision — off by default, every run is a model call.
+    // `maxAgents` is how many fenced runs may go at once; the rest wait in
+    // line. A backlog run always runs alone.
+    dispatch: { auto: false, maxAgents: 1 },
     server: { host: '127.0.0.1', port: 7777 },
   };
 }
@@ -116,6 +121,12 @@ export function validateConfig(cfg) {
     if (!SEVERITIES.includes(cfg.surface.minSeverity)) {
       errs.push(`surface.minSeverity must be one of ${SEVERITIES}`);
     }
+  }
+
+  if (cfg.dispatch) {
+    if (typeof cfg.dispatch.auto !== 'boolean') errs.push('dispatch.auto must be true or false');
+    const n = cfg.dispatch.maxAgents;
+    if (!Number.isInteger(n) || n < 1 || n > 8) errs.push('dispatch.maxAgents must be 1-8');
   }
 
   if (cfg.server) {

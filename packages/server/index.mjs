@@ -23,6 +23,8 @@ import {
   mkdirSync,
   openSync,
   closeSync,
+  writeSync,
+  readSync,
 } from 'node:fs';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -44,7 +46,7 @@ import {
   parseFrontmatter,
   canonicalStatus,
   canTransition,
-  awaitsPass,
+  pendingPass,
   nextStatuses,
   statusIds,
   missingRequirements,
@@ -203,11 +205,62 @@ async function git(cwd, args) {
 }
 
 /**
- * Applying into a dirty tree mixes the user's in-flight work into a kaizen commit
- * and makes `git revert` stop being a clean undo. Refuse, and name the files.
+ * `git revert` commits by itself and touches whatever the reverted commit did,
+ * so it is the one operation that still wants the whole tree clean. Refuse, and
+ * name the files.
  */
 async function assertCleanTree(cwd) {
   const status = await git(cwd, ['status', '--porcelain']);
+  if (status.trim()) {
+    const files = status
+      .split('\n')
+      .filter((l) => l.trim())
+      .map((l) => l.slice(3))
+      .join(', ');
+    throw new HttpError(409, `working tree is not clean — commit or stash first: ${files}`);
+  }
+}
+
+/**
+ * What actually has to be clean for a patch to land as one honest commit.
+ *
+ * Not the whole tree. The apply stages the patch's own paths and nothing else
+ * (`git apply --index`), so an untracked draft or an edit somewhere unrelated
+ * cannot end up in a kaizen commit — and refusing over one stops a queue for a
+ * reason that is not true. An untracked Python file two directories away held
+ * up eleven cards that way.
+ *
+ * Two things would still break the commit, so both refuse and name the files:
+ * a path the patch touches carrying uncommitted work (the apply would clobber
+ * it, and `git revert` would stop being a clean undo), and anything already
+ * staged (the commit would carry it along). `git apply --index` is the backstop
+ * for the first — it refuses rather than clobbers — so this check exists to say
+ * which file, in words, before git says it in its own.
+ */
+async function assertApplyable(cwd, patch) {
+  const staged = await git(cwd, ['diff', '--cached', '--name-only']);
+  if (staged.trim()) {
+    throw new HttpError(
+      409,
+      `something is already staged — commit or reset it first: ${staged.trim().split('\n').join(', ')}`,
+    );
+  }
+  // The paths the patch itself names. `--numstat` prints `added deleted path`,
+  // so the path is what survives the last tab. A patch git cannot even read is
+  // one whose reach is unknown, so that falls back to the blunt whole-tree
+  // check rather than to no check at all.
+  let touched;
+  try {
+    touched = (await git(cwd, ['apply', '--numstat', patch]))
+      .split('\n')
+      .filter((l) => l.trim())
+      .map((l) => l.split('\t').at(-1));
+  } catch {
+    return assertCleanTree(cwd);
+  }
+  if (!touched.length) return;
+
+  const status = await git(cwd, ['status', '--porcelain', '--', ...touched]);
   if (status.trim()) {
     // Split the raw output, not a trimmed copy. Porcelain lines are `XY PATH`
     // with a two-column status, so an unstaged change starts with a space —
@@ -218,7 +271,7 @@ async function assertCleanTree(cwd) {
       .filter((l) => l.trim())
       .map((l) => l.slice(3))
       .join(', ');
-    throw new HttpError(409, `working tree is not clean — commit or stash first: ${files}`);
+    throw new HttpError(409, `the patch's own files have uncommitted work — commit or stash first: ${files}`);
   }
 }
 
@@ -235,13 +288,21 @@ const routes = {
   // state and refreshes on events, so a separate poll would be a second clock.
   'GET /api/state': async (_req, _res, ctx) => ({
     ...buildState(ctx.config),
-    dispatch: ctx.dispatch
-      ? {
-          running: !ctx.dispatch.done,
-          pid: ctx.dispatch.pid,
-          exitCode: ctx.dispatch.done ? (ctx.dispatch.done.code ?? -1) : null,
-        }
-      : null,
+    // Every run this server has seen, oldest first and capped, each saying
+    // whether it is still going; then who waits for a seat, in order (`null`
+    // is the backlog). The board spins the running ones and numbers the line.
+    dispatch: {
+      runs: ctx.runs.map((r) => ({
+        pid: r.pid,
+        id: r.triageId,
+        running: !r.done,
+        exitCode: r.done ? (r.done.code ?? -1) : null,
+        // Epoch ms, not ISO like `generatedAt`: the TUI renders "up 3m" and
+        // one subtraction beats a date parser it would otherwise not have.
+        startedAt: r.startedAt,
+      })),
+      queue: ctx.queue,
+    },
   }),
 
   'GET /api/config': async (_req, _res, ctx) => ({ config: ctx.config, errors: validateConfig(ctx.config) }),
@@ -256,6 +317,11 @@ const routes = {
     ctx.config = withDefaults(next);
     // The target list may have changed, and with it what is worth watching.
     ctx.events?.restart();
+    // Flipping auto on is the ask: send fable at what is waiting, now.
+    if (ctx.config.dispatch?.auto) {
+      ctx.events?.watch();
+      maybeAutoDispatch(ctx);
+    }
     return { config: next };
   },
 
@@ -341,42 +407,54 @@ const routes = {
   // arrives like any other edit, through the file watcher, so the queue's rows
   // relabel themselves as the run writes frontmatter.
   'POST /api/dispatch': async (req, _res, ctx) => {
-    if (ctx.dispatch && !ctx.dispatch.done) {
-      throw new HttpError(409, `a triage run is already in flight (pid ${ctx.dispatch.pid})`);
+    // `null` is the backlog, on the wire and in the queue alike.
+    const { id = null } = await readBody(req);
+    const pending = passPending(ctx, id);
+    // The same work twice is the one thing that still refuses: the card (or
+    // the backlog) already has an agent on it.
+    const dup = live(ctx).find((r) => r.triageId === id);
+    if (dup) {
+      throw new HttpError(
+        409,
+        `${id ? id.split('/').at(-1) : 'the backlog'} is already in flight (pid ${dup.pid})`,
+      );
     }
-    // With an id the pass is fenced to one suggestion — the skill accepts it as
-    // an argument. Without one it takes the backlog. Either way the gate is
-    // `awaitsPass`, not the untriaged count: the pass also plans the triaged
-    // and re-plans the failed, and gating on triage alone refused exactly those.
-    const { id } = await readBody(req);
-    const state = buildState(ctx.config);
-    let pending;
-    if (id) {
-      const s = state.suggestions.find((x) => x.id === id);
-      if (!s) throw new HttpError(404, `no such suggestion: ${id}`);
-      if (!awaitsPass(s.status)) {
-        throw new HttpError(422, `${id.split('/').at(-1)} is "${s.status}" — nothing for a pass to do`);
-      }
-      pending = 1;
-    } else {
-      pending = state.suggestions.filter((s) => awaitsPass(s.status)).length;
-      if (!pending) throw new HttpError(422, 'nothing for a pass to do — all work is decided or yours');
+    if (canSeat(ctx, id) && !ctx.queue.length) {
+      const child = await launch(ctx, id);
+      return { pid: child.pid, pending };
     }
-    const child = ctx.spawnClaude(id);
-    await new Promise((launched, failed) => {
-      child.once('spawn', launched);
-      child.once('error', (e) => failed(new HttpError(500, `could not start claude — ${e.message}`)));
-    });
-    // `done` rather than `exitCode`: a signal death leaves exitCode null, which
-    // reads as still-running and would wedge the seat forever. The broadcast is
-    // what tells the TUI the run ended even when it wrote no files.
-    child.once('exit', (code, signal) => {
-      child.done = { code, signal };
-      ctx.events.broadcast('dispatch', { pid: child.pid, code, signal });
-    });
-    ctx.dispatch = child;
-    ctx.events.broadcast('dispatch', { pid: child.pid, running: true });
-    return { pid: child.pid, pending };
+    // No seat, or a line already ahead: take a place rather than refuse, so
+    // `a` on five cards is five runs, not one run and four errors. One entry
+    // per id (and one for the backlog) — a held key must not stack twenty.
+    let at = ctx.queue.indexOf(id);
+    if (at < 0) {
+      at = ctx.queue.push(id) - 1;
+      persistDispatch(ctx);
+      ctx.events.broadcast('dispatch', { queued: ctx.queue.length });
+    }
+    return { pending, queued: at + 1 };
+  },
+
+  // The tail only, bounded twice (bytes then lines): the log is append-only
+  // and never rotated, and the TUI wants the latest runs, not the archive.
+  // The path is entirely server-derived — no caller input, so there is
+  // nothing here for `assertInside` to check.
+  'GET /api/dispatch/log': async () => {
+    const log = join(dirname(configPath()), 'dispatch.log');
+    if (!existsSync(log)) return { text: '' };
+    const size = statSync(log).size;
+    const fd = openSync(log, 'r');
+    try {
+      const buf = Buffer.alloc(Math.min(size, 65536));
+      readSync(fd, buf, 0, buf.length, size - buf.length);
+      let text = buf.toString('utf8');
+      // A byte-offset read can open mid-line (and mid-codepoint); drop the
+      // partial first line rather than showing garbage.
+      if (buf.length < size) text = text.slice(text.indexOf('\n') + 1);
+      return { text: text.split('\n').slice(-201).join('\n') };
+    } finally {
+      closeSync(fd);
+    }
   },
 
   'POST /api/apply': async (req, _res, ctx) => {
@@ -399,13 +477,16 @@ const routes = {
     const patch = path.replace(/\.md$/, '.patch');
     if (!existsSync(patch)) throw new HttpError(422, 'no proposal patch for this suggestion yet');
 
-    if (ctx.config.applyGuards?.requireCleanTree !== false) await assertCleanTree(root);
+    if (ctx.config.applyGuards?.requireCleanTree !== false) await assertApplyable(root, patch);
     if (ctx.config.applyGuards?.requireDiffApplies !== false) {
       await git(root, ['apply', '--check', patch]);
     }
 
-    await git(root, ['apply', patch]);
-    await git(root, ['add', '-A']);
+    // `--index` rather than apply-then-`add -A`: it stages exactly the paths the
+    // patch names, so the commit cannot pick up work that was merely sitting in
+    // the tree, and it refuses outright rather than clobbering a path someone
+    // else has edited. That is what lets the guard above be narrow.
+    await git(root, ['apply', '--index', patch]);
     await git(root, [
       'commit',
       '-m',
@@ -452,6 +533,193 @@ const routes = {
 /* ------------------------------------------------------------ dispatch ---- */
 
 /**
+ * The gate: what a pass could move if it ran now. With an id the pass is fenced
+ * to one suggestion — the skill accepts it as an argument. Without one it takes
+ * the backlog. Either way the gate is `pendingPass`, not the untriaged count:
+ * the pass also plans the triaged and re-plans the failed, and gating on triage
+ * alone refused exactly those — while a parked card looks pending by status and
+ * has nothing for a run to do.
+ */
+function passPending(ctx, id) {
+  const state = buildState(ctx.config);
+  if (id) {
+    const s = state.suggestions.find((x) => x.id === id);
+    if (!s) throw new HttpError(404, `no such suggestion: ${id}`);
+    if (!pendingPass(s)) {
+      // Two different refusals, because they need two different answers: a
+      // decided card is finished with passes, a parked one is waiting on the
+      // thing its own frontmatter names.
+      const why = s.blockedOn ? `is parked: ${s.blockedOn}` : `is "${s.status}" — nothing for a pass to do`;
+      throw new HttpError(422, `${id.split('/').at(-1)} ${why}`);
+    }
+    return 1;
+  }
+  const pending = state.suggestions.filter((s) => pendingPass(s)).length;
+  if (!pending) throw new HttpError(422, 'nothing for a pass to do — all work is decided or yours');
+  return pending;
+}
+
+/** The runs still going. */
+function live(ctx) {
+  return ctx.runs.filter((r) => !r.done);
+}
+
+/**
+ * Is there a seat for this run right now? `dispatch.maxAgents` seats, but a
+ * backlog run takes them all: it walks every card, so it cannot share the
+ * corpus with a fenced run without two agents writing one file.
+ */
+function canSeat(ctx, id) {
+  const running = live(ctx);
+  if (running.some((r) => r.triageId === null)) return false;
+  if (id === null) return running.length === 0;
+  return running.length < (ctx.config.dispatch?.maxAgents ?? 1);
+}
+
+/** Take a seat with one run, and hand it on when the run ends. */
+async function launch(ctx, id) {
+  const child = ctx.spawnClaude(id);
+  await new Promise((launched, failed) => {
+    child.once('spawn', launched);
+    child.once('error', (e) => failed(new HttpError(500, `could not start claude — ${e.message}`)));
+  });
+  // `done` rather than `exitCode`: a signal death leaves exitCode null, which
+  // reads as still-running and would wedge the seat forever. The broadcast is
+  // what tells the TUI the run ended even when it wrote no files.
+  child.once('exit', (code, signal) => seatFreed(ctx, child, { code, signal }));
+  // What the run is on and since when, so the agents tab can say more than
+  // "a pid exists". Recorded here, not in the spawner — tests stub that.
+  child.startedAt = Date.now();
+  child.triageId = id;
+  remember(ctx, child);
+  persistDispatch(ctx);
+  ctx.events.broadcast('dispatch', { pid: child.pid, running: true });
+  return child;
+}
+
+/** Keep the run on the list the state reports, and the list bounded. */
+const RUNS_KEPT = 20;
+function remember(ctx, run) {
+  ctx.runs.push(run);
+  // Drop the oldest *finished* ones first; a live run is never forgotten.
+  while (ctx.runs.length > RUNS_KEPT) {
+    const i = ctx.runs.findIndex((r) => r.done);
+    if (i < 0) break;
+    ctx.runs.splice(i, 1);
+  }
+}
+
+/** A run ended, however it ended: say so, then hand its seat on. */
+function seatFreed(ctx, run, done) {
+  run.done = done;
+  persistDispatch(ctx);
+  ctx.events.broadcast('dispatch', { pid: run.pid, ...done });
+  drain(ctx);
+}
+
+/**
+ * The seats and the line, on disk, so a server restart is free: the queue was
+ * once memory alone, and every restart dropped the line and lost track of the
+ * runs still going. Beside the log, since it describes the same runs.
+ */
+function dispatchPath() {
+  return join(dirname(configPath()), 'dispatch.json');
+}
+
+function persistDispatch(ctx) {
+  const record = {
+    runs: live(ctx).map((r) => ({ pid: r.pid, id: r.triageId, startedAt: r.startedAt })),
+    queue: ctx.queue,
+  };
+  try {
+    writeFileSync(dispatchPath(), JSON.stringify(record));
+  } catch {
+    // A home dir that refuses the write costs the restart-safety, not the run.
+  }
+}
+
+/**
+ * On start: pick the seats and the line back up. A run whose pid is still
+ * alive is adopted — not a child, so its exit is watched by asking the kernel
+ * every couple of seconds, and its exit code is unknowable (`null`). Dead
+ * pids free their seats, and the line resumes at once.
+ */
+// ponytail: `kill -0` alone; a recycled pid would hold a seat until that
+// process exits — check /proc/<pid>/cmdline for "claude" if it ever happens.
+function restoreDispatch(ctx) {
+  let saved;
+  try {
+    saved = JSON.parse(readFileSync(dispatchPath(), 'utf8'));
+  } catch {
+    return;
+  }
+  ctx.queue = Array.isArray(saved.queue) ? saved.queue : [];
+  const alive = (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  for (const r of Array.isArray(saved.runs) ? saved.runs : []) {
+    if (!r.pid || !alive(r.pid)) continue;
+    const adopted = { pid: r.pid, triageId: r.id ?? null, startedAt: r.startedAt, done: undefined };
+    remember(ctx, adopted);
+    const poll = setInterval(() => {
+      if (alive(r.pid)) return;
+      clearInterval(poll);
+      seatFreed(ctx, adopted, { code: null, signal: null });
+    }, 2000);
+    poll.unref();
+  }
+  drain(ctx);
+}
+
+/**
+ * Auto-dispatch: with `dispatch.auto` on, a new arrival is a new backlog run
+ * without anyone pressing a key. Gated on *newcomers*, not on "anything still
+ * awaits the pass": a card the pass parks or leaves triaged would otherwise
+ * re-trigger a run every time the seat freed, forever, at a model call each.
+ */
+function maybeAutoDispatch(ctx) {
+  if (!ctx.config.dispatch?.auto) return;
+  if (!canSeat(ctx, null) || ctx.queue.length) return;
+  const waiting = buildState(ctx.config).suggestions.filter((s) => pendingPass(s));
+  const newcomers = waiting.filter((s) => !ctx.autoSeen.has(s.id));
+  ctx.autoSeen = new Set(waiting.map((s) => s.id));
+  if (!newcomers.length) return;
+  launch(ctx, null).catch(() => {
+    // claude would not start; the next change tries again.
+  });
+}
+
+/**
+ * Seats freed, or the line grew: the head of the line takes a seat while
+ * there is one it can take. Strictly in order — a backlog entry at the head
+ * waits for the seats to empty, and holds the entries behind it, rather than
+ * being overtaken forever by fenced ones. Each entry is re-gated when its
+ * turn comes: the run that just ended may have moved it, and a run fenced to
+ * a card that needs nothing is a wasted model call.
+ */
+async function drain(ctx) {
+  while (ctx.queue.length && canSeat(ctx, ctx.queue[0])) {
+    const id = ctx.queue.shift();
+    persistDispatch(ctx);
+    try {
+      passPending(ctx, id);
+      await launch(ctx, id);
+    } catch {
+      // Nothing to do, or claude would not start: the next in line gets a turn.
+      // Nobody is on the wire to tell; the log line the spawner writes is the
+      // record of what did run.
+    }
+  }
+  // The line is empty: if arrivals came in during the runs, auto takes them.
+  if (!ctx.queue.length) maybeAutoDispatch(ctx);
+}
+
+/**
  * One detached `claude` run working the whole backlog through the kaizen
  * skill. Detached and logged to a file rather than held: triage can outlive a
  * server restart, and the log is where a run that never wrote anything
@@ -479,6 +747,10 @@ function spawnTriage(id) {
     { cwd: homedir(), detached: true, stdio: ['ignore', out, out] },
   );
   child.unref();
+  // The runs share one append-only file; this line is the only boundary
+  // between them. Written on the child's own fd before it can produce output,
+  // so it always precedes the run it labels.
+  writeSync(out, `--- ${new Date().toISOString()} pid ${child.pid ?? '?'} ${id ?? 'backlog'} ---\n`);
   closeSync(out);
   return child;
 }
@@ -489,9 +761,21 @@ export function createApp(config, deps = {}) {
   const pkg = JSON.parse(readFileSync(resolve(here, '..', '..', 'package.json'), 'utf8'));
   // Normalised once here so no route has to guard against a block the caller
   // simply did not mention.
-  const ctx = { config: withDefaults(config), version: pkg.version };
+  const ctx = {
+    config: withDefaults(config),
+    version: pkg.version,
+    runs: [],
+    queue: [],
+    autoSeen: new Set(),
+  };
   ctx.spawnClaude = deps.spawnClaude ?? spawnTriage;
   ctx.events = createEventStream(ctx);
+  ctx.onChange = () => maybeAutoDispatch(ctx);
+  restoreDispatch(ctx);
+  if (ctx.config.dispatch?.auto) {
+    ctx.events.watch();
+    maybeAutoDispatch(ctx);
+  }
 
   return createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');

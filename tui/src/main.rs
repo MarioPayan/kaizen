@@ -1,4 +1,4 @@
-//! kaizen-tui — the queue, in the terminal.
+//! kaizen-tui — the board, in the terminal.
 //!
 //! A second front end to the local API, not a second implementation of anything:
 //! `@kaizen/core` still does the scanning, grouping and scoring, and the server
@@ -13,7 +13,7 @@ mod ui;
 mod views;
 
 const HELP: &str = "\
-kaizen-tui — the kaizen queue in the terminal
+kaizen-tui — the kaizen board in the terminal
 
 USAGE:
     kaizen-tui [--base URL]

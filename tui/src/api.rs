@@ -23,9 +23,16 @@ pub const DEFAULT_BASE: &str = "http://127.0.0.1:7777";
 #[serde(default)]
 pub struct Suggestion {
     pub id: String,
+    /// Three letters of the name, handed out by core to be unique across the
+    /// corpus — the handle a card wears, so it can be named in a sentence and
+    /// found again after it changes lanes.
+    pub uid: String,
     pub target: String,
     pub skill: String,
     pub date: String,
+    /// `today` / `this week` / `this month` / `older`, stamped by core as of the
+    /// state's build — the board rules a line where it changes.
+    pub age: String,
     pub slug: String,
     pub severity: String,
     pub status: String,
@@ -59,6 +66,9 @@ pub struct Metrics {
     pub open: u64,
     pub untriaged: u64,
     pub incidents: u64,
+    /// Open cards parked on a decision only you can make.
+    #[serde(rename = "onYou")]
+    pub on_you: u64,
 }
 
 /// A skill as the scanner sees it. `health` is computed by `buildState` rather
@@ -80,15 +90,29 @@ pub struct Skill {
     pub worktrees: u64,
 }
 
-/// The triage run the server is holding, if any. `None` means none was ever
-/// dispatched this server lifetime — distinct from one that ran and ended.
+/// One fable run, as the server reports it — still going, or how it ended.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct Run {
+    pub pid: u64,
+    /// The suggestion the run is fenced to; `None` means the whole backlog.
+    pub id: Option<String>,
+    pub running: bool,
+    #[serde(rename = "exitCode")]
+    pub exit_code: Option<i64>,
+    /// Epoch milliseconds — one subtraction away from "up 3m".
+    #[serde(rename = "startedAt")]
+    pub started_at: Option<u64>,
+}
+
+/// The agents: every run this server has seen (live ones and the last few
+/// that ended), and who waits for a seat, in order — `None` is the backlog.
+/// A card's index in `queue` plus one is the number the board draws on it.
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct Dispatch {
-    pub running: bool,
-    pub pid: u64,
-    #[serde(rename = "exitCode")]
-    pub exit_code: Option<i64>,
+    pub runs: Vec<Run>,
+    pub queue: Vec<Option<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -169,26 +193,6 @@ pub struct Guards {
 pub struct ServerConfig {
     pub host: String,
     pub port: u64,
-}
-
-impl State {
-    /// What the queue shows: things you asked to see that are not already applied,
-    /// worst first. The server scores them; re-ranking here would invent an order
-    /// the dashboard does not share.
-    pub fn queue(&self) -> Vec<&Suggestion> {
-        let mut out: Vec<&Suggestion> = self
-            .suggestions
-            .iter()
-            .filter(|s| s.surfaced && !crate::lifecycle::is_terminal(&s.status))
-            .collect();
-        out.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.id.cmp(&b.id))
-        });
-        out
-    }
 }
 
 /* ------------------------------------------------------------------ stream ---- */
@@ -381,13 +385,16 @@ impl Client {
     /// id, the backlog otherwise. Returns how many items the pass covers;
     /// progress comes back through the event stream as the run writes, so
     /// there is nothing to poll.
-    pub fn dispatch(&self, id: Option<&str>) -> Result<u64, String> {
+    /// Returns how many items the pass can move and, when the seat was taken,
+    /// the place in line it was given — zero means it started now.
+    pub fn dispatch(&self, id: Option<&str>) -> Result<(u64, u64), String> {
         let body = match id {
             Some(id) => serde_json::json!({ "id": id }),
             None => serde_json::json!({}),
         };
         let res = self.post("/api/dispatch", body)?;
-        Ok(res.get("pending").and_then(|v| v.as_u64()).unwrap_or(0))
+        let n = |k: &str| res.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
+        Ok((n("pending"), n("queued")))
     }
 
     /// Returns the commit sha and how many same-scope siblings the landing
@@ -441,6 +448,8 @@ impl Client {
         Ok(res.get("content").and_then(|v| v.as_str()).unwrap_or_default().to_string())
     }
 
+    /// The tail of the triage log, via the API rather than the filesystem — the
+    /// server knows where its log lives; the TUI deliberately does not.
     pub fn diff(&self, id: &str) -> Result<Option<String>, String> {
         let url = format!("{}/api/diff?id={}", self.base, urlencode(id));
         let res = self
@@ -505,19 +514,6 @@ mod tests {
         assert_eq!(state.metrics.open, 3);
         assert_eq!(state.suggestions[0].rung, Some(1));
         assert_eq!(state.suggestions[0].kind, "structural");
-    }
-
-    /// The queue is what you asked to see and have not finished: terminal items
-    /// and filtered-out ones are both absent, and the worst comes first.
-    ///
-    /// `applied` stays. It used to be dropped, and that is precisely how a landed
-    /// change with no verification came to read as finished — the spec now calls
-    /// it non-terminal and this list is derived from the spec.
-    #[test]
-    fn queue_keeps_applied_drops_terminal_and_unsurfaced_then_sorts_by_score() {
-        let state: State = serde_json::from_str(STATE).unwrap();
-        let ids: Vec<&str> = state.queue().iter().map(|s| s.id.as_str()).collect();
-        assert_eq!(ids, ["user/kaizen/c.md", "user/kaizen/b.md", "user/kaizen/a.md"]);
     }
 
     #[test]

@@ -13,21 +13,22 @@
 use ratatui::crossterm::event::KeyCode;
 
 /// The four places you work. Overlays are things you consult on top of one.
+/// The board comes first: it is the command centre, and where the TUI starts.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tab {
-    Queue,
     Board,
+    Agent,
     Skills,
     Settings,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 4] = [Tab::Queue, Tab::Board, Tab::Skills, Tab::Settings];
+    pub const ALL: [Tab; 4] = [Tab::Board, Tab::Agent, Tab::Skills, Tab::Settings];
 
     pub fn label(self) -> &'static str {
         match self {
-            Tab::Queue => "queue",
             Tab::Board => "board",
+            Tab::Agent => "agents",
             Tab::Skills => "skills",
             Tab::Settings => "settings",
         }
@@ -39,25 +40,22 @@ pub enum Action {
     Move(isize),
     /// Board only: step across lanes; `Move` steps within one.
     Lane(isize),
-    ScrollDetail(i16),
-    ToggleFocus,
     Back,
     Quit,
     Go(Tab),
     Help,
     Guide,
-    Approve,
-    Reject,
-    ApproveAll,
-    /// Send one detached fable run at the selected suggestion.
-    Triage,
-    /// Send one detached fable run at everything a pass can still move.
-    TriageAll,
-    Apply,
+    /// Board: move the selected card one lane on, by whatever that lane waits
+    /// for — a fable pass, your yes, or the server landing the patch.
+    Advance,
+    /// Board: the same, for every card the selected lane's move can take.
+    AdvanceAll,
+    /// Board: the card's way out that is not forward — reject, or supersede.
+    Discard,
+    /// Board: type a uid or a bit of a name and land on the card, any lane.
+    Find,
     Diff,
     Open,
-    CycleFilter,
-    Search,
     Refresh,
     /// Settings: flip a boolean, step a choice, or start editing a value.
     Edit,
@@ -76,10 +74,9 @@ pub struct Binding {
 }
 
 const ALL: &[Tab] = &[];
-const QUEUE: &[Tab] = &[Tab::Queue];
+/// Where the per-suggestion decide keys work: the board is the only place a
+/// suggestion is selected.
 const BOARD: &[Tab] = &[Tab::Board];
-/// Where the per-suggestion decide keys work: anywhere one suggestion is selected.
-const DECIDING: &[Tab] = &[Tab::Queue, Tab::Board];
 const SKILLS: &[Tab] = &[Tab::Skills];
 const SETTINGS: &[Tab] = &[Tab::Settings];
 
@@ -120,30 +117,6 @@ pub const BINDINGS: &[Binding] = &[
         action: Action::Move(-10),
     },
     Binding {
-        keys: &[KeyCode::Tab, KeyCode::BackTab],
-        hint: "tab",
-        label: "detail",
-        section: "navigate",
-        tabs: QUEUE,
-        action: Action::ToggleFocus,
-    },
-    Binding {
-        keys: &[KeyCode::Char('J')],
-        hint: "J/K",
-        label: "scroll detail",
-        section: "navigate",
-        tabs: QUEUE,
-        action: Action::ScrollDetail(3),
-    },
-    Binding {
-        keys: &[KeyCode::Char('K')],
-        hint: "",
-        label: "",
-        section: "navigate",
-        tabs: QUEUE,
-        action: Action::ScrollDetail(-3),
-    },
-    Binding {
         keys: &[KeyCode::Left],
         hint: "←/→",
         label: "lanes",
@@ -159,47 +132,41 @@ pub const BINDINGS: &[Binding] = &[
         tabs: BOARD,
         action: Action::Lane(1),
     },
-    // The shifted key widens the same verb — `a` this item, `A` everything
-    // approvable; `t` this item, `T` the backlog. One footer entry carries both
-    // spellings, and the shifted binding rides under it as a blank-hint alternate.
+    // One verb per direction, the same in every lane: `a` moves the card on,
+    // `x` takes it out. What "on" costs — fable, you, or git — is the lane's
+    // business, and its subtitle says which. The shifted key widens the same
+    // verb to the lane; one footer entry carries both spellings, and the
+    // shifted binding rides under it as a blank-hint alternate.
     Binding {
         keys: &[KeyCode::Char('a')],
         hint: "a",
-        label: "approve (A all)",
+        label: "advance (A lane)",
         section: "decide",
-        tabs: DECIDING,
-        action: Action::Approve,
+        tabs: BOARD,
+        action: Action::Advance,
     },
     Binding {
         keys: &[KeyCode::Char('A')],
         hint: "",
         label: "",
         section: "decide",
-        tabs: DECIDING,
-        action: Action::ApproveAll,
+        tabs: BOARD,
+        action: Action::AdvanceAll,
     },
     Binding {
-        keys: &[KeyCode::Char('r')],
-        hint: "r",
-        label: "reject",
+        keys: &[KeyCode::Char('x')],
+        hint: "x",
+        label: "discard",
         section: "decide",
-        tabs: DECIDING,
-        action: Action::Reject,
+        tabs: BOARD,
+        action: Action::Discard,
     },
     Binding {
         keys: &[KeyCode::Enter],
         hint: "enter",
-        label: "apply",
-        section: "decide",
-        tabs: QUEUE,
-        action: Action::Apply,
-    },
-    Binding {
-        keys: &[KeyCode::Enter],
-        hint: "enter",
-        label: "open in queue",
-        // The board shows where everything stands; reading and applying one
-        // item happens in the queue, where the plan and validation are visible.
+        label: "detail",
+        // Reading one item happens in a window over the board, so your place
+        // never moves.
         section: "decide",
         tabs: BOARD,
         action: Action::Open,
@@ -214,28 +181,20 @@ pub const BINDINGS: &[Binding] = &[
         action: Action::Open,
     },
     Binding {
-        keys: &[KeyCode::Char('t')],
-        hint: "t",
-        label: "triage (T all)",
-        section: "decide",
-        tabs: DECIDING,
-        action: Action::Triage,
-    },
-    Binding {
-        keys: &[KeyCode::Char('T')],
-        hint: "",
-        label: "",
-        section: "decide",
-        tabs: DECIDING,
-        action: Action::TriageAll,
-    },
-    Binding {
         keys: &[KeyCode::Char('d')],
         hint: "d",
         label: "patch",
         section: "decide",
-        tabs: DECIDING,
+        tabs: BOARD,
         action: Action::Diff,
+    },
+    Binding {
+        keys: &[KeyCode::Char('/')],
+        hint: "/",
+        label: "find",
+        section: "navigate",
+        tabs: BOARD,
+        action: Action::Find,
     },
     Binding {
         keys: &[KeyCode::Char(' '), KeyCode::Enter],
@@ -254,28 +213,12 @@ pub const BINDINGS: &[Binding] = &[
         action: Action::Save,
     },
     Binding {
-        keys: &[KeyCode::Char('f')],
-        hint: "f",
-        label: "filter",
-        section: "find",
-        tabs: QUEUE,
-        action: Action::CycleFilter,
-    },
-    Binding {
-        keys: &[KeyCode::Char('/')],
-        hint: "/",
-        label: "search",
-        section: "find",
-        tabs: QUEUE,
-        action: Action::Search,
-    },
-    Binding {
         keys: &[KeyCode::Char('1')],
         hint: "1-4",
         label: "tabs",
         section: "tabs",
         tabs: ALL,
-        action: Action::Go(Tab::Queue),
+        action: Action::Go(Tab::Board),
     },
     Binding {
         keys: &[KeyCode::Char('2')],
@@ -283,7 +226,7 @@ pub const BINDINGS: &[Binding] = &[
         label: "",
         section: "tabs",
         tabs: ALL,
-        action: Action::Go(Tab::Board),
+        action: Action::Go(Tab::Agent),
     },
     Binding {
         keys: &[KeyCode::Char('3')],

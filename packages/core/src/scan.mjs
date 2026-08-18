@@ -8,7 +8,7 @@
 import { readdirSync, readFileSync, statSync, existsSync } from 'node:fs';
 import { join, relative, dirname, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { parseSuggestion } from './suggestion.mjs';
+import { ageOf, assignUids, localToday, parseSuggestion } from './suggestion.mjs';
 import { resolveTargets, expandPath } from './config.mjs';
 import { surfaceOf, passesSurface } from './taxonomy.mjs';
 import { suggestionId } from './paths.mjs';
@@ -265,7 +265,16 @@ export function buildState(config) {
   // means the app and the session line share one implementation without either
   // importing this package.
   const surface = surfaceOf(config);
-  for (const s of suggestions) s.surfaced = passesSurface(s, surface);
+  const today = localToday();
+  // Handles are unique across every target, so this is the one place they can
+  // be given out.
+  assignUids(suggestions);
+  for (const s of suggestions) {
+    s.surfaced = passesSurface(s, surface);
+    // Stamped per build, so it is true as of this state and every view that
+    // groups by recency draws the same line in the same place.
+    s.age = ageOf(s.date, today);
+  }
 
   // A feedback folder whose skill no longer exists still holds real findings —
   // often the same live problem filed under a name that has since been renamed.
@@ -326,6 +335,9 @@ function metrics(suggestions, skills, open) {
     total: suggestions.length,
     open: open.length,
     untriaged: suggestions.filter((s) => !s.triaged).length,
+    // Parked on a decision only the user can make — the count that turns
+    // "twelve identical triaged rows" into "three are yours".
+    onYou: open.filter((s) => s.blockedOn).length,
     incidents,
     recurrences,
     incidentsByRung: byRung,

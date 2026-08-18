@@ -1,16 +1,61 @@
 //! The shared bits of drawing: a bordered block, a badge, and the text fitting
 //! every view needs.
 //!
-//! No domain knowledge — nothing here knows what a suggestion is, which is why
-//! all four views can use it without it becoming a layer between them and the
-//! data.
+//! Almost no domain knowledge — the one exception is the naming rule
+//! (`short`, `title_of`), which lives here because every surface that says a
+//! suggestion's name must say the same one: the slug read as a sentence. The
+//! slug itself stays internal — the id line at the foot of the detail window
+//! is the one place it is shown as written.
 
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{Block, BorderType};
 
+use crate::api::Suggestion;
 use crate::theme;
+
+/// Braille dots circling a square — the terminal's "something is moving".
+const SPIN: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+pub fn spinner(frame: usize) -> char {
+    SPIN[frame % SPIN.len()]
+}
+
+/// A slug read aloud: `a-dead-end` -> `A dead end`. Only the dashes go — an
+/// underscore or a dot inside a slug is part of a filename it names, and
+/// rewriting those would make the title lie about the file.
+pub fn humanize(slug: &str) -> String {
+    let mut out = slug.replace('-', " ");
+    if let Some(first) = out.get(..1).and_then(|c| c.chars().next()) {
+        out.replace_range(..1, &first.to_uppercase().to_string());
+    }
+    out
+}
+
+/// `user/kaizen/2026-08-08-a-dead-end.md` -> `A dead end`. Where all the worker
+/// has is an id — a footer notice, an overlay title — this is its name.
+pub fn short(id: &str) -> String {
+    let slug = id
+        .rsplit('/')
+        .next()
+        .unwrap_or(id)
+        .trim_end_matches(".md")
+        .splitn(4, '-')
+        .nth(3)
+        .unwrap_or(id);
+    humanize(slug)
+}
+
+/// What to call a suggestion in one line. Falls back to the id's tail rather than
+/// leaving a row anonymous.
+pub fn title_of(s: &Suggestion) -> String {
+    if s.slug.is_empty() {
+        short(&s.id)
+    } else {
+        humanize(&s.slug)
+    }
+}
 
 /// A block title longer than its border is drawn over the corner, so it is cut to
 /// fit the area before the block is built rather than after.

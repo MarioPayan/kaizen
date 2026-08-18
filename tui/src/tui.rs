@@ -1,101 +1,40 @@
-//! The queue, as a terminal UI.
+//! The board, as a terminal UI — the command centre the other tabs orbit.
 //!
 //! Every HTTP call happens on a worker thread and comes back over a channel. That
 //! is not premature: `GET /api/state` rescans the skills tree and takes ~40ms, and
 //! `POST /api/apply` runs `git apply` and two more git commands. Doing either on
-//! the draw loop makes the list stutter on every file change.
+//! the draw loop makes the board stutter on every file change.
 //!
 //! Applying is never optimistic. It produces a commit sha and can be refused three
-//! ways — dirty tree, read-only target, no patch — so the row only changes once the
+//! ways — dirty tree, read-only target, no patch — so the card only moves once the
 //! server says it did, and a refusal is shown in the server's own words.
 //!
-//! The layout has one breakpoint. Below `WIDE` columns a two-pane split gives each
-//! pane too little to be read, so only the focused pane is drawn and it gets the
-//! whole width; above it, both are drawn and focus only moves the accent border.
-//! `tab` means "the detail" either way, which keeps `enter` unambiguously "apply".
+//! Reading one item whole happens in a window over the board (`enter`), so your
+//! place never moves; moving a card on (`a`) or out (`x`) happens where you
+//! already are, and what "on" costs is the lane's business — see `advance`.
 
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{
-    Clear, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Tabs,
-    Wrap,
-};
+use ratatui::widgets::{Clear, Paragraph, Tabs, Wrap};
 use ratatui::Frame;
 use std::sync::mpsc;
 use std::time::Duration;
 
 use crate::api::{Client, Config, State, Suggestion};
 use crate::theme::{self, severity_colour, status_colour, tone_colour};
-use crate::ui::{badge, fit_parts, titled, truncate, wrapped};
+use crate::ui::{badge, fit_parts, short, title_of, titled, truncate, wrapped};
 use crate::keys::{self, Action, Tab};
-use crate::views::{board, settings, skills};
+use crate::views::{agent, board, settings, skills};
 use crate::lifecycle::{
-    awaits_pass, can_transition, decision_status, has_landed, is_before_decision, is_terminal,
-    lifecycle, next_statuses, status_icon, status_spec,
+    actor_of, awaits_pass, decision_status, exit, forward, is_terminal, landed_status, lifecycle,
+    next_statuses, status_icon, status_spec,
 };
 
-const TICK: Duration = Duration::from_millis(250);
-
-/// Under this many columns, a split leaves both panes unreadable, so only the
-/// focused one is drawn. 90 is where the list can still hold a skill and a
-/// forty-character slug at 45% of the width.
-const WIDE: u16 = 90;
-
-/* ------------------------------------------------------------------ filter ---- */
-
-/// `Open` is the default: a queue is for deciding, and a suggestion whose fix
-/// has already landed is not a decision — it is history that was drowning the
-/// eighteen rows that still wanted one. `f` cycles to `All` when the history is
-/// wanted.
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum Filter {
-    Open,
-    Undecided,
-    Approved,
-    All,
-}
-
-impl Filter {
-    fn next(self) -> Self {
-        match self {
-            Filter::Open => Filter::Undecided,
-            Filter::Undecided => Filter::Approved,
-            Filter::Approved => Filter::All,
-            Filter::All => Filter::Open,
-        }
-    }
-
-    fn label(self) -> Option<&'static str> {
-        match self {
-            Filter::Open => Some("open"),
-            Filter::Undecided => Some("undecided"),
-            Filter::Approved => Some("approved"),
-            Filter::All => None,
-        }
-    }
-
-    /// Membership comes from the spec, not from a list of names kept here — the
-    /// previous one was still matching `new` and `proposed` after the rename and
-    /// would have quietly filtered to nothing.
-    fn keeps(self, s: &Suggestion) -> bool {
-        match self {
-            Filter::All => true,
-            Filter::Open => {
-                s.status.is_empty() || (!is_terminal(&s.status) && !has_landed(&s.status))
-            }
-            Filter::Undecided => s.status.is_empty() || is_before_decision(&s.status),
-            Filter::Approved => status_spec(&s.status).is_some_and(|x| x.id == decision_status()),
-        }
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum Focus {
-    Queue,
-    Detail,
-}
+/// 100ms, which is the spinner's frame rate: a 10-frame braille cycle turns
+/// once a second. Ratatui diff-draws, so the extra wakeups cost almost nothing.
+const TICK: Duration = Duration::from_millis(100);
 
 /* -------------------------------------------------------------------- work ---- */
 
@@ -106,6 +45,9 @@ enum Req {
     /// `id` fences the run to one suggestion; `None` takes the backlog.
     Dispatch { id: Option<String> },
     Apply { id: String },
+    /// Land these in order and stop at the first refusal — the reason the first
+    /// one refused is the reason the rest would.
+    ApplyAll { ids: Vec<String> },
     Diff { id: String },
     Config,
     SaveConfig(serde_json::Value),
@@ -138,10 +80,12 @@ fn spawn_worker(client: Client, rx: mpsc::Receiver<Req>, tx: mpsc::Sender<Res>) 
                         }
                     }),
                 ),
-                Req::Dispatch { id } => Res::Acted(client.dispatch(id.as_deref()).map(|n| {
-                    match &id {
-                        Some(id) => format!("fable is on {} — its row relabels as it lands", short(id)),
-                        None => format!("fable is on {n} — rows relabel as it lands"),
+                Req::Dispatch { id } => Res::Acted(client.dispatch(id.as_deref()).map(|(n, at)| {
+                    match (&id, at) {
+                        (Some(id), 0) => format!("fable is on {} — its row relabels as it lands", short(id)),
+                        (None, 0) => format!("fable is on {n} — rows relabel as it lands"),
+                        (Some(id), at) => format!("{} is {at} in line — fable takes it next", short(id)),
+                        (None, at) => format!("the backlog is {at} in line — fable takes it next"),
                     }
                 })),
                 Req::Apply { id } => Res::Acted(client.apply(&id).map(|(sha, closed)| {
@@ -152,6 +96,24 @@ fn spawn_worker(client: Client, rx: mpsc::Receiver<Req>, tx: mpsc::Sender<Res>) 
                         format!("applied {} — {sha} · closed {closed} sibling(s)", short(&id))
                     }
                 })),
+                Req::ApplyAll { ids } => {
+                    let mut landed = 0;
+                    let mut stopped = None;
+                    for id in &ids {
+                        match client.apply(id) {
+                            Ok(_) => landed += 1,
+                            Err(e) => {
+                                stopped = Some(format!("{}: {e}", short(id)));
+                                break;
+                            }
+                        }
+                    }
+                    Res::Acted(match stopped {
+                        None => Ok(format!("applied {landed} — the lane is landed")),
+                        Some(why) if landed == 0 => Err(why),
+                        Some(why) => Err(format!("applied {landed}, then stopped at {why}")),
+                    })
+                }
                 Req::Diff { id } => {
                     let out = client.diff(&id);
                     Res::Diff(id, out)
@@ -172,40 +134,22 @@ fn spawn_worker(client: Client, rx: mpsc::Receiver<Req>, tx: mpsc::Sender<Res>) 
     });
 }
 
-/// `user/kaizen/2026-08-08-a-dead-end.md` -> `a-dead-end`.
-fn short(id: &str) -> String {
-    id.rsplit('/')
-        .next()
-        .unwrap_or(id)
-        .trim_end_matches(".md")
-        .splitn(4, '-')
-        .nth(3)
-        .unwrap_or(id)
-        .to_string()
-}
-
-/// What to call a suggestion in one line. Falls back to the id's tail rather than
-/// leaving a row anonymous.
-fn title_of(s: &Suggestion) -> String {
-    if s.slug.is_empty() {
-        short(&s.id)
-    } else {
-        s.slug.clone()
-    }
-}
-
 /* ------------------------------------------------------------------- state ---- */
 
 /// Things you consult, drawn on top of whichever tab you are on.
 ///
 /// Help carries both halves rather than being two overlays: the keys and the
-/// model are the two questions you have while looking at a queue, and making
+/// model are the two questions you have while looking at the board, and making
 /// them one overlay with a switch means you never have to remember which key
 /// opened which.
+///
+/// `Detail` holds the id, not an index: a refresh can reorder the lanes under
+/// the window, and the id keeps it on the same suggestion regardless.
 enum Overlay {
     Help { guide: bool, scroll: u16 },
     Diff { id: String, body: String, scroll: u16 },
     File { path: String, body: String, scroll: u16 },
+    Detail { id: String, scroll: u16 },
 }
 
 /// Where you were, precisely enough to put you back.
@@ -216,10 +160,6 @@ enum Overlay {
 #[derive(Clone, PartialEq)]
 struct Place {
     tab: Tab,
-    focus: Focus,
-    query: String,
-    filter: Filter,
-    sel: usize,
     board_lane: usize,
     board_sel: usize,
     skill_sel: usize,
@@ -234,19 +174,24 @@ struct Notice {
 struct App {
     state: Option<State>,
     error: Option<String>,
-    sel: usize,
-    scroll: u16,
     overlay: Option<Overlay>,
     notice: Option<Notice>,
     live: bool,
     busy: bool,
-    /// A dispatch was seen alive, so its next not-running state is an ending
-    /// worth announcing — the flag is what tells an ending from never-ran.
-    dispatch_seen: bool,
-    filter: Filter,
-    query: String,
-    searching: bool,
-    focus: Focus,
+    /// The card an id-targeted request is out for — an advance or discard, so
+    /// the board can spin that card, not just the header.
+    busy_on: Option<String>,
+    /// The runs last seen going — pid and what each was fenced to — so the
+    /// state where one is gone can say what became of its card. By pid, not a
+    /// flag: with a line behind them the seats are never all empty, and the
+    /// next run is already up when this one's ending arrives.
+    runs_seen: Vec<(u64, Option<String>)>,
+    /// `/` on the board: the text typed so far. While `Some`, keys go here and
+    /// the cursor follows the first card whose uid or name matches.
+    find: Option<String>,
+    /// Bumped once per loop iteration; the spinner glyph derives from it, so
+    /// `draw` stays a pure function of `&App` and tests can pin a frame.
+    spin: usize,
     tab: Tab,
     /// One cursor per list, so switching tabs does not move the other one.
     /// The board has two — which lane, and which card in it.
@@ -268,18 +213,15 @@ impl App {
         Self {
             state: None,
             error: None,
-            sel: 0,
-            scroll: 0,
             overlay: None,
             notice: None,
             live: false,
             busy: true,
-            dispatch_seen: false,
-            filter: Filter::Open,
-            query: String::new(),
-            searching: false,
-            focus: Focus::Queue,
-            tab: Tab::Queue,
+            busy_on: None,
+            runs_seen: Vec::new(),
+            find: None,
+            spin: 0,
+            tab: Tab::Board,
             board_lane: 0,
             board_sel: 0,
             skill_sel: 0,
@@ -291,28 +233,6 @@ impl App {
         }
     }
 
-    /// The queue after the filter and the search. The server's order is kept —
-    /// re-ranking here would invent an order the dashboard does not share.
-    fn visible(&self) -> Vec<&Suggestion> {
-        let Some(state) = self.state.as_ref() else { return Vec::new() };
-        let needle = self.query.to_lowercase();
-        state
-            .queue()
-            .into_iter()
-            .filter(|s| self.filter.keeps(s))
-            .filter(|s| {
-                needle.is_empty()
-                    || s.slug.to_lowercase().contains(&needle)
-                    || s.skill.to_lowercase().contains(&needle)
-                    || s.id.to_lowercase().contains(&needle)
-            })
-            .collect()
-    }
-
-    fn total(&self) -> usize {
-        self.state.as_ref().map(|s| s.queue().len()).unwrap_or(0)
-    }
-
     /// The card under the board's two cursors, straight from the lanes the view
     /// draws — same source, so the keys act on what the eye is on.
     fn board_selected(&self) -> Option<&Suggestion> {
@@ -321,25 +241,13 @@ impl App {
     }
 
     fn selected_id(&self) -> Option<String> {
-        match self.tab {
-            Tab::Board => self.board_selected().map(|s| s.id.clone()),
-            _ => self.visible().get(self.sel).map(|s| s.id.clone()),
-        }
+        self.board_selected().map(|s| s.id.clone())
     }
 
-    /// The status of the row the keys act on, canonical-or-raw as the file has it.
-    fn selected_status(&self) -> Option<String> {
-        match self.tab {
-            Tab::Board => self.board_selected().map(|s| s.status.clone()),
-            _ => self.visible().get(self.sel).map(|s| s.status.clone()),
-        }
-    }
-
-    /// Anything that can shrink the list — a refresh, a filter, a keystroke in the
-    /// search — has to leave the selection on a row that still exists. The board
-    /// shrinks too: a relabelled card moves lanes, and an emptied lane collapses.
+    /// Anything that can shrink the board — a refresh most of all — has to leave
+    /// the selection on a card that still exists: a relabelled card moves lanes,
+    /// and an emptied lane collapses.
     fn clamp(&mut self) {
-        self.sel = self.sel.min(self.visible().len().saturating_sub(1));
         let lanes = self.state.as_ref().map(board::lanes).unwrap_or_default();
         self.board_lane = self.board_lane.min(lanes.len().saturating_sub(1));
         let cards = lanes.get(self.board_lane).map(|l| l.items.len()).unwrap_or(0);
@@ -348,9 +256,8 @@ impl App {
 
     /// j/k, dispatched to whatever the current tab is actually showing.
     ///
-    /// One entry point rather than a match at every call site: the queue has a
-    /// focus model and two of the tabs are plain lists, and threading that
-    /// distinction through four key handlers is how they drift apart.
+    /// One entry point rather than a match at every call site, so the four
+    /// tabs cannot drift apart on what a step means.
     fn move_by(&mut self, delta: isize) {
         let step = |cur: usize, len: usize| -> usize {
             if len == 0 {
@@ -360,17 +267,8 @@ impl App {
             }
         };
         match self.tab {
-            Tab::Queue if self.focus == Focus::Detail => {
-                self.scroll = self.scroll.saturating_add_signed(delta as i16)
-            }
-            Tab::Queue => {
-                let next = step(self.sel, self.visible().len());
-                if next != self.sel {
-                    self.sel = next;
-                    // A new row is a new document; the old offset lands mid-sentence.
-                    self.scroll = 0;
-                }
-            }
+            // The agents tab is a short list with nothing to select.
+            Tab::Agent => {}
             Tab::Board => {
                 let cards = self
                     .state
@@ -396,10 +294,6 @@ impl App {
     fn place(&self) -> Place {
         Place {
             tab: self.tab,
-            focus: self.focus,
-            query: self.query.clone(),
-            filter: self.filter,
-            sel: self.sel,
             board_lane: self.board_lane,
             board_sel: self.board_sel,
             skill_sel: self.skill_sel,
@@ -425,10 +319,6 @@ impl App {
     fn go_back(&mut self) -> bool {
         let Some(p) = self.history.pop() else { return false };
         self.tab = p.tab;
-        self.focus = p.focus;
-        self.query = p.query;
-        self.filter = p.filter;
-        self.sel = p.sel;
         self.board_lane = p.board_lane;
         self.board_sel = p.board_sel;
         self.skill_sel = p.skill_sel;
@@ -457,13 +347,6 @@ impl App {
         self.pending_config().is_some()
     }
 
-    /// How many suggestions could actually become approved right now. Zero is
-    /// what decides whether asking the server is worth a round trip.
-    fn approvable(&self) -> usize {
-        let Some(state) = self.state.as_ref() else { return 0 };
-        state.suggestions.iter().filter(|s| can_transition(&s.status, "approved")).count()
-    }
-
     fn skills(&self) -> Vec<&crate::api::Skill> {
         self.state.as_ref().map(|s| skills::ranked(&s.skills)).unwrap_or_default()
     }
@@ -471,123 +354,130 @@ impl App {
     fn say(&mut self, text: impl Into<String>, error: bool) {
         self.notice = Some(Notice { text: text.into(), error });
     }
+
+    /// The status the selected lane holds — what `A` widens over. `None` for
+    /// an empty lane; the closed lane answers with whichever terminal is on top,
+    /// which has no forward move, so it refuses like any other.
+    fn lane_status(&self) -> Option<String> {
+        let state = self.state.as_ref()?;
+        board::lanes(state).get(self.board_lane)?.items.first().map(|s| s.status.clone())
+    }
+
+    /// Is the selected lane a place cards wait rather than a stage they hold?
+    fn lane_holding(&self) -> bool {
+        self.state
+            .as_ref()
+            .and_then(|s| board::lanes(s).get(self.board_lane).map(|l| l.holding))
+            .unwrap_or(false)
+    }
+}
+
+/// What `a` costs this card: the one move its lane waits for. `Err` is the
+/// refusal, in the footer's words — said here, before a 409 or a 422 travels
+/// the wire to say the same thing.
+///
+/// Derived, so a lane cannot be left without its key: short of the decision the
+/// pass moves it, at the decision you do, right after it the server lands it,
+/// and past that nothing in the TUI does — the spec names who.
+///
+/// Takes the card, not just its status, because the block is a fact about the
+/// card. A parked one refuses here rather than on the wire: the request would
+/// be accepted as far as the status is concerned and spend a detached model run
+/// to conclude what `blocked_on` already says.
+fn advance(s: &Suggestion) -> Result<Req, String> {
+    let from = s.status.as_str();
+    let Some(to) = forward(from) else {
+        return Err(format!("{from} is terminal — nothing follows it"));
+    };
+    if awaits_pass(from) {
+        if !s.blocked_on.is_empty() {
+            return Err(format!("parked — {}", s.blocked_on));
+        }
+        Ok(Req::Dispatch { id: Some(s.id.clone()) })
+    } else if !s.blocked_on.is_empty() {
+        // Past the pass the move is yours or the server's, and the block names
+        // what has to happen first — a carrier patch, a writable target, a file
+        // only you can move. Advancing anyway writes a status the next step
+        // cannot honour.
+        Err(format!("parked — {}", s.blocked_on))
+    } else if to == decision_status() {
+        Ok(Req::SetStatus { id: s.id.clone(), status: to.into() })
+    } else if Some(to) == landed_status() {
+        Ok(Req::Apply { id: s.id.clone() })
+    } else {
+        let who = actor_of(to).unwrap_or("someone else");
+        Err(format!("{from} → {to} is done by {who}, not by a key"))
+    }
+}
+
+/// What to say when the run in the seat is gone. A fenced run is judged by
+/// where its card ended up — the status is the outcome, and the lane it lands
+/// in is named when that is off to the right; a backlog run by its exit code,
+/// when the state still holds it (a line behind it may already have moved on).
+fn run_outcome(state: &State, pid: u64, fenced: Option<&str>) -> (String, bool) {
+    if let Some(id) = fenced {
+        return match state.suggestions.iter().find(|s| s.id == id) {
+            Some(s) => {
+                let lane = if is_terminal(&s.status) { " (closed lane)" } else { "" };
+                (format!("{} → {}{lane}", short(id), s.status), false)
+            }
+            None => (format!("{} → gone from disk", short(id)), true),
+        };
+    }
+    let left = state.suggestions.iter().filter(|s| awaits_pass(&s.status)).count();
+    let code = state
+        .dispatch
+        .as_ref()
+        .and_then(|d| d.runs.iter().find(|r| r.pid == pid))
+        .and_then(|r| r.exit_code);
+    match code {
+        Some(0) => (format!("fable pass done — {left} still to advance"), false),
+        Some(code) => (format!("fable pass failed (exit {code}) — 2 opens the agent tab"), true),
+        // Adopted across a restart, or already aged off the list: no code to
+        // read, and nothing to alarm about.
+        None => (format!("fable pass ended — {left} still to advance"), false),
+    }
+}
+
+/// The card `/` lands on: the first, in lane order, whose uid starts with the
+/// query or whose name contains it, case-blind. Position as (lane, card).
+fn find_card(state: &State, query: &str) -> Option<(usize, usize)> {
+    let q = query.to_lowercase();
+    if q.is_empty() {
+        return None;
+    }
+    board::lanes(state).iter().enumerate().find_map(|(l, lane)| {
+        lane.items
+            .iter()
+            .position(|s| s.uid.to_lowercase().starts_with(&q) || title_of(s).to_lowercase().contains(&q))
+            .map(|c| (l, c))
+    })
+}
+
+/// `x`: the card's way out. Not every status has one — the pipeline owns a
+/// failed item, and a terminal is already out.
+///
+/// Never gated on `blocked_on`: closing a card is exactly the move a parked one
+/// still has, and a lane you can enter but not leave is a worse bug than the
+/// one the block prevents.
+fn discard(s: &Suggestion) -> Result<Req, String> {
+    let from = s.status.as_str();
+    match exit(from) {
+        Some(to) => Ok(Req::SetStatus { id: s.id.clone(), status: to.into() }),
+        None if next_statuses(from).is_empty() => {
+            Err(format!("{from} is terminal — nothing follows it"))
+        }
+        None => Err(format!("{from} has no way out — it can only become {}", next_statuses(from).join(", "))),
+    }
 }
 
 /* -------------------------------------------------------------------- draw ---- */
-
-fn draw_queue(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
-    let visible = app.visible();
-    let total = app.total();
-    let title = if visible.len() == total && app.query.is_empty() {
-        format!("Queue ({total})")
-    } else {
-        let mut t = format!("Queue ({} of {total}", visible.len());
-        if let Some(label) = app.filter.label() {
-            t.push_str(" · ");
-            t.push_str(label);
-        }
-        if !app.query.is_empty() {
-            t.push_str(" · /");
-            t.push_str(&app.query);
-        }
-        t.push(')');
-        t
-    };
-
-    let outer = titled(&title, area, focused);
-    let inner = outer.inner(area);
-    frame.render_widget(outer, area);
-
-    if visible.is_empty() {
-        let msg = match (app.state.is_none(), total) {
-            (true, _) => "reading skills…",
-            (false, 0) => "nothing to decide",
-            // The queue is not empty, the view of it is — say which key undoes that.
-            _ => "nothing matches — f cycles the filter, / clears the search",
-        };
-        frame.render_widget(
-            Paragraph::new(msg).wrap(Wrap { trim: false }).style(Style::new().fg(theme::dim())),
-            inner,
-        );
-        return;
-    }
-
-    // The scrollbar gets its own column rather than painting over the last one.
-    let scrolls = visible.len() > inner.height as usize;
-    let (list_area, bar_area) = if scrolls {
-        (
-            Rect { width: inner.width.saturating_sub(1), ..inner },
-            Some(Rect { x: inner.x + inner.width.saturating_sub(1), width: 1, ..inner }),
-        )
-    } else {
-        (inner, None)
-    };
-
-    // marker(2) + score(4) + severity(2) + status(2) + flag(2) are fixed; skill
-    // and slug share what is left, with the slug favoured — it is the column you
-    // actually read down. A narrow pane drops the skill rather than shaving both.
-    const MARKER: u16 = 2;
-    const FIXED: u16 = 10;
-    let spare = list_area.width.saturating_sub(MARKER + FIXED) as usize;
-    let skill_w = if spare < 36 { 0 } else { (spare / 3).min(16) };
-    let slug_w = spare.saturating_sub(skill_w + 2 * usize::from(skill_w > 0));
-
-    let items: Vec<ListItem> = visible
-        .iter()
-        .map(|s| {
-            let mut spans = vec![
-                Span::styled(format!("{:>3} ", s.score.round() as i64), Style::new().fg(theme::dim())),
-                Span::styled(
-                    format!("{} ", theme::severity_icon(&s.severity)),
-                    Style::new().fg(severity_colour(&s.severity)),
-                ),
-                Span::styled(
-                    format!("{} ", status_icon(&s.status)),
-                    Style::new().fg(status_colour(&s.status)),
-                ),
-                // The flag is what tells "parked on a call of yours" from
-                // merely "not there yet" — the detail carries the one line why.
-                Span::styled(
-                    format!("{} ", if s.blocked_on.is_empty() { ' ' } else { '⚑' }),
-                    Style::new().fg(theme::warn()),
-                ),
-            ];
-            if skill_w > 0 {
-                spans.push(Span::styled(
-                    format!("{:<width$}  ", truncate(&s.skill, skill_w), width = skill_w),
-                    Style::new().fg(theme::dim()),
-                ));
-            }
-            spans.push(Span::raw(truncate(&title_of(s), slug_w)));
-            ListItem::new(Line::from(spans))
-        })
-        .collect();
-
-    let mut list_state = ListState::default().with_selected(Some(app.sel));
-    frame.render_stateful_widget(
-        List::new(items)
-            // A marker as well as a background: a terminal with a weak or absent
-            // selection colour still shows which row the keys act on.
-            .highlight_symbol("▸ ")
-            .highlight_style(Style::new().bg(theme::selection_bg()))
-            .scroll_padding(2),
-        list_area,
-        &mut list_state,
-    );
-
-    if let Some(bar) = bar_area {
-        frame.render_stateful_widget(
-            Scrollbar::new(ScrollbarOrientation::VerticalRight),
-            bar,
-            &mut ScrollbarState::new(visible.len()).position(app.sel),
-        );
-    }
-}
 
 fn detail_lines(s: &Suggestion) -> Vec<Line<'static>> {
     // The slug is the block's title, so the body opens on the facts rather than on
     // three wrapped lines of the id — which is kept, dimmed, at the bottom.
     let mut lines = vec![Line::from(vec![
+        badge(&s.uid, theme::dim()),
         badge(&s.severity, severity_colour(&s.severity)),
         badge(&s.status, status_colour(&s.status)),
         badge(&s.kind, theme::accent()),
@@ -643,35 +533,6 @@ fn detail_lines(s: &Suggestion) -> Vec<Line<'static>> {
     lines
 }
 
-fn draw_detail(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
-    let visible = app.visible();
-    let selected = visible.get(app.sel);
-    let title = selected.map(|s| title_of(s)).unwrap_or_else(|| "Detail".into());
-    let outer = titled(&title, area, focused);
-    let inner = outer.inner(area);
-    frame.render_widget(outer, area);
-
-    let Some(s) = selected else { return };
-
-    frame.render_widget(
-        Paragraph::new(detail_lines(s))
-            .wrap(Wrap { trim: false })
-            .scroll((app.scroll, 0)),
-        inner,
-    );
-}
-
-/// The queue's columns. It is a composed line rather than a table — the slug has
-/// to run to the edge — so there is no header row and this is the only place
-/// they are ever named.
-const QUEUE_COLUMNS: &[(&str, &str)] = &[
-    ("score", "impact × (1 + recurrences) ÷ effort; untriaged score 0"),
-    ("▲ ► ▼", "severity — shape carries it even with no colour"),
-    ("status", "how far it has got, one icon per status"),
-    ("skill", "which skill filed it"),
-    ("slug", "what it is about"),
-];
-
 /// The closed set a column can hold, when it has one.
 ///
 /// A sub-list rather than a run-on inside the description: nine statuses in one
@@ -683,14 +544,12 @@ fn column_values(tab: Tab, column: &str) -> Vec<(String, String)> {
     };
     match (tab, column) {
         // Generated, so renaming a status cannot leave a stale legend behind.
-        (Tab::Queue, "status") | (Tab::Board, "lane") => lifecycle()
+        (Tab::Board, "lane") => lifecycle()
             .statuses
             .iter()
             .map(|s| (format!("{} {}", status_icon(&s.id), s.abbrev), s.id.clone()))
             .collect(),
-        (Tab::Queue, "▲ ► ▼") => {
-            pairs(&[("▲", "high"), ("►", "medium"), ("▼", "low")])
-        }
+        (Tab::Board, "card") => pairs(&[("▲", "high"), ("►", "medium"), ("▼", "low")]),
         (Tab::Skills, "health") => pairs(skills::HEALTH),
         _ => Vec::new(),
     }
@@ -698,8 +557,8 @@ fn column_values(tab: Tab, column: &str) -> Vec<(String, String)> {
 
 fn columns_for(tab: Tab) -> &'static [(&'static str, &'static str)] {
     match tab {
-        Tab::Queue => QUEUE_COLUMNS,
         Tab::Board => board::COLUMNS,
+        Tab::Agent => agent::COLUMNS,
         Tab::Skills => skills::COLUMNS,
         Tab::Settings => settings::COLUMNS,
     }
@@ -726,14 +585,17 @@ fn help_keys(tab: Tab) -> Vec<Line<'static>> {
         }
         out.push(Line::raw(""));
     }
-    // Only where applying is a thing you can do here. A footnote about git on
+    // Only where advancing is a thing you can do here. A footnote about git on
     // the settings card is the same clutter as a key you cannot press.
-    if keys::resolve(KeyCode::Enter, tab) == Some(keys::Action::Apply) {
-        out.push(Line::styled(
-            "applying needs a clean tree",
-            Style::new().fg(theme::dim()),
-        ));
-        out.push(Line::styled("and a patch on disk", Style::new().fg(theme::dim())));
+    if keys::resolve(KeyCode::Char('a'), tab) == Some(keys::Action::Advance) {
+        for line in [
+            "advance does what the lane waits for:",
+            "a fable pass, your yes, or the server",
+            "landing the patch — which needs a",
+            "clean tree and a patch on disk",
+        ] {
+            out.push(Line::styled(line, Style::new().fg(theme::dim())));
+        }
     }
     out
 }
@@ -877,7 +739,7 @@ fn docs_lines(width: usize) -> Vec<Line<'static>> {
     out
 }
 
-fn draw_overlay(frame: &mut Frame, area: Rect, overlay: &Overlay, tab: Tab) {
+fn draw_overlay(frame: &mut Frame, area: Rect, overlay: &Overlay, tab: Tab, state: Option<&State>) {
     // Size first: the docs and the columns both wrap their own prose and need to
     // know how wide the box will be. `min` after the clamp — on a terminal
     // narrower than the floor the box would be wider than the screen and the
@@ -904,6 +766,7 @@ fn draw_overlay(frame: &mut Frame, area: Rect, overlay: &Overlay, tab: Tab) {
             (format!("file — {}", path.rsplit('/').next().unwrap_or(path)), *scroll)
         }
         Overlay::Diff { id, scroll, .. } => (format!("patch — {}", short(id)), *scroll),
+        Overlay::Detail { id, scroll } => (format!("detail — {}", short(id)), *scroll),
     };
 
     frame.render_widget(Clear, box_area);
@@ -953,6 +816,18 @@ fn draw_overlay(frame: &mut Frame, area: Rect, overlay: &Overlay, tab: Tab) {
                 .collect();
             frame.render_widget(paragraph(lines), inner);
         }
+        Overlay::Detail { id, .. } => {
+            let lines = match state.and_then(|st| st.suggestions.iter().find(|s| s.id == *id)) {
+                Some(s) => detail_lines(s),
+                // A refresh can close the file under the window; a calm line
+                // beats a popup that silently shows someone else's card.
+                None => vec![Line::styled(
+                    "gone — the state refreshed it away (esc)".to_string(),
+                    Style::new().fg(theme::dim()),
+                )],
+            };
+            frame.render_widget(paragraph(lines), inner);
+        }
     }
 }
 
@@ -960,19 +835,25 @@ fn draw(frame: &mut Frame, app: &App) {
     let [header, body, footer] =
         Layout::vertical([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)])
             .areas(frame.area());
-    let wide = frame.area().width >= WIDE;
-    // Nothing to focus when nothing is listed — otherwise a narrow terminal shows
-    // an empty detail box and no way to learn why.
-    let focus = if app.visible().is_empty() { Focus::Queue } else { app.focus };
 
     let m = app.state.as_ref().map(|s| s.metrics.clone()).unwrap_or_default();
     let mut parts = vec![format!("{} open", m.open)];
     if app.busy {
-        parts.push("working…".into());
+        parts.push(format!("{} working…", crate::ui::spinner(app.spin)));
     }
     parts.push(format!("{} untriaged", m.untriaged));
-    if app.state.as_ref().and_then(|s| s.dispatch.as_ref()).is_some_and(|d| d.running) {
-        parts.push("\u{f135} fable triaging".into());
+    if m.on_you > 0 {
+        parts.push(format!("⚑ {} on you", m.on_you));
+    }
+    let agents = app
+        .state
+        .as_ref()
+        .and_then(|s| s.dispatch.as_ref())
+        .map(|d| d.runs.iter().filter(|r| r.running).count())
+        .unwrap_or(0);
+    if agents > 0 {
+        let word = if agents == 1 { "agent" } else { "agents" };
+        parts.push(format!("{} {agents} {word}", crate::ui::spinner(app.spin)));
     }
     // The tab bar doubles as its own legend: the number beside each name is the
     // key that gets there, so there is nothing to look up. `Tabs` owns the
@@ -1019,19 +900,32 @@ fn draw(frame: &mut Frame, app: &App) {
         );
     } else {
         match app.tab {
-            Tab::Queue if wide => {
-                let [list, detail] =
-                    Layout::horizontal([Constraint::Percentage(45), Constraint::Min(30)]).areas(body);
-                draw_queue(frame, list, app, focus == Focus::Queue);
-                draw_detail(frame, detail, app, focus == Focus::Detail);
-            }
-            Tab::Queue if focus == Focus::Detail => draw_detail(frame, body, app, true),
-            Tab::Queue => draw_queue(frame, body, app, true),
             Tab::Board => {
                 if let Some(state) = app.state.as_ref() {
-                    board::draw(frame, body, state, app.board_lane, app.board_sel);
+                    board::draw(
+                        frame,
+                        body,
+                        state,
+                        app.board_lane,
+                        app.board_sel,
+                        crate::ui::spinner(app.spin),
+                        app.busy_on.as_deref(),
+                    );
+                } else {
+                    // The board is the front door now, so the first-load message
+                    // the queue used to carry lives here.
+                    frame.render_widget(
+                        Paragraph::new("reading skills…").style(Style::new().fg(theme::dim())),
+                        body,
+                    );
                 }
             }
+            Tab::Agent => agent::draw(
+                frame,
+                body,
+                app.state.as_ref().and_then(|s| s.dispatch.as_ref()),
+                crate::ui::spinner(app.spin),
+            ),
             Tab::Skills => {
                 let list = app.state.as_ref().map(|s| s.skills.as_slice()).unwrap_or(&[]);
                 skills::draw(frame, body, list, app.skill_sel, true);
@@ -1050,7 +944,7 @@ fn draw(frame: &mut Frame, app: &App) {
     draw_footer(frame, footer, app);
 
     if let Some(overlay) = &app.overlay {
-        draw_overlay(frame, frame.area(), overlay, app.tab);
+        draw_overlay(frame, frame.area(), overlay, app.tab, app.state.as_ref());
     }
 }
 
@@ -1059,8 +953,10 @@ fn draw_footer(frame: &mut Frame, footer: Rect, app: &App) {
     // base URL used to sit on the right; it was never something anyone needed
     // mid-decision, and it was taking the room the keys wanted.
     let width = footer.width as usize;
-    let (text, colour) = if app.searching {
-        (format!(" /{}▏", app.query), theme::accent())
+    let (text, colour) = if let Some(q) = &app.find {
+        // The prompt takes the footer while it is open: the cursor is already
+        // on the first match, so this line is the query and how to leave it.
+        (format!(" /{q}▏  enter keeps · esc back"), theme::accent())
     } else if let Some(n) = &app.notice {
         (
             format!(" {}", truncate(&n.text, width.saturating_sub(1))),
@@ -1140,29 +1036,30 @@ fn run(
         }
         while let Ok(message) = res.try_recv() {
             app.busy = false;
+            // Whatever was out has answered; a still-running fenced dispatch
+            // keeps its card spinning through `state.dispatch` instead.
+            app.busy_on = None;
             match message {
                 Res::State(Ok(state)) => {
                     app.error = None;
-                    let running = state.dispatch.as_ref().is_some_and(|d| d.running);
-                    if app.dispatch_seen && !running {
-                        match state.dispatch.as_ref().and_then(|d| d.exit_code) {
-                            Some(0) => app.say(
-                                format!(
-                                    "fable pass done — {} still to advance",
-                                    state.suggestions.iter().filter(|s| awaits_pass(&s.status)).count()
-                                ),
-                                false,
-                            ),
-                            code => app.say(
-                                format!(
-                                    "fable pass failed (exit {}) — see ~/.claude/kaizen/dispatch.log",
-                                    code.unwrap_or(-1)
-                                ),
-                                true,
-                            ),
-                        }
+                    let now: Vec<(u64, Option<String>)> = state
+                        .dispatch
+                        .as_ref()
+                        .map(|d| d.runs.iter().filter(|r| r.running).map(|r| (r.pid, r.id.clone())).collect())
+                        .unwrap_or_default();
+                    // Every run seen going that is not going now has an ending
+                    // to report; several at once share the one footer line.
+                    let ended: Vec<(String, bool)> = std::mem::take(&mut app.runs_seen)
+                        .into_iter()
+                        .filter(|(pid, _)| !now.iter().any(|(p, _)| p == pid))
+                        .map(|(pid, fenced)| run_outcome(&state, pid, fenced.as_deref()))
+                        .collect();
+                    if !ended.is_empty() {
+                        let error = ended.iter().any(|(_, e)| *e);
+                        let text = ended.into_iter().map(|(t, _)| t).collect::<Vec<_>>().join(" · ");
+                        app.say(text, error);
                     }
-                    app.dispatch_seen = running;
+                    app.runs_seen = now;
                     app.state = Some(state);
                     app.clamp();
                 }
@@ -1193,6 +1090,10 @@ fn run(
             }
         }
 
+        // One bump per iteration: `poll` below times out every TICK, so this is
+        // the spinner's clock, and a field rather than an Instant keeps `draw` a
+        // pure function of `&App` that tests can pin.
+        app.spin = app.spin.wrapping_add(1);
         terminal.draw(|frame| draw(frame, app))?;
 
         if !event::poll(TICK)? {
@@ -1206,25 +1107,27 @@ fn run(
             return Ok(());
         }
 
-        // The search line owns the keyboard while it is open, or `a` would approve
-        // instead of typing an "a".
-        if app.searching {
+        // The find prompt captures every key: text edits the query and moves
+        // the cursor to the first match; enter keeps the place, esc goes back
+        // to where `/` was pressed.
+        if let Some(q) = app.find.as_mut() {
             match key.code {
                 KeyCode::Esc => {
-                    app.searching = false;
-                    app.query.clear();
-                    app.clamp();
+                    app.find = None;
+                    app.go_back();
                 }
-                KeyCode::Enter => app.searching = false,
+                KeyCode::Enter => app.find = None,
                 KeyCode::Backspace => {
-                    app.query.pop();
-                    app.sel = 0;
+                    q.pop();
                 }
-                KeyCode::Char(c) => {
-                    app.query.push(c);
-                    app.sel = 0;
-                }
+                KeyCode::Char(c) => q.push(c),
                 _ => {}
+            }
+            if let (Some(q), Some(state)) = (app.find.as_deref(), app.state.as_ref()) {
+                if let Some((lane, card)) = find_card(state, q) {
+                    app.board_lane = lane;
+                    app.board_sel = card;
+                }
             }
             continue;
         }
@@ -1235,7 +1138,8 @@ fn run(
                 match o {
                     Overlay::Help { scroll, .. }
                     | Overlay::File { scroll, .. }
-                    | Overlay::Diff { scroll, .. } => scroll,
+                    | Overlay::Diff { scroll, .. }
+                    | Overlay::Detail { scroll, .. } => scroll,
                 }
             }
             match key.code {
@@ -1270,18 +1174,13 @@ fn run(
         }
 
         app.notice = None;
-        // Ctrl-C is not a binding — it is the terminal's, and it should work
-        // from inside a search box too, which the table below deliberately does
-        // not reach.
+        // Ctrl-C is not a binding — it is the terminal's, and the table below
+        // deliberately does not reach it.
         let Some(action) = keys::resolve(key.code, app.tab) else { continue };
         match action {
             Action::Quit => return Ok(()),
             Action::Back => {
-                // The detail pane is a step within the queue rather than a place
-                // of its own, so it closes first and does not consume history.
-                if app.focus == Focus::Detail {
-                    app.focus = Focus::Queue;
-                } else if !app.go_back() {
+                if !app.go_back() {
                     // Never an exit. `esc` is labelled "back", and a key that
                     // sometimes quits instead is one you stop trusting.
                     app.say("nothing to go back to — q quits", false);
@@ -1310,10 +1209,6 @@ fn run(
                     }
                 }
             }
-            Action::ScrollDetail(d) => app.scroll = app.scroll.saturating_add_signed(d),
-            Action::ToggleFocus => {
-                app.focus = if app.focus == Focus::Queue { Focus::Detail } else { Focus::Queue }
-            }
             Action::Help => app.overlay = Some(Overlay::Help { guide: false, scroll: 0 }),
             Action::Guide => app.overlay = Some(Overlay::Help { guide: true, scroll: 0 }),
             Action::Refresh => {
@@ -1323,82 +1218,59 @@ fn run(
                     let _ = req.send(Req::Config);
                 }
             }
-            Action::CycleFilter => {
-                app.filter = app.filter.next();
-                app.sel = 0;
-                app.scroll = 0;
-            }
-            Action::Search => app.searching = true,
-            Action::Approve | Action::Reject => {
-                let status = if action == Action::Approve { "approved" } else { "rejected" };
-                match app.selected_status() {
-                    Some(from) if !can_transition(&from, status) => {
-                        let onward = next_statuses(&from);
-                        // "only triaged, rejected, superseded" reads as keys the
-                        // TUI should have. It shouldn't: the phases short of the
-                        // decision are unattended, so name who runs them instead.
-                        let owed = if status == decision_status() {
-                            crate::lifecycle::phases_until_decision(&from)
-                        } else {
-                            Vec::new()
-                        };
-                        app.say(
-                            if !owed.is_empty() {
-                                let names = owed
-                                    .iter()
-                                    .map(|p| p.title.to_lowercase())
-                                    .collect::<Vec<_>>()
-                                    .join(" then ");
-                                format!("{from} needs {names} first — t sends fable at it")
-                            } else if onward.is_empty() {
-                                format!("{from} is terminal — nothing follows it")
-                            } else {
-                                format!("{from} cannot become {status} — only {}", onward.join(", "))
-                            },
-                            true,
-                        );
-                    }
-                    Some(_) => {
-                        if let Some(id) = app.selected_id() {
-                            app.busy = true;
-                            let _ = req.send(Req::SetStatus { id, status: status.into() });
-                        }
-                    }
-                    None => {}
-                }
-            }
-            Action::ApproveAll => {
-                // The server would 409; saying why here beats a wire trip.
-                if app.approvable() == 0 {
-                    app.say("nothing can be approved — nothing sits at the decision".to_string(), true);
-                } else {
-                    app.busy = true;
-                    let _ = req.send(Req::Sweep { status: "approved".into() });
-                }
-            }
-            Action::Triage => match app.selected_status() {
-                // The same local refusal as approve: name why, before a 422
-                // travels the wire to say the same thing.
-                Some(from) if !awaits_pass(&from) => {
-                    app.say(format!("{from} needs nothing from a pass — it waits elsewhere"), true)
-                }
-                Some(_) => {
-                    if let Some(id) = app.selected_id() {
+            Action::Advance | Action::Discard => {
+                // Cloned rather than borrowed: the card is read out of the state
+                // the notice below writes into.
+                let Some(card) = app.board_selected().cloned() else { continue };
+                let step: fn(&Suggestion) -> Result<Req, String> =
+                    if action == Action::Advance { advance } else { discard };
+                match step(&card) {
+                    Ok(request) => {
                         app.busy = true;
-                        let _ = req.send(Req::Dispatch { id: Some(id) });
+                        app.busy_on = Some(card.id);
+                        let _ = req.send(request);
                     }
+                    Err(why) => app.say(why, true),
                 }
-                None => {}
-            },
-            Action::TriageAll => {
-                app.busy = true;
-                let _ = req.send(Req::Dispatch { id: None });
             }
-            Action::Apply => {
-                if let Some(id) = app.selected_id() {
+            // A holding lane is not a stage, so there is no one move to widen:
+            // its cards arrived from several statuses and each leaves by its own.
+            Action::AdvanceAll if app.lane_holding() => {
+                app.say("not a stage — a and x act on one card here", true)
+            }
+            Action::AdvanceAll => match app.lane_status() {
+                // The pass takes the whole backlog, not one lane — the server
+                // has no fence narrower than an id — which is what `A` on a
+                // pre-decision lane means anyway. At the decision it sweeps;
+                // at the landing it walks the lane.
+                Some(from) if awaits_pass(&from) => {
                     app.busy = true;
-                    let _ = req.send(Req::Apply { id });
+                    let _ = req.send(Req::Dispatch { id: None });
                 }
+                Some(from) if forward(&from) == Some(decision_status()) => {
+                    app.busy = true;
+                    let _ = req.send(Req::Sweep { status: decision_status().into() });
+                }
+                // Landing has no bulk route on the server — each apply is a
+                // commit — so the worker walks the lane in order and stops at
+                // the first refusal, which is the drain you would otherwise
+                // run from the CLI.
+                Some(from) if forward(&from) == landed_status() => {
+                    let ids: Vec<String> = app
+                        .state
+                        .as_ref()
+                        .and_then(|s| board::lanes(s).get(app.board_lane).map(|l| l.items.iter().map(|x| x.id.clone()).collect()))
+                        .unwrap_or_default();
+                    app.busy = true;
+                    let _ = req.send(Req::ApplyAll { ids });
+                }
+                Some(from) => app.say(format!("{from} moves one card at a time — a on each"), true),
+                None => app.say("nothing in this lane to advance", true),
+            },
+            Action::Find => {
+                // Where you were is worth keeping: esc from the prompt returns.
+                app.remember();
+                app.find = Some(String::new());
             }
             Action::Diff => {
                 if let Some(id) = app.selected_id() {
@@ -1407,28 +1279,12 @@ fn run(
                 }
             }
             Action::Open => match app.tab {
-                // The board locates; the queue is where one item is read whole.
+                // A window over the board, not a jump: your place never moves,
+                // and a closed card opens like any other — history is readable
+                // where it lives. No `remember()`: an overlay is not a place.
                 Tab::Board => {
                     if let Some(id) = app.selected_id() {
-                        // The queue never lists terminals or muted types, so a
-                        // closed card has no row to land on — say so instead of
-                        // silently selecting whatever sits at the top.
-                        let reachable =
-                            app.state.as_ref().is_some_and(|st| st.queue().iter().any(|q| q.id == id));
-                        if !reachable {
-                            app.say("a closed card has no queue row — it lives here", true);
-                        } else {
-                            app.remember();
-                            app.tab = Tab::Queue;
-                            app.query.clear();
-                            app.searching = false;
-                            app.scroll = 0;
-                            if !app.visible().iter().any(|s| s.id == id) {
-                                app.filter = Filter::All;
-                            }
-                            app.sel = app.visible().iter().position(|s| s.id == id).unwrap_or(0);
-                            app.say("esc goes back to the board", false);
-                        }
+                        app.overlay = Some(Overlay::Detail { id, scroll: 0 });
                     }
                 }
                 Tab::Skills => {
@@ -1457,22 +1313,26 @@ fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lifecycle::can_transition;
 
     fn state() -> State {
         serde_json::from_str(
             r#"{
               "suggestions": [
                 { "id": "user/kaizen/2026-08-08-approval-is-a-dead-end.md", "skill": "kaizen",
-                  "slug": "approval-is-a-dead-end",
+                  "uid": "AID", "slug": "approval-is-a-dead-end",
                   "severity": "high", "status": "approved", "type": "structural",
                   "objective": "bug", "score": 42, "surfaced": true, "incidents": 3,
                   "rung": 1, "scope": "skills/kaizen/SKILL.md",
                   "context": "First full pass.", "suggestion": "Write the patch.",
                   "rationale": "Because approval without one is a dead end." },
                 { "id": "user/other/2026-08-01-a-second-thing.md", "skill": "other",
-                  "slug": "a-second-thing",
+                  "uid": "AST", "slug": "a-second-thing",
                   "severity": "low", "status": "recorded", "score": 5, "surfaced": true,
-                  "blockedOn": "where should the guardrails live?" }
+                  "blockedOn": "where should the guardrails live?" },
+                { "id": "user/other/2026-08-01-a-third-thing.md", "skill": "other",
+                  "uid": "ATT", "slug": "a-third-thing",
+                  "severity": "low", "status": "recorded", "score": 4, "surfaced": true }
               ],
               "skills": [
                 { "name": "ts-pr-review", "kind": "user", "lines": 700, "scripts": 0,
@@ -1482,7 +1342,7 @@ mod tests {
                   "suggestions": 0, "per100": 0, "health": "scripted",
                   "path": "/s/ts-github-triage/SKILL.md" }
               ],
-              "metrics": { "open": 2, "untriaged": 0 }
+              "metrics": { "open": 2, "untriaged": 0, "onYou": 1 }
             }"#,
         )
         .unwrap()
@@ -1493,6 +1353,31 @@ mod tests {
         app.state = Some(state());
         app.busy = false;
         app
+    }
+
+    /// A card with only the two fields the decide keys read.
+    fn card(status: &str, blocked_on: &str) -> Suggestion {
+        Suggestion {
+            id: "user/x/2026-08-08-thing.md".into(),
+            status: status.into(),
+            blocked_on: blocked_on.into(),
+            ..Default::default()
+        }
+    }
+
+    /// One run for a fixture's dispatch: live when `exit` is None.
+    fn run(pid: u64, id: Option<&str>, exit: Option<i64>) -> crate::api::Run {
+        crate::api::Run {
+            pid,
+            id: id.map(String::from),
+            running: exit.is_none(),
+            exit_code: exit,
+            started_at: None,
+        }
+    }
+
+    fn dispatch(runs: Vec<crate::api::Run>, queue: Vec<Option<&str>>) -> crate::api::Dispatch {
+        crate::api::Dispatch { runs, queue: queue.into_iter().map(|q| q.map(String::from)).collect() }
     }
 
     fn render(app: &App, w: u16, h: u16) -> String {
@@ -1506,10 +1391,15 @@ mod tests {
             .join("\n")
     }
 
+    /// The name is the slug read as a sentence — dashes become spaces, the
+    /// first letter goes up, and nothing else moves: an underscore or a dot is
+    /// part of a filename the slug names.
     #[test]
-    fn short_keeps_the_slug_and_drops_the_date() {
-        assert_eq!(short("user/kaizen/2026-08-08-approval-is-a-dead-end.md"), "approval-is-a-dead-end");
-        assert_eq!(short("nonsense"), "nonsense");
+    fn short_reads_the_slug_aloud_and_drops_the_date() {
+        assert_eq!(short("user/kaizen/2026-08-08-approval-is-a-dead-end.md"), "Approval is a dead end");
+        assert_eq!(short("nonsense"), "Nonsense");
+        assert_eq!(crate::ui::humanize("scope-_lib-pr.md-has-siblings"), "Scope _lib pr.md has siblings");
+        assert_eq!(crate::ui::humanize(""), "");
     }
 
     #[test]
@@ -1531,47 +1421,122 @@ mod tests {
         assert_eq!(fit_parts(&parts, 5), "j/k …");
     }
 
+    /// The TUI opens on the board: lanes, cards, metrics and the decide keys,
+    /// with no queue to fall back to.
     #[test]
-    fn the_queue_and_its_detail_both_render() {
-        let text = render(&app_with_state(), 120, 30);
-        assert!(text.contains("Queue (2)"), "{text}");
-        assert!(text.contains("approval-is-a-dead-end"), "list shows the slug");
-        assert!(text.contains("skills/kaizen/SKILL.md"), "detail names the scope");
+    fn the_board_is_the_front_door_and_the_footer_offers_its_keys() {
+        let text = render(&app_with_state(), 200, 30);
+        assert!(text.contains("recorded (1)"), "lanes render: {text}");
+        // The name is the slug read aloud, with the uid in front as the handle;
+        // the slug itself is internal and never drawn on a card.
+        assert!(text.contains("AID Approval is a dead end"), "cards show uid and name: {text}");
+        assert!(!text.contains("approval-is-a-dead-end"), "the slug stays internal: {text}");
         assert!(text.contains("2 open"), "header carries the metrics");
         // The footer is easy to lose to a layout mistake and hard to notice.
-        assert!(text.contains("a approve"), "key hints render: {text}");
+        assert!(text.contains("a advance"), "key hints render: {text}");
         // No URL in the footer any more: it was never something anyone needed
         // mid-decision and it was taking the room the keys wanted.
         assert!(!text.contains("http://"), "the footer carries no URL: {text}");
     }
 
-    /// The columns that read the same on every row are one character each, and the
-    /// selected row is marked as well as highlighted.
     /// The chip is the only sign a detached run exists — the process is not a
     /// child of the TUI, so nothing else in the terminal says it is alive.
     #[test]
     fn a_live_dispatch_shows_in_the_header_and_an_ended_one_does_not() {
         let mut app = app_with_state();
+        // The tab bar says "2 agents" too, so count: the chip is the second.
+        app.state.as_mut().unwrap().dispatch = Some(dispatch(vec![run(4242, None, None)], vec![]));
+        assert!(render(&app, 120, 30).contains("1 agent"), "the chip is up");
         app.state.as_mut().unwrap().dispatch =
-            Some(crate::api::Dispatch { running: true, pid: 4242, exit_code: None });
-        assert!(render(&app, 120, 30).contains("fable triaging"), "the chip is up");
+            Some(dispatch(vec![run(4242, None, None), run(4243, Some("x"), None)], vec![]));
+        assert_eq!(render(&app, 120, 30).matches("2 agents").count(), 2, "and counts");
 
-        app.state.as_mut().unwrap().dispatch =
-            Some(crate::api::Dispatch { running: false, pid: 4242, exit_code: Some(0) });
-        assert!(!render(&app, 120, 30).contains("fable triaging"), "and down when it ends");
+        app.state.as_mut().unwrap().dispatch = Some(dispatch(vec![run(4242, None, Some(0))], vec![]));
+        let text = render(&app, 120, 30);
+        assert!(!text.contains("1 agent") && text.matches("agents").count() == 1, "down when it ends: {text}");
     }
 
-    /// The board's lanes come from the spec and collapse when empty: the
-    /// fixture holds one recorded and one approved, so exactly those two lanes
-    /// exist and the untouched statuses cost no width.
+    /// The braille frame advances with `spin` while anything is in flight, and
+    /// no frame at all is drawn when the TUI is at rest.
     #[test]
-    fn the_board_draws_a_lane_per_live_status_and_collapses_the_empty() {
+    fn the_spinner_turns_while_something_is_moving_and_rests_when_nothing_is() {
         let mut app = app_with_state();
-        app.tab = Tab::Board;
-        let text = render(&app, 120, 30);
+        app.busy = true;
+        assert!(render(&app, 120, 30).contains('⠋'), "frame 0 while busy");
+        app.spin = 1;
+        assert!(render(&app, 120, 30).contains('⠙'), "and it advances");
+
+        app.busy = false;
+        app.spin = 0;
+        let idle = render(&app, 120, 30);
+        assert!(
+            !idle.chars().any(|c| ('\u{2800}'..='\u{28FF}').contains(&c)),
+            "no braille at rest: {idle}"
+        );
+    }
+
+    /// Lanes wrap onto a second band rather than scrolling off the right, so
+    /// the whole board is one glance. Eight lanes are 4 and 4 — balanced, and
+    /// never a third band, which is a wall rather than a glance.
+    #[test]
+    fn lanes_wrap_onto_a_second_band_instead_of_scrolling_off_the_side() {
+        let mut app = app_with_state();
+        // Enough cards to fill every stage plus all three holding lanes.
+        let all = app.state.as_mut().unwrap();
+        for (i, status) in ["triaged", "planned", "applied", "failed"].iter().enumerate() {
+            let mut s = all.suggestions[0].clone();
+            s.id = format!("user/x/2026-08-0{i}-filler.md");
+            s.uid = format!("F{i}X");
+            s.slug = format!("filler-{i}");
+            s.status = (*status).into();
+            s.blocked_on = String::new();
+            all.suggestions.push(s);
+        }
+        all.dispatch = Some(dispatch(vec![run(1, Some("user/x/2026-08-00-filler.md"), None)], vec![]));
+        assert_eq!(board::lanes(all).len(), 8, "six statuses plus working and blocked");
+
+        // Wide enough for all eight side by side at the minimum width, and
+        // still two bands: a lane you can see but not read is not visible.
+        let wide = render(&app, 200, 34);
+        let bands = wide.lines().filter(|l| l.starts_with('╭')).count();
+        assert_eq!(bands, 2, "two bands: {wide}");
+        for lane in ["recorded", "triaged", "planned", "approved", "applied", "failed"] {
+            assert!(wide.contains(&format!("{lane} (")), "every lane on screen: {wide}");
+        }
+        assert!(wide.contains("working (") && wide.contains("blocked ("), "{wide}");
+        // Four on top, four underneath — the top band ends after the fourth.
+        let top = wide.lines().find(|l| l.starts_with('╭')).unwrap();
+        assert_eq!(top.matches('╭').count(), 4, "four lanes per band: {top}");
+
+        // A board short enough that a second band would be unreadable keeps one.
+        let short = render(&app, 200, 14);
+        assert_eq!(short.lines().filter(|l| l.starts_with('╭')).count(), 1, "{short}");
+    }
+
+    /// The confusion this prevents: a card sitting in `triaged` looked one
+    /// step from `approved` because the empty `planned` lane between them was
+    /// collapsed away. The stages stay; only loop-back statuses collapse.
+    #[test]
+    fn the_pipeline_stays_on_screen_even_where_it_is_empty() {
+        let text = render(&app_with_state(), 120, 30);
         assert!(text.contains("recorded (1)"), "{text}");
+        assert!(text.contains("triaged (0)"), "an empty stage still shows: {text}");
+        assert!(text.contains("planned (0)"), "the step before approval is visible: {text}");
         assert!(text.contains("approved (1)"), "{text}");
-        assert!(!text.contains("planned ("), "an empty lane is not drawn: {text}");
+        assert!(!text.contains("failed ("), "a loop-back lane collapses when empty: {text}");
+        assert!(!text.contains("closed ("), "and closed only exists once something is: {text}");
+    }
+
+    /// Each lane names its next phase and whose move it is, derived from the
+    /// spec — the answer to "why can't I approve this here", on the lane.
+    #[test]
+    fn every_lane_says_what_it_waits_for_and_whose_move_it_is() {
+        let text = render(&app_with_state(), 130, 30);
+        for caption in
+            ["→ triage (fable)", "→ plan (fable)", "→ decide (you)", "→ apply (auto)", "→ verify (auto)"]
+        {
+            assert!(text.contains(caption), "missing {caption:?}: {text}");
+        }
     }
 
     /// Terminals share one closed lane rather than three sliver columns.
@@ -1586,63 +1551,379 @@ mod tests {
         )
         .unwrap();
         let lanes = board::lanes(&state);
-        assert_eq!(lanes.len(), 2, "one live lane, one closed");
+        assert_eq!(lanes.len(), 6, "five stages, one closed");
         assert!(lanes[0].title.contains("recorded"));
-        assert_eq!(lanes[1].title, "closed");
-        assert_eq!(lanes[1].items.len(), 2);
+        let closed = lanes.last().unwrap();
+        assert_eq!(closed.title, "closed");
+        assert_eq!(closed.items.len(), 2);
     }
 
-    /// Lowercase acts on the selected item, uppercase on the wider set — the
-    /// same convention as a/A, so the shifted key must resolve separately.
+    /// The promise `a` makes: press it and the card leaves the lane. Three of
+    /// its moves are not a new status, so three lanes exist to receive them —
+    /// and each is a fact already on the wire, not a status invented for the
+    /// view. A card in flight was the case that read as "the key did nothing".
     #[test]
-    fn t_is_one_item_and_shift_t_is_the_backlog() {
-        use ratatui::crossterm::event::KeyCode;
-        assert_eq!(keys::resolve(KeyCode::Char('t'), Tab::Queue), Some(Action::Triage));
-        assert_eq!(keys::resolve(KeyCode::Char('T'), Tab::Board), Some(Action::TriageAll));
+    fn a_card_waits_in_working_or_blocked_rather_than_in_the_lane_it_left() {
+        let mut state: crate::api::State = serde_json::from_str(
+            r#"{"suggestions":[
+                {"id":"a.md","slug":"one","status":"triaged","score":1},
+                {"id":"b.md","slug":"two","status":"triaged","score":2},
+                {"id":"c.md","slug":"three","status":"triaged","score":3,
+                 "blockedOn":"carried by the scope patch"},
+                {"id":"d.md","slug":"four","status":"superseded","score":4,
+                 "blockedOn":"stale, and finished anyway"}
+            ]}"#,
+        )
+        .unwrap();
+        let lane = |st: &crate::api::State, title: &str| -> Vec<String> {
+            board::lanes(st)
+                .into_iter()
+                .find(|l| l.title.contains(title))
+                .map(|l| l.items.iter().map(|s| s.id.clone()).collect())
+                .unwrap_or_default()
+        };
+
+        // Idle: only the block moves a card off its stage.
+        assert_eq!(lane(&state, "triaged"), ["b.md", "a.md"]);
+        assert_eq!(lane(&state, "blocked"), ["c.md"]);
+        assert_eq!(lane(&state, "closed"), ["d.md"], "finished outranks parked");
+        assert!(board::lanes(&state).iter().all(|l| !l.title.contains("working")), "no run, no lane");
+
+        // One card fenced to a run, one waiting for the seat: both are being
+        // worked on, and neither is where it was or where it is going.
+        state.dispatch = Some(dispatch(vec![run(4242, Some("a.md"), None)], vec![Some("b.md")]));
+        assert_eq!(lane(&state, "working"), ["b.md", "a.md"]);
+        assert!(lane(&state, "triaged").is_empty(), "both left the stage they were in");
+
+        // The run ends and the card comes back to whatever it now is.
+        state.dispatch = Some(dispatch(vec![run(4242, Some("a.md"), Some(0))], vec![]));
+        assert_eq!(lane(&state, "triaged"), ["b.md", "a.md"]);
+
+        // A backlog run is fenced to nothing, so it empties no lane.
+        state.dispatch = Some(dispatch(vec![run(4243, None, None)], vec![]));
+        assert!(board::lanes(&state).iter().all(|l| !l.title.contains("working")));
     }
 
-    /// One footer entry carries both spellings — `a approve (A all)` —
+    /// `A` widens a stage's one move over its lane. A holding lane has no such
+    /// move — its cards came from several statuses — so it says so instead of
+    /// picking the first card's status and acting on that.
+    #[test]
+    fn the_wide_advance_refuses_a_lane_that_is_not_a_stage() {
+        let app = app_with_state();
+        let holding: Vec<bool> = board::lanes(app.state.as_ref().unwrap())
+            .iter()
+            .map(|l| l.holding)
+            .collect();
+        assert_eq!(holding, [false, false, false, false, false, true], "only blocked holds");
+    }
+
+    /// One card's cell of a rendered frame: the lanes sit side by side, so a
+    /// whole terminal row holds several cards and would smear the assertion.
+    fn card_cell<'a>(text: &'a str, slug: &str) -> &'a str {
+        let name = crate::ui::humanize(slug);
+        text.lines().flat_map(|l| l.split('│')).find(|seg| seg.contains(&name)).unwrap()
+    }
+
+    /// The header says fable is out; the card says on what. A fenced run spins
+    /// exactly its card and queues nothing else.
+    #[test]
+    fn the_card_a_fenced_run_is_on_carries_the_spinner() {
+        let mut app = app_with_state();
+        app.state.as_mut().unwrap().dispatch = Some(dispatch(
+            vec![run(4242, Some("user/kaizen/2026-08-08-approval-is-a-dead-end.md"), None)],
+            vec![],
+        ));
+        let text = render(&app, 260, 30);
+        let worked = card_cell(&text, "approval-is-a-dead-end");
+        assert!(worked.contains('⠋'), "the worked card spins: {worked}");
+        let other = card_cell(&text, "a-second-thing");
+        assert!(!other.contains('⠋') && !other.contains('◌'), "the rest stay plain: {other}");
+    }
+
+    /// A backlog run owes every card a pass can still move; ◌ marks them and
+    /// drains as the run relabels each one. Cards past the pass stay plain.
+    #[test]
+    fn a_backlog_run_marks_the_cards_still_waiting_for_it() {
+        let mut app = app_with_state();
+        app.state.as_mut().unwrap().dispatch = Some(dispatch(vec![run(4242, None, None)], vec![]));
+        let text = render(&app, 260, 30);
+        let waiting = card_cell(&text, "a-third-thing");
+        assert!(waiting.contains('◌'), "recorded awaits the pass: {waiting}");
+        let done = card_cell(&text, "approval-is-a-dead-end");
+        assert!(!done.contains('◌') && !done.contains('⠋'), "approved owes it nothing: {done}");
+        // Same gate the server gained: a parked card is not work the run owes,
+        // so marking it as owed would promise a pass that will be refused.
+        let parked = card_cell(&text, "a-second-thing");
+        assert!(!parked.contains('◌'), "a backlog run owes a parked card nothing: {parked}");
+    }
+
+    /// A card parked on you wears ⚑, and the header counts them: twelve
+    /// identical triaged rows once hid that nine were waiting on three calls
+    /// of the user's, and no key in the TUI moves those.
+    #[test]
+    fn a_parked_card_wears_a_flag_and_the_header_counts_them() {
+        let text = render(&app_with_state(), 200, 30);
+        assert!(card_cell(&text, "a-second-thing").contains('⚑'), "parked: {text}");
+        assert!(!card_cell(&text, "approval-is-a-dead-end").contains('⚑'), "not parked");
+        assert!(text.contains("⚑ 1 on you"), "header counts: {text}");
+    }
+
+    /// When the run in the seat is gone, the notice says what became of its
+    /// card — by where the card ended up, not by an exit code, and naming the
+    /// closed lane when that is where it went, since that lane sits off to the
+    /// right. A backlog run is judged by its exit code while the state still
+    /// holds it, and calmly when it does not.
+    #[test]
+    fn a_finished_run_says_where_its_card_went() {
+        let mut state = state();
+        state.suggestions[0].status = "superseded".into();
+        let (text, error) =
+            run_outcome(&state, 1, Some("user/kaizen/2026-08-08-approval-is-a-dead-end.md"));
+        assert_eq!(text, "Approval is a dead end → superseded (closed lane)");
+        assert!(!error);
+        let (text, _) = run_outcome(&state, 1, Some("user/other/2026-08-01-a-second-thing.md"));
+        assert_eq!(text, "A second thing → recorded", "a run that moved nothing says so plainly");
+        let (text, error) = run_outcome(&state, 1, Some("user/x/2026-01-01-vanished.md"));
+        assert!(text.contains("gone from disk") && error);
+
+        state.dispatch = Some(dispatch(vec![run(7, None, Some(2))], vec![]));
+        let (text, error) = run_outcome(&state, 7, None);
+        assert!(text.contains("failed (exit 2)") && error, "{text}");
+        let (text, error) = run_outcome(&state, 6, None);
+        assert!(text.contains("ended") && !error, "aged off the list: {text}");
+    }
+
+    /// `/` lands on the first card whose uid starts with the query or whose
+    /// name contains it, whichever lane — a uid is only worth having if the
+    /// board can go to it.
+    #[test]
+    fn find_lands_on_uid_or_name_across_lanes() {
+        let st = state();
+        // AST is parked, so it is drawn in the blocked lane rather than in
+        // recorded — which is exactly what "whichever lane" has to mean.
+        assert_eq!(find_card(&st, "as"), Some((5, 0)), "uid prefix, blocked lane");
+        assert_eq!(find_card(&st, "att"), Some((0, 0)), "uid prefix, recorded lane");
+        assert_eq!(find_card(&st, "aid"), Some((3, 0)), "case-blind uid, approved lane");
+        assert_eq!(find_card(&st, "dead end"), Some((3, 0)), "a bit of the name");
+        assert_eq!(find_card(&st, "nothing like this"), None);
+        assert_eq!(find_card(&st, ""), None, "an empty query moves nothing");
+    }
+
+    /// Newest first, under a rule per age — so what came in since you last
+    /// looked is at the top of every lane, and "this week" is a line you can
+    /// see rather than a date you have to read. Score only breaks ties within
+    /// a day. The rules are rows, but the cursor lands on cards.
+    #[test]
+    fn lanes_run_newest_first_under_age_rules() {
+        let mut app = App::new();
+        app.state = Some(
+            serde_json::from_str(
+                r#"{"suggestions":[
+                  {"id":"u/k/2026-07-01-old-but-hot.md","slug":"old-but-hot","uid":"OBH",
+                   "date":"2026-07-01","age":"older","status":"recorded","score":90,"surfaced":true},
+                  {"id":"u/k/2026-08-15-fresh.md","slug":"fresh","uid":"FRE",
+                   "date":"2026-08-15","age":"today","status":"recorded","score":1,"surfaced":true},
+                  {"id":"u/k/2026-08-14-yesterday.md","slug":"yesterday","uid":"YES",
+                   "date":"2026-08-14","age":"this week","status":"recorded","score":5,"surfaced":true}
+                ],"skills":[],"metrics":{"open":3,"untriaged":3}}"#,
+            )
+            .unwrap(),
+        );
+        app.busy = false;
+        let text = render(&app, 60, 20);
+        let at = |needle: &str| text.find(needle).unwrap_or_else(|| panic!("{needle} missing: {text}"));
+        assert!(at("─ today") < at("Fresh"), "{text}");
+        assert!(at("Fresh") < at("─ this week"), "{text}");
+        assert!(at("─ this week") < at("Yesterday"), "{text}");
+        assert!(at("Yesterday") < at("─ older"), "{text}");
+        assert!(at("─ older") < at("Old but hot"), "score does not outrank recency: {text}");
+        // A rule wears its own colour, so it reads as furniture and never as a card.
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 20)).unwrap();
+        terminal.draw(|frame| draw(frame, &app)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let rule_row = text.lines().position(|l| l.contains("─ today")).unwrap() as u16;
+        let x = text.lines().nth(rule_row as usize).unwrap().find('─').unwrap() as u16;
+        assert_eq!(buf[(x, rule_row)].style().fg, Some(theme::rule()));
+        // The first card is selected, not the rule above it: `board_selected`
+        // and the highlight agree on the card, and the rule is never a target.
+        assert_eq!(app.board_selected().map(|s| s.slug.as_str()), Some("fresh"));
+    }
+
+    /// A card in line for the seat wears its place, in the marker column, so
+    /// five presses of `a` read as 1 2 3 4 behind the spinner and not as four
+    /// errors. The number wins over ◌: being in line is more specific than
+    /// being owed.
+    #[test]
+    fn a_queued_card_wears_its_place_in_line() {
+        let mut app = app_with_state();
+        app.state.as_mut().unwrap().dispatch = Some(dispatch(
+            vec![run(4242, Some("user/kaizen/2026-08-08-approval-is-a-dead-end.md"), None)],
+            vec![None, Some("user/other/2026-08-01-a-second-thing.md")],
+        ));
+        let text = render(&app, 200, 30);
+        assert!(card_cell(&text, "approval-is-a-dead-end").contains('⠋'), "the seat spins");
+        let queued = card_cell(&text, "a-second-thing");
+        assert!(queued.contains('2') && !queued.contains('◌'), "second in line: {queued}");
+    }
+
+    /// a/x mark their card while the request is out, and an idle board
+    /// carries no marker column at all.
+    #[test]
+    fn deciding_on_a_card_spins_it_until_the_server_answers() {
+        let mut app = app_with_state();
+        app.busy_on = Some("user/kaizen/2026-08-08-approval-is-a-dead-end.md".into());
+        let text = render(&app, 200, 30);
+        assert!(card_cell(&text, "approval-is-a-dead-end").contains('⠋'));
+
+        app.busy_on = None;
+        let idle = render(&app, 200, 30);
+        let row = card_cell(&idle, "approval-is-a-dead-end");
+        assert!(!row.contains('⠋') && !row.contains('◌'), "idle cards are plain: {row}");
+    }
+
+    /// One key per direction, whatever the lane: what `a` sends is the move
+    /// the lane waits for and `x` is its exit — both read off the spec, so a
+    /// lane cannot be left without its key or given the wrong one.
+    #[test]
+    fn a_advances_by_whatever_the_lane_waits_for_and_x_takes_the_way_out() {
+        let refusal = |r: Result<Req, String>| match r {
+            Err(why) => why,
+            Ok(_) => panic!("expected a refusal"),
+        };
+        assert!(matches!(advance(&card("recorded", "")), Ok(Req::Dispatch { id: Some(_) })), "fable triages");
+        assert!(matches!(advance(&card("triaged", "")), Ok(Req::Dispatch { id: Some(_) })), "fable plans");
+        assert!(
+            matches!(advance(&card("planned", "")), Ok(Req::SetStatus { status, .. }) if status == "approved"),
+            "you decide"
+        );
+        assert!(matches!(advance(&card("approved", "")), Ok(Req::Apply { .. })), "the server lands");
+        assert!(matches!(advance(&card("failed", "")), Ok(Req::Dispatch { id: Some(_) })), "back to fable");
+        // Verify is the CLI's; the refusal names the actor rather than a key.
+        assert!(refusal(advance(&card("applied", ""))).contains("kaizen"));
+        assert!(refusal(advance(&card("verified", ""))).contains("terminal"));
+
+        assert!(
+            matches!(discard(&card("recorded", "")), Ok(Req::SetStatus { status, .. }) if status == "rejected"),
+            "you can still say no"
+        );
+        assert!(
+            matches!(discard(&card("approved", "")), Ok(Req::SetStatus { status, .. }) if status == "superseded"),
+            "a yes given can only be overtaken"
+        );
+        assert!(refusal(discard(&card("failed", ""))).contains("planned"), "the pipeline owns a failed item");
+        assert!(refusal(discard(&card("rejected", ""))).contains("terminal"));
+    }
+
+    /// The block is a fact about the card, so `a` reads it before the wire does.
+    /// Every one of these would otherwise be accepted — the status alone says
+    /// pending — and spend a detached model run, or a git call, to conclude what
+    /// the frontmatter already said.
+    #[test]
+    fn a_refuses_a_parked_card_in_every_lane_and_x_still_closes_it() {
+        let why = "carried by GAA (planned) — supersede once that lands";
+        for status in ["recorded", "triaged", "failed", "planned", "approved"] {
+            match advance(&card(status, why)) {
+                Err(said) => assert!(said.contains(why), "{status}: the refusal has to name the block"),
+                Ok(_) => panic!("{status}: a parked card sent a request"),
+            }
+        }
+        // The way out is never blocked: a lane you cannot leave is the worse bug.
+        assert!(
+            matches!(discard(&card("triaged", why)), Ok(Req::SetStatus { status, .. }) if status == "rejected"),
+            "x closes a parked card"
+        );
+    }
+
+    /// Enter reads, `x` discards, `a` advances: the verbs the board offers on
+    /// one card, and the footer advertises each once. The old per-status keys
+    /// resolve to nothing, so muscle memory fails loudly rather than sideways.
+    #[test]
+    fn the_board_offers_one_key_per_direction_and_the_old_ones_do_nothing() {
+        use ratatui::crossterm::event::KeyCode;
+        assert_eq!(keys::resolve(KeyCode::Enter, Tab::Board), Some(Action::Open));
+        assert_eq!(keys::resolve(KeyCode::Char('a'), Tab::Board), Some(Action::Advance));
+        assert_eq!(keys::resolve(KeyCode::Char('x'), Tab::Board), Some(Action::Discard));
+        for old in ['r', 't', 'T', 'p'] {
+            assert_eq!(keys::resolve(KeyCode::Char(old), Tab::Board), None, "{old} is gone");
+        }
+        let hints = keys::hints(Tab::Board);
+        assert!(hints.contains(&("enter", "detail")), "{hints:?}");
+        assert!(hints.contains(&("x", "discard")), "{hints:?}");
+    }
+
+    /// One footer entry carries both spellings — `a advance (A lane)` —
     /// so the shifted key works without costing a second slot of width.
     #[test]
     fn shifted_variants_fold_into_one_footer_entry() {
-        let hints = keys::hints(Tab::Queue);
-        assert!(hints.iter().any(|(h, l)| *h == "a" && *l == "approve (A all)"));
-        assert!(hints.iter().any(|(h, l)| *h == "t" && *l == "triage (T all)"));
-        assert!(!hints.iter().any(|(h, _)| *h == "A" || *h == "T"), "no second entry: {hints:?}");
-        // And the shifted keys still resolve where they are folded.
+        let hints = keys::hints(Tab::Board);
+        assert!(hints.iter().any(|(h, l)| *h == "a" && *l == "advance (A lane)"));
+        assert!(!hints.iter().any(|(h, _)| *h == "A"), "no second entry: {hints:?}");
+        // And the shifted key still resolves where it is folded.
         use ratatui::crossterm::event::KeyCode;
-        assert_eq!(keys::resolve(KeyCode::Char('A'), Tab::Board), Some(Action::ApproveAll));
+        assert_eq!(keys::resolve(KeyCode::Char('A'), Tab::Board), Some(Action::AdvanceAll));
     }
 
-    /// The decide keys act on the card under the board's cursors, not on
-    /// whatever row the queue happens to have selected.
+    /// The decide keys act on the card under the board's cursors — and an
+    /// empty stage lane holds no card, so they refuse quietly there.
     #[test]
     fn board_keys_act_on_the_selected_card() {
         let mut app = app_with_state();
         app.tab = Tab::Board;
-        assert_eq!(app.selected_status().as_deref(), Some("recorded"), "first lane in spec order");
+        let status = |a: &App| a.board_selected().map(|s| s.status.clone());
+        assert_eq!(status(&app).as_deref(), Some("recorded"), "first lane in spec order");
         app.board_lane = 1;
-        assert_eq!(app.selected_status().as_deref(), Some("approved"));
+        assert_eq!(status(&app), None, "the triaged stage is empty");
+        app.board_lane = 3;
+        assert_eq!(status(&app).as_deref(), Some("approved"));
     }
 
     /// Twelve identical triaged rows once hid that nine were waiting on three
-    /// calls of the user's. The flag is the row-level tell; the detail says why.
+    /// calls of the user's. The window is where a card explains itself.
     #[test]
-    fn a_parked_item_is_flagged_and_its_detail_says_why() {
+    fn the_detail_window_says_when_a_card_is_parked_on_you() {
         let mut app = app_with_state();
-        app.sel = 1; // the parked fixture
+        app.overlay =
+            Some(Overlay::Detail { id: "user/other/2026-08-01-a-second-thing.md".into(), scroll: 0 });
         let text = render(&app, 120, 30);
-        assert!(text.contains("⚑"), "the row carries the flag: {text}");
-        assert!(text.contains("on you"), "the detail labels it: {text}");
+        assert!(text.contains("on you"), "the window labels it: {text}");
         assert!(text.contains("where should the guardrails live?"), "and says why: {text}");
     }
 
     #[test]
-    fn rows_spend_their_width_on_the_slug() {
-        let text = render(&app_with_state(), 120, 30);
-        assert!(text.contains("▸  42 ▲ \u{f00c}"), "marker, score, severity, status: {text}");
-        assert!(text.contains("   5 ▼ \u{f040}"), "the second row draws its status: {text}");
-        assert!(!text.contains("medium   approved"), "the spelled-out columns are gone: {text}");
+    fn the_detail_window_shows_the_card_whole() {
+        let mut app = app_with_state();
+        app.overlay = Some(Overlay::Detail {
+            id: "user/kaizen/2026-08-08-approval-is-a-dead-end.md".into(),
+            scroll: 0,
+        });
+        let text = render(&app, 120, 30);
+        assert!(text.contains("detail — Approval is a dead end"), "titled by name: {text}");
+        assert!(text.contains("AID"), "and wears its uid: {text}");
+        assert!(text.contains("Context"), "{text}");
+        assert!(text.contains("First full pass."), "{text}");
+        assert!(text.contains("skills/kaizen/SKILL.md"), "names the scope: {text}");
+    }
+
+    /// The window holds the id, not an index — a refresh that reorders the
+    /// lanes must not swap the card under the reader.
+    #[test]
+    fn the_detail_window_survives_a_refresh_because_it_holds_the_id() {
+        let mut app = app_with_state();
+        app.overlay = Some(Overlay::Detail {
+            id: "user/kaizen/2026-08-08-approval-is-a-dead-end.md".into(),
+            scroll: 0,
+        });
+        app.state.as_mut().unwrap().suggestions.reverse();
+        let text = render(&app, 120, 30);
+        assert!(text.contains("First full pass."), "still the same card: {text}");
+    }
+
+    #[test]
+    fn a_card_deleted_underneath_its_window_leaves_a_calm_message() {
+        let mut app = app_with_state();
+        app.overlay = Some(Overlay::Detail { id: "user/k/2026-01-01-gone.md".into(), scroll: 0 });
+        let text = render(&app, 120, 30);
+        assert!(text.contains("gone — the state refreshed it away"), "{text}");
     }
 
     /// The key has to refuse locally rather than fire and wait for a 409. Both
@@ -1657,26 +1938,6 @@ mod tests {
         // The message names where it can actually go, which is the whole point.
         assert_eq!(next_statuses("recorded"), ["triaged", "rejected", "superseded"]);
         assert!(next_statuses("verified").is_empty());
-    }
-
-    /// A refused approve must not read as a missing keybinding: there is no
-    /// triage key on purpose, so the message names the unattended phases owed
-    /// and who runs them instead of listing statuses.
-    #[test]
-    fn a_premature_approve_names_the_phases_still_owed() {
-        let owed: Vec<_> = crate::lifecycle::phases_until_decision("recorded")
-            .iter()
-            .map(|p| p.title.as_str())
-            .collect();
-        assert_eq!(owed, ["Triage", "Plan"], "a bare capture owes both unattended phases");
-        assert!(
-            crate::lifecycle::phases_until_decision("planned").is_empty(),
-            "a plan owes nothing — it is the decision's own doorstep"
-        );
-        assert!(
-            crate::lifecycle::phases_until_decision("verified").is_empty(),
-            "a terminal owes nothing either"
-        );
     }
 
     /// Every abbreviation and colour in the list comes from `lifecycle.json`, so
@@ -1721,7 +1982,7 @@ mod tests {
     /// advertised, so they are the only places it can be advertised wrongly.
     #[test]
     fn help_is_on_h_everywhere_it_is_offered() {
-        let card = help_keys(Tab::Queue)
+        let card = help_keys(Tab::Board)
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
             .collect::<Vec<_>>()
@@ -1739,46 +2000,46 @@ mod tests {
     }
 
     /// The report: "hit enter and try to get back, it takes me to the init page".
-    /// `esc` was hardcoded to "go to the queue" rather than "go back".
+    /// `esc` was hardcoded to one tab rather than "go back".
     #[test]
-    fn esc_returns_to_where_you_came_from_not_to_the_queue() {
+    fn esc_returns_to_where_you_came_from_not_to_the_first_tab() {
         let mut app = app_with_state();
 
-        // Queue -> board -> skills, then back down the way we came.
-        app.remember();
-        app.tab = Tab::Board;
+        // Board -> skills -> settings, then back down the way we came.
         app.board_lane = 1;
         app.remember();
         app.tab = Tab::Skills;
+        app.remember();
+        app.tab = Tab::Settings;
+
+        assert!(app.go_back());
+        assert_eq!(app.tab, Tab::Skills);
 
         assert!(app.go_back());
         assert_eq!(app.tab, Tab::Board);
         assert_eq!(app.board_lane, 1, "and to the lane you were on, not the first");
-
-        assert!(app.go_back());
-        assert_eq!(app.tab, Tab::Queue);
 
         // Nothing left: it says so rather than quitting. `esc` is labelled
         // "back", and a key that sometimes exits is one you stop trusting.
         assert!(!app.go_back());
     }
 
-    /// Opening a card jumps to the queue; going back has to land on the same
-    /// board cell, not the first lane.
+    /// Enter is a window over the board, not a jump: closing it must find the
+    /// cursors untouched, and no history spent getting back.
     #[test]
-    fn esc_undoes_opening_a_card_whole() {
+    fn enter_opens_a_window_and_esc_finds_the_board_exactly_where_it_was() {
         let mut app = app_with_state();
-        app.tab = Tab::Board;
         app.board_lane = 1;
+        app.overlay = Some(Overlay::Detail {
+            id: "user/kaizen/2026-08-08-approval-is-a-dead-end.md".into(),
+            scroll: 0,
+        });
+        render(&app, 120, 30);
 
-        app.remember();
-        app.tab = Tab::Queue;
-        app.sel = 0;
-        assert_eq!(app.visible().len(), 2);
-
-        assert!(app.go_back());
+        app.overlay = None;
         assert_eq!(app.tab, Tab::Board);
         assert_eq!(app.board_lane, 1);
+        assert!(app.history.is_empty(), "an overlay is not a place");
     }
 
     #[test]
@@ -1791,7 +2052,7 @@ mod tests {
 
         // And it cannot grow without bound.
         for i in 0..60 {
-            app.sel = i % 2;
+            app.skill_sel = i % 2;
             app.remember();
         }
         assert!(app.history.len() <= 32);
@@ -1816,26 +2077,23 @@ mod tests {
             )
         };
 
-        // `enter` is bound three times, once per view. Each card shows its one.
-        let queue = card(Tab::Queue);
-        assert!(queue.contains("apply"), "{queue}");
-        assert!(!queue.contains("open in queue"), "and not the board meaning: {queue}");
-        assert!(!queue.contains("open file"), "nor the skills one: {queue}");
-
+        // `enter` is bound per view. Each card shows its own meaning.
         let board = card(Tab::Board);
-        assert!(board.contains("open in queue"), "{board}");
-        assert!(!board.contains("enter   apply"), "{board}");
-        // The git footnote is queue-only too — it is advice about a key that is
-        // not bound here.
-        assert!(!board.contains("clean tree"), "{board}");
-        assert!(queue.contains("clean tree"), "{queue}");
+        assert!(board.contains("detail"), "{board}");
+        assert!(board.contains("advance"), "{board}");
+        assert!(!board.contains("open file"), "and not the skills meaning: {board}");
+
+        // The git footnote rides with `a` — advice about a key lives where the
+        // key is bound.
+        assert!(board.contains("clean tree"), "{board}");
+        assert!(!card(Tab::Skills).contains("clean tree"), "and nowhere else");
 
         assert!(card(Tab::Skills).contains("open file"));
 
         // Keys that do not work here are not offered here.
-        assert!(!card(Tab::Skills).contains("approve"), "skills cannot approve");
+        assert!(!card(Tab::Skills).contains("advance"), "skills cannot advance a card");
         assert!(card(Tab::Settings).contains("save"), "but settings can save");
-        assert!(!card(Tab::Queue).contains("save"), "and the queue cannot");
+        assert!(!board.contains("save"), "and the board cannot");
 
         // No "where" column left to disagree with the filtering.
         for tab in Tab::ALL {
@@ -1870,15 +2128,15 @@ mod tests {
             }
         }
 
-        // Named per view, not shared: `per100` means nothing on the queue.
+        // Named per view, not shared: `per100` means nothing on the board.
         assert!(card(Tab::Skills).contains("per100"));
-        assert!(!card(Tab::Queue).contains("per100"));
+        assert!(!card(Tab::Board).contains("per100"));
 
         // The status legend is generated, so a renamed status cannot leave a
         // stale abbreviation behind in the help.
-        let queue = card(Tab::Queue);
+        let board = card(Tab::Board);
         for s in &lifecycle().statuses {
-            assert!(queue.contains(&format!("{} {}", s.abbrev, s.id)), "legend has {}", s.id);
+            assert!(board.contains(&format!("{} {}", s.abbrev, s.id)), "legend has {}", s.id);
         }
         // Side by side, not stacked, once there is room for both.
         let mut app = app_with_state();
@@ -1914,11 +2172,11 @@ mod tests {
                 .collect::<Vec<_>>()
         };
 
-        let queue = lines(Tab::Queue);
+        let board = lines(Tab::Board);
         // Every status on its own line — icon then abbrev — generated from the spec.
         for s in &lifecycle().statuses {
             assert!(
-                queue.iter().any(|l| {
+                board.iter().any(|l| {
                     let l = l.trim_start();
                     l.starts_with(status_icon(&s.id)) && l.contains(&s.abbrev) && l.contains(&s.id)
                 }),
@@ -1927,14 +2185,21 @@ mod tests {
             );
         }
         // And not crammed into one, which is what it used to be.
-        assert!(!queue.iter().any(|l| l.contains("rec recorded · tri")), "no run-on legend");
+        assert!(!board.iter().any(|l| l.contains("rec recorded · tri")), "no run-on legend");
+
+        // The severity marks a card carries are their own list too.
+        for (mark, word) in [("▲", "high"), ("►", "medium"), ("▼", "low")] {
+            assert!(
+                board.iter().any(|l| l.contains(mark) && l.contains(word)),
+                "{mark} {word} is listed"
+            );
+        }
 
         for (value, _) in skills::HEALTH {
             assert!(lines(Tab::Skills).iter().any(|l| l.contains(value)), "{value} is listed");
         }
 
         // A column whose values are open gets no sub-list invented for it.
-        assert!(column_values(Tab::Queue, "slug").is_empty());
         assert!(column_values(Tab::Skills, "skill").is_empty());
     }
 
@@ -1982,13 +2247,14 @@ mod tests {
         }
     }
 
-    /// The other half of the report: `A` with nothing at the decision produced
-    /// a 409 listing filenames. It refuses locally now.
+    /// `A` widens `a` over the lane under the cursor, so it reads that lane's
+    /// status — and an empty stage lane has none to widen over.
     #[test]
-    fn the_wide_approve_counts_what_could_actually_move() {
-        let app = app_with_state();
-        // One item approved, one recorded — neither can become approved.
-        assert_eq!(app.approvable(), 0);
+    fn the_wide_advance_reads_the_lane_under_the_cursor() {
+        let mut app = app_with_state();
+        assert_eq!(app.lane_status().as_deref(), Some("recorded"));
+        app.board_lane = 1;
+        assert_eq!(app.lane_status(), None, "the triaged stage is empty");
     }
 
     #[test]
@@ -2035,7 +2301,6 @@ mod tests {
         app.tab = Tab::Skills;
         app.move_by(1);
         assert_eq!(app.skill_sel, 1);
-        assert_eq!(app.sel, 0, "the queue's cursor did not move");
         app.tab = Tab::Board;
         app.move_by(1);
         assert_eq!(app.skill_sel, 1, "the skills cursor stayed put");
@@ -2089,34 +2354,17 @@ mod tests {
         );
     }
 
-    /// A row with no slug is still identifiable rather than blank.
+    /// A card with no slug is still identifiable rather than blank.
     #[test]
     fn a_missing_slug_falls_back_to_the_id() {
         let mut app = App::new();
         app.state = Some(
             serde_json::from_str(
-                r#"{"suggestions":[{"id":"user/k/2026-08-08-no-slug-here.md","surfaced":true}]}"#,
+                r#"{"suggestions":[{"id":"user/k/2026-08-08-no-slug-here.md","status":"recorded","surfaced":true}]}"#,
             )
             .unwrap(),
         );
-        assert!(render(&app, 120, 30).contains("no-slug-here"));
-    }
-
-    /// Moving down must re-render the other row's detail, and reset the scroll so
-    /// the new document starts at its top.
-    #[test]
-    fn selection_drives_the_detail_pane() {
-        let mut app = app_with_state();
-        app.scroll = 12;
-        app.move_by(1);
-        assert_eq!(app.sel, 1);
-        assert_eq!(app.scroll, 0, "a new row starts at the top");
-        assert!(render(&app, 120, 30).contains("a-second-thing"));
-        // And it cannot walk off either end.
-        app.move_by(50);
-        assert_eq!(app.sel, 1);
-        app.move_by(-50);
-        assert_eq!(app.sel, 0);
+        assert!(render(&app, 120, 30).contains("No slug here"));
     }
 
 
@@ -2131,7 +2379,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unreachable_server_says_so_instead_of_an_empty_queue() {
+    fn an_unreachable_server_says_so_instead_of_an_empty_board() {
         let mut app = App::new();
         app.error = Some("cannot reach the kaizen server at http://127.0.0.1:7777 — is it running?".into());
         let text = render(&app, 120, 30);
@@ -2175,50 +2423,42 @@ mod tests {
         for (w, h) in [(200, 60), (120, 30), (89, 24), (80, 24), (40, 10), (20, 6), (10, 4), (4, 2)] {
             render(&app, w, h);
         }
-        for overlay in [Overlay::Help { guide: false, scroll: 0 }, Overlay::Diff {
-            id: "user/k/2026-08-08-x.md".into(),
-            body: "@@ -1 +1 @@\n-a\n+b".into(),
-            scroll: 0,
-        }] {
+        for overlay in [
+            Overlay::Help { guide: false, scroll: 0 },
+            Overlay::Diff {
+                id: "user/k/2026-08-08-x.md".into(),
+                body: "@@ -1 +1 @@\n-a\n+b".into(),
+                scroll: 0,
+            },
+            Overlay::Detail { id: "user/k/2026-08-08-x.md".into(), scroll: 0 },
+        ] {
             let mut with_overlay = app_with_state();
             with_overlay.overlay = Some(overlay);
             for (w, h) in [(120, 30), (40, 10), (20, 6), (10, 4), (4, 2)] {
                 render(&with_overlay, w, h);
             }
         }
+        for d in [
+            None,
+            Some(dispatch(vec![], vec![])),
+            Some(dispatch(vec![run(1, None, None), run(2, Some("u/k/2026-08-08-x.md"), Some(0))], vec![None; 12])),
+        ] {
+            let mut on_agent = app_with_state();
+            on_agent.tab = Tab::Agent;
+            on_agent.state.as_mut().unwrap().dispatch = d;
+            for (w, h) in [(120, 30), (40, 10), (20, 6), (10, 4), (4, 2)] {
+                render(&on_agent, w, h);
+            }
+        }
     }
 
     #[test]
-    fn an_empty_queue_says_so() {
+    fn an_empty_board_says_so_and_a_cold_start_says_loading() {
         let mut app = App::new();
         app.state = Some(serde_json::from_str(r#"{"suggestions":[]}"#).unwrap());
-        assert!(render(&app, 120, 30).contains("nothing to decide"));
+        assert!(render(&app, 120, 30).contains("nothing filed yet"));
         // Before the first fetch lands, it is loading rather than empty.
         assert!(render(&App::new(), 120, 30).contains("reading skills…"));
-    }
-
-    /* ------------------------------------------------------------- narrow ---- */
-
-    /// Below the breakpoint only one pane is drawn, and it gets the whole width —
-    /// which is the whole point: the slug survives where the split would cut it.
-    #[test]
-    fn a_narrow_terminal_shows_one_pane_at_full_width() {
-        let mut app = app_with_state();
-        let list = render(&app, 80, 20);
-        assert!(list.contains("Queue (2)"), "{list}");
-        assert!(list.contains("approval-is-a-dead-end"), "the slug is not cut: {list}");
-        assert!(!list.contains("Context"), "the detail is not drawn: {list}");
-        assert!(list.contains("tab detail"), "and the footer says how to reach it: {list}");
-
-        app.focus = Focus::Detail;
-        let detail = render(&app, 80, 20);
-        assert!(detail.contains("approval-is-a-dead-end"), "the slug titles the pane: {detail}");
-        assert!(detail.contains("Context"), "{detail}");
-        assert!(!detail.contains("Queue ("), "the queue is not drawn: {detail}");
-        assert!(
-            keys::hints(Tab::Queue).contains(&("esc", "back")),
-            "and there is a way out",
-        );
     }
 
     /// The URL is the first thing to go when the keys and it cannot both fit.
@@ -2231,82 +2471,66 @@ mod tests {
         assert!(!footer.contains("appro "), "no half-written hint: {footer}");
     }
 
-    /* ------------------------------------------------------- filter, search ---- */
-
+    /// A refresh that empties lanes must not leave the cursors past the end —
+    /// every later lookup indexes into them. The clamped lane may be an empty
+    /// stage, which is a place to stand but nothing to act on.
     #[test]
-    fn the_filter_cycles_and_narrows_the_queue() {
+    fn shrinking_the_board_clamps_both_cursors() {
         let mut app = app_with_state();
-        assert_eq!(app.visible().len(), 2);
-
-        app.filter = Filter::Undecided;
-        assert_eq!(app.visible().len(), 1);
-        assert_eq!(app.visible()[0].status, "recorded");
-        let text = render(&app, 120, 30);
-        assert!(text.contains("Queue (1 of 2 · undecided)"), "the title says why: {text}");
-
-        app.filter = app.filter.next();
-        assert_eq!(app.filter, Filter::Approved);
-        assert_eq!(app.visible().len(), 1);
-        assert_eq!(app.visible()[0].status, "approved");
-
-        assert_eq!(app.filter.next(), Filter::All);
-        assert_eq!(Filter::All.next(), Filter::Open, "and the cycle closes");
-    }
-
-    /// The default view is for deciding. A suggestion whose fix has already
-    /// landed — `applied`, awaiting verify — is addressed, not a decision, so it
-    /// waits behind `f` rather than sitting in front of the open work.
-    #[test]
-    fn the_default_filter_hides_landed_work() {
-        let mut app = app_with_state();
-        let mut st = state();
-        st.suggestions[0].status = "applied".into();
-        app.state = Some(st);
-
-        assert_eq!(app.filter, Filter::Open);
-        assert_eq!(app.visible().len(), 1);
-        assert_eq!(app.visible()[0].status, "recorded");
-
-        app.filter = Filter::All;
-        assert_eq!(app.visible().len(), 2, "still one f-cycle away, never gone");
-    }
-
-    #[test]
-    fn search_matches_slug_and_skill_and_is_case_insensitive() {
-        let mut app = app_with_state();
-        app.query = "DEAD".into();
-        assert_eq!(app.visible().len(), 1, "matches the slug regardless of case");
-
-        app.query = "other".into();
-        assert_eq!(app.visible().len(), 1, "and matches the skill");
-        assert_eq!(app.visible()[0].skill, "other");
-
-        app.query = "zzz".into();
-        assert!(app.visible().is_empty());
-        let text = render(&app, 120, 30);
-        assert!(text.contains("nothing matches"), "it says so, and how to undo it: {text}");
-    }
-
-    /// A filter that hides the selected row must not leave the selection past the
-    /// end of the list — every later lookup indexes into it.
-    #[test]
-    fn narrowing_the_queue_clamps_the_selection() {
-        let mut app = app_with_state();
-        app.sel = 1;
-        app.filter = Filter::Approved;
+        app.board_lane = 99;
+        app.board_sel = 99;
         app.clamp();
-        assert_eq!(app.sel, 0);
-        assert!(app.selected_id().is_some());
+        assert!(app.board_lane < board::lanes(app.state.as_ref().unwrap()).len());
         render(&app, 120, 30);
+
+        // On a lane with cards, the clamped selection lands on one.
+        app.board_lane = 0;
+        app.board_sel = 99;
+        app.clamp();
+        assert!(app.selected_id().is_some());
     }
 
+    /* -------------------------------------------------------------- agent ---- */
+
     #[test]
-    fn the_search_line_replaces_the_hints_while_it_is_open() {
+    fn the_agents_tab_says_idle_until_a_run_exists() {
         let mut app = app_with_state();
-        app.searching = true;
-        app.query = "dead".into();
+        app.tab = Tab::Agent;
         let text = render(&app, 120, 30);
-        assert!(text.contains("/dead"), "{text}");
-        assert!(!text.contains("a approve"), "the keys step aside: {text}");
+        assert!(text.contains("none running") && text.contains("idle"), "{text}");
+        assert!(text.contains("A at the backlog"), "and points at the keys: {text}");
+        assert!(text.contains("nobody waiting"), "and the line is empty: {text}");
+    }
+
+    /// Every run the server has going is a row — what it is on, its pid, its
+    /// age — live ones first, and the ones that ended stay with how they
+    /// ended. Under them, the line, numbered, so "why is my card at 3" has a
+    /// place to be answered.
+    #[test]
+    fn the_agents_tab_lists_every_run_and_the_line() {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let mut app = app_with_state();
+        app.tab = Tab::Agent;
+        let mut live = run(4242, Some("user/kaizen/2026-08-08-approval-is-a-dead-end.md"), None);
+        live.started_at = Some(now_ms);
+        app.state.as_mut().unwrap().dispatch = Some(dispatch(
+            vec![run(4000, None, Some(1)), run(4001, Some("user/x/2026-01-01-earlier.md"), Some(0)), live, run(4243, None, None)],
+            vec![Some("user/other/2026-08-01-a-second-thing.md"), None],
+        ));
+        let text = render(&app, 120, 30);
+        assert!(text.contains("2 running"), "{text}");
+        assert!(text.contains("Approval is a dead end · pid 4242"), "names its fence: {text}");
+        // Never the exact duration — that is the wall clock's business.
+        assert!(text.contains("up "), "{text}");
+        assert!(text.contains("the backlog · pid 4243"), "{text}");
+        assert!(text.contains("Earlier · done"), "an ended run keeps its verdict: {text}");
+        assert!(text.contains("the backlog · exit 1"), "{text}");
+        assert!(text.contains("in line (2)"), "{text}");
+        assert!(text.contains(" 1  A second thing") && text.contains(" 2  the backlog"), "{text}");
+        // Live rows come before ended ones, whatever order the server sent.
+        assert!(text.find("pid 4242").unwrap() < text.find("Earlier").unwrap(), "{text}");
     }
 }

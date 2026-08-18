@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * kaizen — one entry point, a few subcommands.
+ * kaizen — one entry point, a few subcommands. Bare, it opens the TUI.
  *
  *   init      interactive setup; discovers or asks, never assumes
  *   scan      emit the full state as JSON
@@ -10,6 +10,7 @@
  *   asks      the asks you keep repeating (--json for the weekly pass)
  *   doctor    run kaizen's own rubric against kaizen (--file queues findings)
  *   docs      regenerate what lifecycle.json implies (--check fails on drift)
+ *   prune     delete closed suggestions older than a month (--dry-run)
  *   serve     start the local app + API
  *   tui       the queue in the terminal (starts `serve` if the port is dead)
  */
@@ -61,7 +62,9 @@ import {
   renderMarkdown,
 } from '@kaizen/core';
 
-const [, , command = 'status', ...args] = argv;
+// Bare `kaizen` is the board: the command you reach for is the one that needs no
+// name. Scripts and hooks say `status` out loud, and always did.
+const [, , command = 'tui', ...args] = argv;
 const has = (flag) => args.includes(flag);
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -914,6 +917,29 @@ async function cmdDocs() {
   console.log(`generated files are current (${GENERATED.map(([r]) => r).join(', ')})`);
 }
 
+/* --------------------------------------------------------------- prune ---- */
+
+/**
+ * The corpus is the registry: uids are handed out across it, the closed lane
+ * draws all of it, and a scan reads every file. So it is kept small on
+ * purpose — a closed suggestion from more than a month ago is history, and
+ * `git log --grep=Kaizen-Suggestion` is where the history that matters lives.
+ * "Closed" is the spec's terminal set; "more than a month ago" is the board's
+ * own `older` bucket, by the filed date — the same line the board draws, so
+ * what prune takes is exactly what sat under it in the closed lane.
+ */
+async function cmdPrune() {
+  const dry = has('--dry-run');
+  const state = buildState(requireConfig());
+  const stale = state.suggestions.filter((s) => isTerminal(s.status) && s.age === 'older');
+  for (const s of stale) {
+    if (!dry) rmSync(s.file, { force: true });
+    if (!dry) rmSync(s.file.replace(/\.md$/, '.patch'), { force: true });
+    console.log(`${dry ? 'would prune' : 'pruned'}  ${s.status.padEnd(10)} ${s.id}`);
+  }
+  console.log(`${dry ? 'would prune' : 'pruned'} ${stale.length} closed suggestion(s) older than a month`);
+}
+
 /* --------------------------------------------------------------- serve ---- */
 
 async function cmdServe() {
@@ -927,12 +953,11 @@ async function cmdServe() {
 const TUI_BIN = join(here, '..', 'tui', 'target', 'release', 'kaizen-tui');
 
 /**
- * A convenience alias for the binary, not a launcher.
+ * The front door — bare `kaizen` lands here — but a launcher only.
  *
- * `kaizen-tui` starts the server itself when the port is dead — it has to, since
- * it is normally run directly off the PATH rather than through here. Repeating
- * that check in this file would be a second implementation of the same rule,
- * and the two would drift.
+ * `kaizen-tui` starts the server itself when the port is dead, so this does not
+ * check the port: that would be a second implementation of the same rule, and
+ * the two would drift.
  */
 async function cmdTui() {
   const config = requireConfig();
@@ -962,11 +987,13 @@ const commands = {
   asks: cmdAsks,
   doctor: cmdDoctor,
   docs: cmdDocs,
+  prune: cmdPrune,
   serve: cmdServe,
   tui: cmdTui,
   help: () =>
     console.log(
-      'usage: kaizen <init|scan|status|validate|triage|drain|asks|doctor|docs|serve|tui> [--fix] [--pretty]\n' +
+      'usage: kaizen                                            # the board, in the terminal\n' +
+        '       kaizen <init|scan|status|validate|triage|drain|asks|doctor|docs|prune|serve|tui> [--fix] [--pretty]\n' +
         '       kaizen doctor [--file]\n' +
         '       kaizen asks [--json|--due|--stamp]                # asks you keep repeating\n' +
         '       kaizen triage --apply <file.json|-> [--dry-run]\n' +
@@ -974,6 +1001,7 @@ const commands = {
         '       kaizen drain --apply <file.json|-> [--dry-run]   # [{ id, sha, verified_at }]\n' +
         '       kaizen status --bar                              # 改 ○17 ●1 ◐22 ▲9, for the status line\n' +
         '       kaizen docs [--check] [--self-check]\n' +
+        '       kaizen prune [--dry-run]                         # closed and older than a month\n' +
         '       kaizen validate [--fix] [--strict]',
     ),
 };

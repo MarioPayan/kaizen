@@ -7,6 +7,7 @@
 //! The queue is not here. It has a second pane, a focus model and a breakpoint
 //! of its own, and moving it would have been churn for symmetry's sake.
 
+pub mod agent;
 pub mod board;
 pub mod settings;
 pub mod skills;

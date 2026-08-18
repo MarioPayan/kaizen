@@ -103,25 +103,6 @@ pub fn can_transition(from: &str, to: &str) -> bool {
     next_statuses(from).iter().any(|n| n == &target.id)
 }
 
-/// Which phase produced this status, by position.
-fn phase_index(status: &str) -> Option<usize> {
-    let id = &status_spec(status)?.id;
-    lifecycle().phases.iter().position(|p| &p.produces == id)
-}
-
-/// A commit already exists behind this status — the problem is addressed, even
-/// while verify has yet to confirm it. Derived from which phase first requires
-/// `applied_sha` rather than from a list of names, for the same reason as
-/// `is_before_decision` below.
-pub fn has_landed(status: &str) -> bool {
-    let Some(apply) =
-        lifecycle().phases.iter().position(|p| p.requires.iter().any(|r| r == "applied_sha"))
-    else {
-        return false;
-    };
-    phase_index(status).is_some_and(|i| i >= apply)
-}
-
 /// The status the one attended phase produces — what "you said yes" looks like.
 pub fn decision_status() -> &'static str {
     lifecycle()
@@ -132,32 +113,40 @@ pub fn decision_status() -> &'static str {
         .unwrap_or("approved")
 }
 
-/// Still short of the decision, and still in play.
-///
-/// Derived from where the attended phase sits rather than from a list of names,
-/// so the filter cannot fall behind a renamed status. Terminals are excluded
-/// even when their phase is early: `superseded` is produced during triage but
-/// nobody is going to decide it.
-pub fn is_before_decision(status: &str) -> bool {
-    if is_terminal(status) {
-        return false;
-    }
-    let attended = lifecycle().phases.iter().position(|p| p.attended);
-    matches!((phase_index(status), attended), (Some(a), Some(b)) if a < b)
+/// One lane on: the next status some phase produces. `None` at the end of the
+/// pipeline, and for a terminal.
+pub fn forward(from: &str) -> Option<&'static str> {
+    let l = lifecycle();
+    next_statuses(from)
+        .iter()
+        .map(String::as_str)
+        .find(|n| l.phases.iter().any(|p| p.produces == *n))
 }
 
-/// The unattended phases that still owe work before this status can reach the
-/// decision. What "why can't I approve this" is actually asking: none of these
-/// are keys in the TUI, they belong to whoever each phase names as its actor.
-pub fn phases_until_decision(status: &str) -> Vec<&'static PhaseSpec> {
-    if !is_before_decision(status) {
-        return Vec::new();
-    }
+/// The way out that is not forward: the first terminal in `next` no phase
+/// produces. `rejected` while you can still say no, `superseded` once a yes was
+/// given, none for a status the pipeline owns (`failed` only goes back to plan).
+pub fn exit(from: &str) -> Option<&'static str> {
     let l = lifecycle();
-    match (phase_index(status), l.phases.iter().position(|p| p.attended)) {
-        (Some(here), Some(decide)) => l.phases[here + 1..decide].iter().collect(),
-        _ => Vec::new(),
-    }
+    next_statuses(from)
+        .iter()
+        .map(String::as_str)
+        .find(|n| is_terminal(n) && !l.phases.iter().any(|p| p.produces == *n))
+}
+
+/// What the phase right after the decision produces — the status only the
+/// server writes, because it is a statement that git returned a sha.
+// ponytail: by position, not declared; if a phase ever slides in between
+// decide and apply, give the spec an owner field instead.
+pub fn landed_status() -> Option<&'static str> {
+    let l = lifecycle();
+    let at = l.phases.iter().position(|p| p.attended)?;
+    l.phases.get(at + 1).map(|p| p.produces.as_str())
+}
+
+/// Who runs the phase that produces this status — the spec's own words.
+pub fn actor_of(status: &str) -> Option<&'static str> {
+    lifecycle().phases.iter().find(|p| p.produces == status).map(|p| p.actor.as_str())
 }
 
 /// Can the unattended pre-decision pass (triage, plan) still move this status
@@ -167,6 +156,14 @@ pub fn awaits_pass(status: &str) -> bool {
     let l = lifecycle();
     let Some(at) = l.phases.iter().position(|p| p.attended) else { return false };
     l.phases[..at].iter().any(|p| can_transition(status, &p.produces))
+}
+
+/// Is there anything an unattended pass can do for this card right now? The
+/// server's gate, mirrored: `awaits_pass` answers for the status, and a card
+/// carrying `blocked_on` answers no whatever its status — it is parked on
+/// something outside the pipeline, and a run fenced to it can only re-stamp.
+pub fn pending_pass(status: &str, blocked_on: &str) -> bool {
+    awaits_pass(status) && blocked_on.is_empty()
 }
 
 #[cfg(test)]
@@ -185,6 +182,21 @@ mod tests {
         assert!(!awaits_pass("approved"), "approved waits on the server");
         assert!(!awaits_pass("verified"));
         assert!(!awaits_pass("rejected"));
+    }
+
+    /// `a` and `x` are one key each across every lane, so what they do has to
+    /// fall out of the spec: forward is the next stage, exit the first
+    /// non-forward terminal, and a status the pipeline owns has no exit.
+    #[test]
+    fn advance_and_discard_are_derived_per_lane() {
+        assert_eq!(forward("recorded"), Some("triaged"));
+        assert_eq!(forward("planned"), Some("approved"));
+        assert_eq!(forward("failed"), Some("planned"), "failed goes back for a plan");
+        assert_eq!(forward("verified"), None);
+        assert_eq!(exit("recorded"), Some("rejected"), "you can still say no");
+        assert_eq!(exit("approved"), Some("superseded"), "a yes given can only be overtaken");
+        assert_eq!(exit("failed"), None, "the pipeline owns a failed item");
+        assert_eq!(landed_status(), Some("applied"));
     }
 
     /// Icons are spec data, so the spec is where a two-cell glyph would sneak

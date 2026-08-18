@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { parseFrontmatter, parseSuggestion, score, splitFilename } from '../src/suggestion.mjs';
+import {
+  ageOf,
+  assignUids,
+  parseFrontmatter,
+  parseSuggestion,
+  score,
+  splitFilename,
+} from '../src/suggestion.mjs';
 
 const suggestion = ({ slug, body = '', ...fm }) => {
   const front = Object.entries(fm)
@@ -37,6 +44,46 @@ describe('frontmatter', () => {
       date: '2026-07-29',
       slug: 'verify-claimed',
     });
+  });
+});
+
+describe('uid', () => {
+  it('is three letters of the name, initials first, unique across the corpus, oldest keeps its pick', () => {
+    const older = { ...suggestion({ slug: 'freshness-check-read-as-correctness' }), date: '2026-01-01' };
+    const newer = { ...suggestion({ slug: 'fast-cheap-reliable' }), date: '2026-02-01' };
+    const short = { ...suggestion({ slug: 'a-thing' }), date: '2026-03-01' };
+    assignUids([newer, short, older]);
+    expect(older.uid).toBe('FCR');
+    expect(newer.uid).toBe(
+      'FAS',
+      'FCR is taken by the older card; three initials offer nothing else, so letters of the name',
+    );
+    expect(short.uid).toBe('ATH', 'two words fall through to letters of the whole name');
+    // Deterministic: the same corpus, in any order, gives the same handles.
+    const again = [{ ...older }, { ...newer }, { ...short }];
+    assignUids(again);
+    expect(again.map((s) => s.uid)).toEqual(['FCR', 'FAS', 'ATH']);
+    // A name that cannot yield a free handle still gets a stable one.
+    const tiny = { ...suggestion({ slug: 'ab' }), date: '2026-04-01' };
+    assignUids([tiny]);
+    expect(tiny.uid).toMatch(/^[0-9A-F]{3}$/);
+  });
+});
+
+describe('age', () => {
+  it('buckets a date into today, this week, this month or older, by rolling windows', () => {
+    const today = '2026-08-15';
+    expect(ageOf('2026-08-15', today)).toBe('today');
+    expect(ageOf('2026-08-14', today)).toBe('this week');
+    expect(ageOf('2026-08-09', today)).toBe('this week');
+    expect(ageOf('2026-08-08', today)).toBe('this month');
+    expect(ageOf('2026-07-17', today)).toBe('this month');
+    expect(ageOf('2026-07-16', today)).toBe('older');
+    // The future is not older than today — a clock skew files as today.
+    expect(ageOf('2026-08-16', today)).toBe('today');
+    // Undated cannot be recent.
+    expect(ageOf('', today)).toBe('older');
+    expect(ageOf('yesterday', today)).toBe('older');
   });
 });
 

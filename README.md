@@ -29,11 +29,12 @@ A proposal at rung 2 or 3 has to say why the rung below it does not work. That c
 
 ## Use
 
-| Command                | Does                                 |
-| ---------------------- | ------------------------------------ |
-| `/kaizen:triage`       | triage the backlog and propose fixes |
-| `/kaizen:triage drain` | apply what you have already approved |
-| `/kaizen:init`         | change what is watched               |
+| Command                | Does                                                                             |
+| ---------------------- | -------------------------------------------------------------------------------- |
+| `/kaizen:triage`       | triage the backlog and propose fixes                                             |
+| `/kaizen:triage drain` | apply what you have already approved                                             |
+| `kaizen prune`         | delete closed suggestions older than a month — the corpus stays small on purpose |
+| `/kaizen:init`         | change what is watched                                                           |
 
 A `SessionStart` hook prints one line per session — untriaged count, and the skill that has cost you the most. No model runs, so it costs nothing, and it means the backlog cannot be forgotten. It opens nothing: `SessionStart` fires for every terminal and scheduled run, and anything that launches itself all day stops being read.
 
@@ -53,7 +54,7 @@ Recurrence is the honest signal. A suggestion filed six times is six incidents, 
 
 Nothing applies without you, and there is no setting that changes that.
 
-Approval can happen for the _whole queue_, not only per suggestion — `A` moves everything approvable as one decision. Requiring a click per row is how a backlog stops being drained, which is the exact failure this tool exists to correct.
+Approval can happen for the _whole lane_, not only per suggestion — `A` on the planned lane moves everything approvable as one decision. Requiring a click per row is how a backlog stops being drained, which is the exact failure this tool exists to correct.
 
 Your approval is the authorisation — what happens after it can be automatic. A proposal that is already a validated patch is applied by the server with no model involved. One that still needs authoring waits for the next `/kaizen` run.
 
@@ -67,20 +68,23 @@ Every apply is one commit carrying a `Kaizen-Suggestion:` trailer, so `git log -
 
 ## The terminal UI
 
-Ratatui over the same `node:http` API, bound to `127.0.0.1`. `kaizen tui` starts
-the server itself if the port is dead, so there is one command. Four tabs, on
-`1`–`4`:
+Ratatui over the same `node:http` API, bound to `127.0.0.1`. Bare `kaizen` (or
+`kaizen tui`) starts the server itself if the port is dead, so there is one
+command. Four tabs, on
+`1`–`4`, and the board is the command centre it opens on:
 
-| Tab          | What it is                                                                                                                                                                                                                                          |
-| ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Queue**    | Open work, ranked, with its detail beside it. It starts on the `open` filter — suggestions whose fix already landed or closed sit behind `f`, never gone. `/` searches, `a`/`r` decide — and only where the model allows, so a key never just 409s. |
-| **Board**    | Every suggestion in a lane for its status, terminals gathered under `closed`. Where "what state is everything in" has one answer.                                                                                                                   |
-| **Skills**   | What exists on disk, how much prose each carries, and how often it has failed per 100 lines. Worst ratio first.                                                                                                                                     |
-| **Settings** | The config, read-only, and whether each apply guard is _actually_ on right now. `e` hands the file to `$EDITOR`; the server validates what comes back.                                                                                              |
+| Tab          | What it is                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Board**    | Every suggestion in a lane for its pipeline stage, terminals gathered under `closed`. The stages stay on screen even when empty, and each lane says what it waits for and whose move it is — `→ plan (fable)`, `→ decide (you)` — so where a card goes next is never a guess. Cards run newest first under a rule per age, each wearing a three-letter uid made of its own name (unique across the board) and a `⚑` when parked on you. Two keys, the same in every lane: `a` moves the card on by whatever its lane waits for — fable, your yes, or the server landing the patch — and `x` takes it out; `A` widens `a` to the lane (the backlog, the sweep, or the whole landing). Presses while fable is busy queue, and each card shows its place in line. `/` jumps to a uid or a name. What a key cannot do it refuses locally, in words, so it never just 409s. `enter` opens the card whole in a window over the board, so your place never moves. |
+| **Agents**   | Every fable run going — what each is on, its pid and how long it has been up, with a spinner while it turns — the last few that ended with how they ended, and the line waiting for a seat. `dispatch.maxAgents` in Settings is how many run at once; a backlog run always runs alone.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| **Skills**   | What exists on disk, how much prose each carries, and how often it has failed per 100 lines. Worst ratio first.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **Settings** | The config, read-only, and whether each apply guard is _actually_ on right now. `e` hands the file to `$EDITOR`; the server validates what comes back.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
 `h` is help, `D` is the lifecycle, `d` is the patch under the cursor. There used
 to be a React dashboard as well; two front ends over one API meant every change
-to the model landed twice, and the second one kept being forgotten.
+to the model landed twice, and the second one kept being forgotten. The queue
+tab went the same way: one ranked list beside a board saying the same thing was
+a second answer to one question.
 
 Skills are **read in place and never copied**, so a file edited in your editor is
 current here with no sync step and no second copy to drift. The server watches
