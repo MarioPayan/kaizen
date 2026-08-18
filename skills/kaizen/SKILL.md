@@ -71,6 +71,11 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/cli.mjs" scan --pretty
 
 If it reports no config, stop and tell the user to run `/kaizen:init`. Do not guess at paths.
 
+With `TARGET` set, read only what the pass will decide on: `scan --pretty --id
+<TARGET>` for a suggestion id, `--skill <TARGET>` for a skill name (`--scope
+<path>` answers Step 4 in one command; `scan --help` lists them). A pass fenced
+to one card should not pay for the whole corpus to find it.
+
 Note `metrics.untriaged` and `warnings`. Warnings about a missing path are configuration problems — surface them, do not work around them.
 
 ## Step 2 — Triage
@@ -175,6 +180,13 @@ that counts as passing:
 what would prove the fix worked, that is a sign the fix is not understood yet —
 leave it at `triaged` and say so.
 
+Both sections are written through the same call as the frontmatter, so a plan
+pass is one write like triage and verify: `kaizen triage --apply` with
+`[{ "id": …, "status": "planned", "plan": "…", "validation": "…" }]` upserts
+`## Plan` and `## Validation` (replacing a present section, appending an absent
+one) and flips the status in the same all-or-nothing batch. Do not `cat >>` the
+body by hand.
+
 **Parking an item is data, not prose.** Whenever you leave something short of
 the next phase because of a decision only the user can make — where content
 should live, a repo that is not writable, a structural call — record the reason
@@ -184,10 +196,20 @@ waiting on three calls without reading a report. Clear it (empty string) when
 the call is made. A final report in prose is still welcome; it is just not the
 only place the reason lives.
 
-**3. The patch** — a real diff, not a description of one:
+**3. The patch** — a real diff, not a description of one. Make it in a
+throwaway worktree at HEAD, never in the live tree: `git -C <repo> worktree add
+/tmp/kaizen-wt HEAD`, and for the kaizen repo also `npm ci --prefix
+/tmp/kaizen-wt --ignore-scripts` so it has its own `node_modules` and
+`@kaizen/*` resolves inside the worktree instead of back to the live tree.
+Someone else's uncommitted work would otherwise ride into the diff, and the
+tests would exercise their WIP instead of the patch — 21 modified files of
+foreign WIP sat in the kaizen repo during the 2026-08-15 pass. `git apply
+--check` reads a working tree, so run it against one that does not already hold
+the change: `git stash` in the worktree first, then once more against the live
+tree with `git -C <repo>`, which is what the drain will actually see.
 
 ```bash
-# in the target's skills directory
+# in the throwaway worktree, not the target's live tree
 git diff > /tmp/kaizen-<scope-or-id>.patch
 git apply --check /tmp/kaizen-<scope-or-id>.patch   # must pass before it is offered
 ```
@@ -266,7 +288,11 @@ suggestion verified on the strength of the diff looking correct.
 
 ## Step 8 — Run the rubric against kaizen itself
 
-Kaizen is not exempt from the loop it runs. Once per pass:
+Kaizen is not exempt from the loop it runs. Once per **backlog** pass — skip this
+step when `TARGET` is set. The server fans out one fenced pass per suggestion,
+and three of them once ran this rubric against the same tree within a minute:
+its result says nothing about the one card a fenced pass is deciding, and
+`doctor --file` from concurrent passes races on the date-keyed filename.
 
 ```bash
 npm run check --prefix "${CLAUDE_PLUGIN_ROOT}"          # rung-1 signals: types, lint, tests
