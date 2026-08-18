@@ -26,6 +26,18 @@ import { inPatchWindow, patchWindow, isTerminal, hasLanded } from './lifecycle.m
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
+/**
+ * The receipt under `## Evidence`, as a bullet list. Every check already
+ * computes it — the sibling slugs, the `git apply` stderr, the key path — and
+ * used to fold it into the context prose, so doctor's own filings failed the
+ * capture spec kaizen enforces on everyone else, on the day they were written.
+ */
+const bullets = (items, cap = 10) =>
+  [
+    ...items.slice(0, cap).map((x) => `- ${x}`),
+    ...(items.length > cap ? [`- +${items.length - cap} more`] : []),
+  ].join('\n');
+
 /** Every file we are willing to grep, bounded and deterministic. */
 function sourceFiles(root, exts = ['.mjs', '.ts', '.tsx', '.md', '.json', '.sh']) {
   const skip = new Set(['node_modules', '.git', 'dist', 'coverage']);
@@ -92,6 +104,10 @@ function deadConfigKeys() {
         severity: 'medium',
         scope: 'packages/core/src/config.mjs',
         context: `\`${path}\` is in defaultConfig() and is validated and typed, but no file outside its declaration sites mentions \`${key}\`. Nothing reads it.`,
+        evidence: bullets([
+          `key: \`${path}\` (leaf \`${key}\`) in defaultConfig()`,
+          `searched ${corpus.length} source files under the repo, excluding ${DECLARERS.join(', ')} and tests/: 0 mention it`,
+        ]),
         suggestion: `Either wire \`${path}\` to the behaviour it names, or delete it. A setting the Settings page offers and no code consults is a promise the tool does not keep — the user changes it, nothing happens, and the next person to read the config assumes it works.`,
       });
     }
@@ -114,6 +130,7 @@ function decidedWithoutAPatch(state) {
       severity: stuck.length > 10 ? 'medium' : 'low',
       scope: 'skills/kaizen/SKILL.md',
       context: `${stuck.length} suggestion(s) sit at ${patchWindow().join(' or ')} with no .patch file beside them. /api/apply returns 422 for every one; the drain step has nothing to apply.`,
+      evidence: bullets(stuck.map((s) => `${s.id}@${s.status} — no ${s.file.replace(/\.md$/, '.patch')}`)),
       suggestion: `Run a proposal pass (Step 5) for these, or split the status so the queue stops reporting them as ready. The count reads as progress and cannot move: ${stuck
         .slice(0, 5)
         .map((s) => s.slug)
@@ -136,6 +153,11 @@ function staleDecisions(state, today, days = 14) {
       severity: 'low',
       scope: 'skills/kaizen/SKILL.md',
       context: `${stale.length} suggestion(s) have been at ${patchWindow().join(' or ')} for more than ${days} days.`,
+      evidence: bullets(
+        stale.map(
+          (s) => `${s.id}@${s.status}, filed ${s.date} (cutoff ${cutoff.toISOString().slice(0, 10)})`,
+        ),
+      ),
       suggestion:
         'The skill treats a long-sitting decision as evidence that the approval flow has friction, not that the work is unimportant. Find the step that is not happening — usually the proposal pass or a guard nobody can satisfy — and fix that rather than re-deciding.',
     },
@@ -158,6 +180,10 @@ function captureQuality(state, threshold = 0.1) {
       severity: rate > 0.5 ? 'high' : 'medium',
       scope: 'skills/_lib/skill-reflect.md',
       context: `${missing.length} of ${total} suggestions (${Math.round(rate * 100)}%) have no \`scope\`. Clustering falls back to slug vocabulary alone when it is absent.`,
+      evidence: bullets([
+        `${missing.length}/${total} without scope, threshold ${threshold}`,
+        ...missing.map((s) => s.id),
+      ]),
       suggestion:
         'The capture step is dropping the field, not the triage step. Asking harder in prose has already been tried; the fix belongs where the file is written — a template that does not produce a file without it, or a filing command that refuses one.',
     },
@@ -184,6 +210,7 @@ function scriptsWithoutSelfCheck(config) {
         severity: 'low',
         scope: relative(root, f) || f,
         context: `\`${f.replace(process.env.HOME ?? '~', '~')}\` is a shell script a skill depends on, and it has no \`--self-check\`.`,
+        evidence: bullets([`${f}: bash shebang, ${statSync(f).size} bytes, no \`--self-check\` in the text`]),
         suggestion:
           'Add a `--self-check` that exercises the case the script exists to handle, offline. The rung-1 rule is that a script with no way to prove it works is not an improvement over the prose it replaced — and the cases worth checking are exactly the ones that produced the incidents.',
       });
@@ -208,20 +235,24 @@ function patchesThatNoLongerApply(state, config) {
     if (isTerminal(s.status) || hasLanded(s.status)) continue;
     const patch = s.file.replace(/\.md$/, '.patch');
     if (!existsSync(patch)) continue;
-    const target = byTarget.get(s.target);
-    if (!target || !existsSync(target.skills)) continue;
+    // A project skill files into the user feedback dir — that is where
+    // skill-reflect puts it — but its patch is against the project, not the
+    // target's skills tree. Check it where it applies, or the check calls every
+    // project-skill proposal rotten. A known project that is gone is unknowable,
+    // not rotten: skip rather than fall back to the wrong tree.
+    const project = state.skills?.find((k) => k.name === s.skill)?.project;
+    const cwd = project ?? byTarget.get(s.target)?.skills;
+    if (!cwd || !existsSync(cwd)) continue;
     try {
-      execFileSync('git', ['apply', '--check', patch], { cwd: target.skills, stdio: 'pipe' });
+      execFileSync('git', ['apply', '--check', patch], { cwd, stdio: 'pipe' });
     } catch (e) {
+      const stderr = String(e.stderr ?? e.message).trim();
       findings.push({
         slug: `proposal-no-longer-applies-${s.slug}`.slice(0, 80),
         severity: 'medium',
         scope: s.scope || 'skills/kaizen/SKILL.md',
-        context: `The patch beside \`${s.slug}\` no longer applies to ${target.skills}: ${
-          String(e.stderr ?? e.message)
-            .trim()
-            .split('\n')[0]
-        }`,
+        context: `The patch beside \`${s.slug}\` no longer applies to ${cwd}: ${stderr.split('\n')[0]}`,
+        evidence: bullets([`\`git -C ${cwd} apply --check ${patch}\` →`, ...stderr.split('\n').slice(0, 5)]),
         suggestion:
           'Re-generate the patch against the current file, or mark the suggestion superseded if the change landed another way. A proposal that cannot apply reports as ready and fails at drain time, which is the worst moment to discover it.',
       });
@@ -245,7 +276,30 @@ function patchesThatNoLongerApply(state, config) {
  * stages — so this reports rather than rewrites, and names the sha to check
  * against.
  */
-function scopeFixOrphansSiblings(state) {
+/**
+ * The day a finished sibling's fix landed: the commit date of its applied sha
+ * when that resolves in the target, else the day it was filed (a superseded
+ * sibling has no sha; its own date is the latest the fix can have landed).
+ */
+function fixedOn(s, byTarget) {
+  const target = byTarget.get(s.target);
+  if (s.appliedSha && target && existsSync(target.skills)) {
+    try {
+      const out = execFileSync('git', ['log', '-1', '--format=%cs', s.appliedSha], {
+        cwd: target.skills,
+        stdio: 'pipe',
+      });
+      const day = String(out).trim();
+      if (day) return day;
+    } catch {
+      // Unresolvable sha: fall through to the filing date.
+    }
+  }
+  return String(s.date ?? '').slice(0, 10);
+}
+
+function scopeFixOrphansSiblings(state, config = { targets: [] }) {
+  const byTarget = new Map(resolveTargets(config).map((t) => [t.name, t]));
   const findings = [];
   const byScope = new Map();
   for (const s of state.suggestions) {
@@ -258,9 +312,22 @@ function scopeFixOrphansSiblings(state) {
     const done = members.filter((s) => hasLanded(s.status) || s.status === 'superseded');
     // A member inside the patch window (planned, approved) is visibly
     // mid-pipeline — the queue already knows it is open, so "fixed and
-    // unmarked" cannot apply to it. Only a pre-plan member can be an orphan.
+    // unmarked" cannot apply to it. Only a pre-plan member can be an orphan —
+    // and only one filed no later than the scope's last fix: a suggestion
+    // written after the commit cannot have been fixed by it. Three false alarms
+    // in one pass were exactly that, each costing a confirm-and-reject cycle.
+    const lastFix =
+      done
+        .map((s) => fixedOn(s, byTarget))
+        .filter(Boolean)
+        .sort()
+        .at(-1) ?? '';
     const openOnes = members.filter(
-      (s) => !isTerminal(s.status) && !hasLanded(s.status) && !inPatchWindow(s.status),
+      (s) =>
+        !isTerminal(s.status) &&
+        !hasLanded(s.status) &&
+        !inPatchWindow(s.status) &&
+        !(lastFix && String(s.date ?? '').slice(0, 10) > lastFix),
     );
     if (done.length === 0 || openOnes.length === 0) continue;
 
@@ -269,6 +336,13 @@ function scopeFixOrphansSiblings(state) {
       slug: `scope-${scope}-has-orphaned-siblings`.replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 80),
       severity: openOnes.length > 3 ? 'medium' : 'low',
       scope,
+      evidence: bullets([
+        ...done.map(
+          (s) =>
+            `finished: ${s.id}@${s.status}${s.appliedSha ? ` (${s.appliedSha.slice(0, 7)})` : ''}, fixed on ${fixedOn(s, byTarget) || '?'}`,
+        ),
+        ...openOnes.map((s) => `pre-plan: ${s.id}@${s.status}, filed ${s.date}`),
+      ]),
       context:
         `Scope \`${scope}\`: ${done.length} of ${members.length} suggestions are finished, ` +
         `${openOnes.length} sit pre-plan — ${openOnes
@@ -286,9 +360,97 @@ function scopeFixOrphansSiblings(state) {
   return findings;
 }
 
+/**
+ * A harness file is rung 0 by definition.
+ *
+ * The ladder in the skill and the guardrails file's own header both say a
+ * CLAUDE.md line, a hook or a settings key is rung 0 — the harness enforces it,
+ * nothing re-reads it. A suggestion scoped there and labelled 2 was still
+ * caught by hand at plan time and flipped. Labels feed the queue's ranking, so
+ * a wrong one is worse than a blank one; this reports the mismatch instead of
+ * waiting for the plan step to notice.
+ */
+const HARNESS_SCOPE = /(^|\/)(claude-md-guardrails\.md|CLAUDE\.md|settings(\.local)?\.json)$|(^|\/)hooks\//;
+
+function harnessScopeRungMismatch(state) {
+  const off = state.suggestions.filter(
+    (s) =>
+      !isTerminal(s.status) &&
+      !hasLanded(s.status) &&
+      s.scope &&
+      HARNESS_SCOPE.test(s.scope) &&
+      s.rung !== null &&
+      s.rung !== undefined &&
+      s.rung !== 0,
+  );
+  if (off.length === 0) return [];
+  return [
+    {
+      slug: 'harness-scoped-suggestions-not-at-rung-0',
+      severity: 'low',
+      scope: 'skills/kaizen/SKILL.md',
+      context: `${off.length} open suggestion(s) are scoped to a harness file but labelled above rung 0: ${off
+        .slice(0, 5)
+        .map((s) => `${s.id} (rung ${s.rung})`)
+        .join(', ')}${off.length > 5 ? `, +${off.length - 5} more` : ''}.`,
+      evidence: bullets(
+        off.map((s) => `${s.id}: scope \`${s.scope}\` matches ${HARNESS_SCOPE}, rung ${s.rung}`),
+      ),
+      suggestion:
+        'A CLAUDE.md line, a hook or a settings key is rung 0 by the ladder — the harness enforces it and nothing re-reads it. Relabel with `kaizen triage --apply` (`"rung": "0"`); the plan step should not have to catch this by hand.',
+    },
+  ];
+}
+
+/**
+ * One scope, one fix — so one live patch.
+ *
+ * Step 4 of the skill says one proposal per scope, and the apply cascade
+ * assumes it: the commit that lands a scope's fix stamps every open sibling
+ * `superseded_by: <sha>`. Two planned/approved siblings each carrying their own
+ * `.patch` break that assumption — whichever lands first closes the other with
+ * a diff that never landed, and a patch appended at end-of-file stops applying
+ * the moment the first one lengthens the file. Seen on
+ * `_lib/claude-md-guardrails.md`. Report it before either applies; the fix is
+ * to fold the second diff into the lead's patch or re-scope one of them.
+ */
+function scopeWithSeveralLivePatches(state) {
+  const findings = [];
+  const byScope = new Map();
+  for (const s of state.suggestions) {
+    if (!s.scope || !inPatchWindow(s.status)) continue;
+    // Own sidecar only, deliberately: a member covered by its lead's patch is
+    // the intended shape, a second diff of its own is the hazard.
+    if (!existsSync(s.file.replace(/\.md$/, '.patch'))) continue;
+    const key = `${s.target}\0${s.scope}`;
+    if (!byScope.has(key)) byScope.set(key, []);
+    byScope.get(key).push(s);
+  }
+  for (const [key, live] of byScope) {
+    if (live.length < 2) continue;
+    const scope = key.split('\0')[1];
+    findings.push({
+      slug: `scope-${scope}-has-several-live-patches`.replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 80),
+      severity: 'medium',
+      scope,
+      context: `Scope \`${scope}\` carries ${live.length} live proposals, each with its own .patch: ${live
+        .map((s) => `${s.slug}@${s.status}`)
+        .join(
+          ', ',
+        )}. The apply cascade supersedes every open sibling when the first lands, so the other diff(s) would be stamped superseded without ever applying.`,
+      evidence: bullets(live.map((s) => `${s.id}@${s.status} → ${s.file.replace(/\.md$/, '.patch')}`)),
+      suggestion:
+        'Fold the other diff(s) into the lead patch (one patch per scope, per Step 4) or re-scope one of them, before either is drained. If both must land in sequence, say so in blocked_on and drain them via the CLI (Step 7), which does not cascade.',
+    });
+  }
+  return findings;
+}
+
 export const CHECKS = [
   { id: 'dead-config-key', run: () => deadConfigKeys() },
-  { id: 'scope-fix-orphans-siblings', run: (ctx) => scopeFixOrphansSiblings(ctx.state) },
+  { id: 'scope-fix-orphans-siblings', run: (ctx) => scopeFixOrphansSiblings(ctx.state, ctx.config) },
+  { id: 'scope-has-several-live-patches', run: (ctx) => scopeWithSeveralLivePatches(ctx.state) },
+  { id: 'harness-scope-rung-mismatch', run: (ctx) => harnessScopeRungMismatch(ctx.state) },
   { id: 'patch-no-longer-applies', run: (ctx) => patchesThatNoLongerApply(ctx.state, ctx.config) },
   { id: 'decided-without-a-patch', run: (ctx) => decidedWithoutAPatch(ctx.state) },
   { id: 'stale-decision', run: (ctx) => staleDecisions(ctx.state, ctx.today) },
@@ -339,6 +501,10 @@ export function findingToMarkdown(f, today) {
     '## Context',
     '',
     f.context,
+    '',
+    '## Evidence',
+    '',
+    f.evidence,
     '',
     '## Suggestion',
     '',
