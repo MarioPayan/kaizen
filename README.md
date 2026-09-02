@@ -36,7 +36,7 @@ A proposal at rung 2 or 3 has to say why the rung below it does not work. That c
 | `kaizen prune`         | delete closed suggestions older than a month — the corpus stays small on purpose |
 | `/kaizen:init`         | change what is watched                                                           |
 
-A `SessionStart` hook prints one line per session — untriaged count, and the skill that has cost you the most. No model runs, so it costs nothing, and it means the backlog cannot be forgotten. It opens nothing: `SessionStart` fires for every terminal and scheduled run, and anything that launches itself all day stops being read.
+A `SessionStart` hook prints one line per session — what is waiting for triage, what is waiting on you, and the skill still costing you the most. `kaizen status --bar` is the same four piles as glyphs, for a status line; [what each one means](docs/LIFECYCLE.md#the-status-line) is in the spec, so `kaizen tui` explains them too. Both count open work only: a closed suggestion is history, and history that greets you every session is noise. No model runs, so it costs nothing, and it means the backlog cannot be forgotten. It opens nothing: `SessionStart` fires for every terminal and scheduled run, and anything that launches itself all day stops being read.
 
 ## How it decides
 

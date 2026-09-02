@@ -59,7 +59,7 @@ afterAll(() => rmSync(root, { recursive: true, force: true }));
 
 describe('kaizen status', () => {
   it('reports what is waiting', () => {
-    expect(run(base())).toMatch(/kaizen: 1 untriaged/);
+    expect(run(base())).toMatch(/kaizen: 1 to triage/);
   });
 
   it('says nothing at all when the session line is switched off', () => {
@@ -112,11 +112,12 @@ describe('kaizen status', () => {
   });
 
   /**
-   * `top:` has to name work, not history. A skill whose suggestions are all
-   * applied or superseded is fully addressed — and one of exactly that shape
-   * was headlining every session with 27 incidents nobody could act on.
+   * `top:` has to name work, not history — and the number has to be the work,
+   * not the history either. It counted every incident a skill had ever filed
+   * while merely *gating* on one being open, so a skill 71 incidents of which
+   * were closed headlined every session with all 94.
    */
-  it('names a top skill only while some of its work is still open', () => {
+  it('counts only open incidents when it names the top skill', () => {
     mkdirSync(join(root, 'feedback', 'demo2'), { recursive: true });
     const member = (slug, status) =>
       writeFileSync(
@@ -137,17 +138,42 @@ describe('kaizen status', () => {
           '',
           '## Recurrence — 2026-01-04',
           '',
+          '## Recurrence — 2026-01-05',
+          '',
+          '## Recurrence — 2026-01-06',
+          '',
         ].join('\n'),
       );
 
-    // 3 incidents each → 6 ≥ 5: loud enough. Both landed or terminal → silent.
+    // 5 incidents each. One landed, one closed: nothing here is still costing
+    // anyone, however loud the history is.
     member('origin-first', 'applied');
     member('origin-second', 'superseded');
     expect(run(base())).not.toMatch(/top:/);
 
-    // One member back in play → the skill is work again.
+    // One member back in play → the skill is work again, and worth exactly its
+    // own 5 incidents. The closed sibling's 5 do not join them.
     member('origin-first', 'recorded');
-    expect(run(base())).toMatch(/top: demo2 \(6\)/);
+    expect(run(base())).toMatch(/top: demo2 \(5\)/);
+  });
+
+  /**
+   * A card parked on a call only Mario can make is waiting on Mario, whatever
+   * its status says. The board has drawn that flag since `blocked_on` landed;
+   * the line went on reporting those cards as nothing at all.
+   */
+  it('counts a card parked on you, and stops the moment it closes', () => {
+    const file = join(root, 'feedback', 'demo', '2026-01-01-a-thing.md');
+    const parked = readFileSync(file, 'utf8').replace(
+      'status: approved',
+      'status: approved\nblocked_on: needs a call about the remote',
+    );
+    writeFileSync(file, parked);
+    expect(run(base())).toMatch(/1 awaiting you/);
+
+    // Closed is closed: the block is still written down, and it is history now.
+    writeFileSync(file, parked.replace('status: approved', 'status: superseded'));
+    expect(run(base())).not.toMatch(/awaiting you/);
   });
 });
 
@@ -169,10 +195,11 @@ describe('kaizen status --bar', () => {
 
   it('draws one dot per pile and points at the hottest open skill', () => {
     // The corpus built up by the tests above: demo2 holds a recorded member
-    // (3 incidents) plus a superseded sibling, 6 incidents in all.
+    // worth 5 incidents plus a superseded sibling worth 5 more. The bar counts
+    // the same piles the line does, so the sibling's five are not in the ▲.
     const { plain } = bar(base());
     expect(plain).toMatch(/^改 ○\d+/);
-    expect(plain).toContain('▲');
+    expect(plain).toContain('▲5');
   });
 
   it('is a dim 改 when there is nothing to say, and ignores the hook toggle', () => {

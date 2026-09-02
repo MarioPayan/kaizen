@@ -57,6 +57,9 @@ import {
   canonicalStatus,
   isTerminal,
   hasLanded,
+  statusLine,
+  pileGlyph,
+  assignBlockedBy,
   nextStatuses,
   missingRequirements,
   requirementsFor,
@@ -246,88 +249,111 @@ function cmdScan() {
 }
 
 /**
- * The session hook calls this. It must stay cheap and quiet: one line, no model,
- * and silence when there is genuinely nothing to say.
+ * What the session line and the status bar both count.
+ *
+ * One function because they are one answer rendered twice, and because they
+ * drifted the moment either was edited alone — the line was still counting
+ * closed files as untriaged months after the bar stopped.
+ *
+ * Closed is excluded from every pile. A superseded finding is history, and
+ * history that greets you at the start of every session is noise you learn to
+ * scroll past — which costs the line the one job it has.
  */
+function piles(surfaced) {
+  const open = surfaced.filter((s) => !isTerminal(s.status));
+  const entry = entryStatus();
+  const wants = awaitingDecision();
+  return {
+    toTriage: open.filter((s) => s.status === entry).length,
+    // The pile at the door of the attended phase, plus every card parked on a
+    // call only you can make: `blocked_on` naming something that is not another
+    // open card is the board's lit flag, and `b` is the key that answers it.
+    // Those cards were invisible here — a `triaged` row waiting on you for a
+    // week reported as nothing at all.
+    awaitingYou: open.filter((s) => wants.includes(s.status) || (s.blockedOn && !s.blockedBy)).length,
+    landed: open.filter((s) => hasLanded(s.status)).length,
+    // A card whose commit is in is addressed, pending verification — it is the
+    // `landed` pile's business, not evidence the skill is still costing you.
+    top: hottestSkill(open.filter((s) => !hasLanded(s.status))),
+  };
+}
+
+/**
+ * The busiest skill still holding open work — the bar's ▲ and the line's
+ * "top". Grouping is the skill itself now (`session` included), so this is a
+ * count, not a clustering pass.
+ *
+ * Incidents are counted on open cards only. Counting the whole history is what
+ * had every session announcing `top: kaizen (94)` when 71 of those incidents
+ * were closed and 23 were the actual queue.
+ */
+// ponytail: 5 open incidents, where it used to be 5 lifetime ones — a floor,
+// not a knob. Nobody has ever turned it.
+function hottestSkill(open) {
+  const bySkill = new Map();
+  for (const s of open) bySkill.set(s.skill, (bySkill.get(s.skill) ?? 0) + s.incidents);
+  const top = [...bySkill.entries()].filter(([, n]) => n >= 5).sort((a, b) => b[1] - a[1])[0];
+  return top ? { skill: top[0], incidents: top[1] } : null;
+}
+
+/**
+ * Every suggestion the user asked to see, without a full scan.
+ *
+ * The bar redraws on a timer, so it reads suggestions only — no skills
+ * discovery, no project scan, no git. `blockedBy` is the one derivation it
+ * cannot skip: without it a card parked on another card reads as parked on you.
+ */
+function surfacedSuggestions(config) {
+  const suggestions = [];
+  const seen = new Set();
+  for (const t of resolveTargets(config)) {
+    if (!t.feedback || seen.has(t.feedback)) continue;
+    seen.add(t.feedback);
+    suggestions.push(...discoverSuggestions(t.feedback, t.name));
+  }
+  assignBlockedBy(suggestions);
+  const surface = surfaceOf(config);
+  return suggestions.filter((s) => passesSurface(s, surface));
+}
+
 /**
  * The status bar segment — concept A of the 2026-08-09 proposals: pile shapes.
  *
  *   改 ○17 ●1 ◐22 ▲9
  *
- * The dot's fill IS the state: ○ unjudged (to triage), ● a decision that is
- * yours — the only amber thing, because it is the only thing that ever needs
- * you — ◐ half-done (landed, unverified), ▲ the busiest skill with open
- * work. Zero segments vanish; an empty backlog is a dim 改, which
- * proves the segment is alive without saying anything.
+ * The glyphs and what each one means are spec data (`statusLine` in
+ * lifecycle.json), so the TUI's guide explains exactly what this paints. Zero
+ * segments vanish; an empty backlog is a dim mark, which proves the segment is
+ * alive without saying anything.
  *
- * Runs on every status-line refresh, so it reads suggestions only — no skills
- * discovery, no project scan, no git. And it never errors out loud: a bar that
- * prints a stack trace every few seconds is worse than no bar.
+ * It never errors out loud: a bar that prints a stack trace every few seconds
+ * is worse than no bar.
  */
-/**
- * The busiest skill still holding open work — the bar's ▲ and the line's
- * "top". Grouping is the skill itself now (`session` included), so this is a
- * count, not a clustering pass.
- */
-function hottestSkill(suggestions, openIds) {
-  const bySkill = new Map();
-  for (const s of suggestions) {
-    const e = bySkill.get(s.skill) ?? { incidents: 0, open: false };
-    e.incidents += s.incidents;
-    e.open ||= openIds.has(s.id);
-    bySkill.set(s.skill, e);
-  }
-  // Incidents count the skill's whole history — that is what says "this one
-  // keeps failing" — but only a skill with open work is worth pointing at.
-  // ponytail: 5 mirrors the old promotion threshold — a knob nobody ever turned.
-  const top = [...bySkill.entries()]
-    .filter(([, e]) => e.open && e.incidents >= 5)
-    .sort((a, b) => b[1].incidents - a[1].incidents)[0];
-  return top ? { skill: top[0], incidents: top[1].incidents } : null;
-}
-
 function cmdBar() {
   const paint = (code, text) => `\x1b[${code}m${text}\x1b[0m`;
   try {
     const { config, exists, errors } = loadConfig();
     if (!exists || errors.length) return;
 
-    const suggestions = [];
-    const seen = new Set();
-    for (const t of resolveTargets(config)) {
-      if (!t.feedback || seen.has(t.feedback)) continue;
-      seen.add(t.feedback);
-      suggestions.push(...discoverSuggestions(t.feedback, t.name));
-    }
-
-    const surface = surfaceOf(config);
-    const surfaced = suggestions.filter((s) => passesSurface(s, surface));
-    const entry = entryStatus();
-    const wants = awaitingDecision();
-    const toTriage = surfaced.filter((s) => s.status === entry).length;
-    const deciding = surfaced.filter((s) => wants.includes(s.status)).length;
-    const landed = surfaced.filter((s) => hasLanded(s.status) && !isTerminal(s.status)).length;
-
-    // Same rule as the session line: a skill is only worth pointing at
-    // while something of its own is still open work.
-    const open = new Set(
-      surfaced.filter((s) => !isTerminal(s.status) && !hasLanded(s.status)).map((s) => s.id),
-    );
-    const top = hottestSkill(suggestions, open);
-
+    const p = piles(surfacedSuggestions(config));
+    const mark = statusLine().mark;
     const parts = [];
-    if (toTriage) parts.push(paint('36', `○${toTriage}`));
-    if (deciding) parts.push(paint('1;33', `●${deciding}`));
-    if (landed) parts.push(paint('34', `◐${landed}`));
-    if (top) parts.push(paint('31', `▲${top.incidents}`));
+    if (p.toTriage) parts.push(paint('36', `${pileGlyph('triage')}${p.toTriage}`));
+    if (p.awaitingYou) parts.push(paint('1;33', `${pileGlyph('decide')}${p.awaitingYou}`));
+    if (p.landed) parts.push(paint('34', `${pileGlyph('landed')}${p.landed}`));
+    if (p.top) parts.push(paint('31', `${pileGlyph('hottest')}${p.top.incidents}`));
 
-    if (parts.length === 0) return console.log(paint('2', '改'));
-    console.log(`${paint('36', '改')} ${parts.join(' ')}`);
+    if (parts.length === 0) return console.log(paint('2', mark));
+    console.log(`${paint('36', mark)} ${parts.join(' ')}`);
   } catch {
     /* silence — the bar has no business breaking a prompt */
   }
 }
 
+/**
+ * The session hook calls this. It must stay cheap and quiet: one line, no model,
+ * and silence when there is genuinely nothing to say.
+ */
 function cmdStatus() {
   // The bar ignores the sessionHook toggle on purpose: it only ever renders
   // because the user wired it into their statusLine command themselves.
@@ -352,30 +378,20 @@ function cmdStatus() {
   // Counted over what the user asked to see, not over everything on disk. The
   // dashboard's header still reports the full totals; this line is the one that
   // interrupts, so it obeys the filter.
-  const surfaced = state.suggestions.filter((s) => s.surfaced);
-  if (surfaced.length === 0) return;
+  const p = piles(state.suggestions.filter((s) => s.surfaced));
 
+  // The two piles a person can do something about, named in the spec's words so
+  // the line, the bar's glyphs and the TUI's legend cannot disagree. `landed` is
+  // deliberately not here: it waits on the verify phase, and a session line that
+  // reports what needs nothing from anyone is the noise this line already had
+  // once. There used to be an `untriaged` segment too — labels missing, rather
+  // than a judgement missing — which after excluding closed files is the same
+  // cards as `to triage`, counted twice with two different words.
+  const label = (id) => statusLine().piles.find((x) => x.id === id)?.label ?? id;
   const parts = [];
-  const untriaged = surfaced.filter((s) => !s.triaged).length;
-  if (untriaged) parts.push(`${untriaged} untriaged`);
-  // The pile at the entry, which a triage pass consumes. Distinct from
-  // `untriaged`: that means "has no labels", this means "nobody has confirmed
-  // the problem is still real". A file can be fully labelled and still sit here.
-  const entry = entryStatus();
-  const toTriage = surfaced.filter((s) => s.status === entry).length;
-  if (toTriage) parts.push(`${toTriage} to triage`);
-  // Only the pile at the door of the attended phase actually wants Mario. This
-  // used to count `approved` too, which waits on the server — that is how the
-  // line came to report 39 items needing nothing from anyone.
-  const wants = awaitingDecision();
-  const ready = surfaced.filter((s) => wants.includes(s.status)).length;
-  if (ready) parts.push(`${ready} awaiting you`);
-  // A skill is worth naming only while something of its own is still open work
-  // — surfaced, no commit landed, not terminal. One whose suggestions are all
-  // applied or superseded is history, and it was headlining every session as "top".
-  const ids = new Set(surfaced.filter((s) => !isTerminal(s.status) && !hasLanded(s.status)).map((s) => s.id));
-  const top = hottestSkill(state.suggestions, ids);
-  if (top) parts.push(`top: ${top.skill} (${top.incidents})`);
+  if (p.toTriage) parts.push(`${p.toTriage} ${label('triage')}`);
+  if (p.awaitingYou) parts.push(`${p.awaitingYou} ${label('decide')}`);
+  if (p.top) parts.push(`top: ${p.top.skill} (${p.top.incidents})`);
   if (parts.length === 0) return;
   console.log(`kaizen: ${parts.join(' · ')}`);
 }

@@ -114,6 +114,20 @@ rung 2 or 3 has to say in one sentence why the rung below does not work.
 | **2** | A written rule      | tokens every run | Prose re-read and re-interpreted every run. Fine when the input genuinely varies. |
 | **3** | Left to reasoning   | tokens + drift   | Nothing written down. Where most recorded failures came from.                     |
 
+## The status line
+
+The one line the SessionStart hook prints, and the segment `kaizen status --bar` draws
+for a status line. Both count the same piles, and both count only open work — a closed
+suggestion is history, and history that greets you every session is noise. The mark
+alone, dimmed, means the backlog is clear.
+
+|     | Pile               | What it counts                                                                                                                                      |
+| --- | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `○` | to triage          | Filed and unjudged — the pile a triage pass consumes. Nothing here is waiting on you.                                                               |
+| `●` | awaiting you       | The only amber pile, because it is the only one that ever needs you: a patch waiting on your yes, plus any card parked on a call only you can make. |
+| `◐` | landed, unverified | Half-done: the commit is in and its validation plan has not run yet. The verify phase drains this one, not you.                                     |
+| `▲` | hottest skill      | The skill carrying the most incidents that are still open, and how many. A skill whose findings all closed is history and is never named here.      |
+
 ### What capture writes
 
 ```markdown

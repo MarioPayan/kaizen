@@ -29,7 +29,7 @@ use crate::keys::{self, Action, Tab};
 use crate::views::{agent, board, settings, skills};
 use crate::lifecycle::{
     actor_of, awaits_pass, decision_status, exit, forward, is_terminal, landed_status, lifecycle,
-    next_statuses, status_icon, status_spec,
+    next_statuses, status_icon, status_line, status_spec,
 };
 
 /// 100ms, which is the spinner's frame rate: a 10-frame braille cycle turns
@@ -805,6 +805,30 @@ fn docs_lines(width: usize) -> Vec<Line<'static>> {
             Span::styled(format!("    {:<width$} ", s.id, width = width), Style::new().fg(tone_colour(&s.tone))),
             Span::styled(format!("→ {to}"), Style::new().fg(theme::dim())),
         ]));
+    }
+    out.push(Line::raw(""));
+
+    // The one kaizen surface that is not on this screen. It greets you in a
+    // prompt where there is nothing to ask, so the glyphs are explained where
+    // you would go looking — here — and from the same spec the CLI paints from.
+    let sl = status_line();
+    out.push(head("the session line"));
+    out.extend(prose(&sl.help, "    "));
+    out.push(Line::raw(""));
+    out.push(Line::from(vec![
+        Span::styled(format!("    {} ", sl.mark), Style::new().fg(theme::accent())),
+        Span::styled(
+            sl.piles.iter().map(|p| format!("{}n", p.glyph)).collect::<Vec<_>>().join(" "),
+            Style::new().fg(theme::dim()),
+        ),
+    ]));
+    out.push(Line::raw(""));
+    for pile in &sl.piles {
+        out.push(Line::from(vec![
+            Span::styled(format!("    {} ", pile.glyph), Style::new().fg(theme::warn())),
+            Span::styled(format!("{:<20}", pile.label), Style::new().fg(theme::accent())),
+        ]));
+        out.extend(prose(&pile.help, "      "));
     }
     out.push(Line::raw(""));
 
@@ -2526,6 +2550,28 @@ mod tests {
             1,
             "exactly one phase should be attended — more than that is a workflow, not a pipeline",
         );
+    }
+
+    /// The status line is the one kaizen surface that is not on screen, so the
+    /// guide is where you go when a glyph in your prompt stops making sense.
+    /// It is only that if every glyph is actually there.
+    #[test]
+    fn the_guide_explains_every_glyph_the_status_line_paints() {
+        let squash = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+        let text = squash(
+            &docs_lines(96)
+                .iter()
+                .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+        let sl = status_line();
+        assert!(text.contains(&sl.mark), "the mark is not explained");
+        for p in &sl.piles {
+            assert!(text.contains(&p.glyph), "pile {} has no glyph on the card", p.label);
+            assert!(text.contains(&p.label), "pile {} is not named", p.label);
+            assert!(text.contains(&squash(&p.help)), "pile {} has no meaning", p.label);
+        }
     }
 
     /// A card with no slug is still identifiable rather than blank.

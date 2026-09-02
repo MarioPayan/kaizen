@@ -23,6 +23,28 @@ pub struct Lifecycle {
     pub phases: Vec<PhaseSpec>,
     pub statuses: Vec<StatusSpec>,
     pub fields: Vec<FieldSpec>,
+    #[serde(rename = "statusLine")]
+    pub status_line: StatusLineSpec,
+}
+
+/// The legend for the line a session starts with and the segment
+/// `kaizen status --bar` paints. The TUI draws none of it — it is the one
+/// kaizen surface that is not on screen — which is exactly why the guide has to
+/// explain it: the glyphs greet you in a prompt with nothing nearby to ask.
+#[derive(Debug, Deserialize)]
+pub struct StatusLineSpec {
+    pub mark: String,
+    pub help: String,
+    pub piles: Vec<PileSpec>,
+}
+
+/// No `id`: the CLI addresses a pile by id to paint it, the TUI only ever reads
+/// the legend top to bottom. Serde skips what nothing asks for.
+#[derive(Debug, Deserialize)]
+pub struct PileSpec {
+    pub glyph: String,
+    pub label: String,
+    pub help: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -68,6 +90,11 @@ pub fn lifecycle() -> &'static Lifecycle {
     CELL.get_or_init(|| {
         serde_json::from_str(LIFECYCLE_JSON).expect("lifecycle.json (embedded) does not parse")
     })
+}
+
+/// The status-line legend, straight off the spec the CLI paints from.
+pub fn status_line() -> &'static StatusLineSpec {
+    &lifecycle().status_line
 }
 
 /// There is one spelling per status, so this is a lookup rather than a resolve.
@@ -197,6 +224,23 @@ mod tests {
         assert_eq!(exit("approved"), Some("superseded"), "a yes given can only be overtaken");
         assert_eq!(exit("failed"), None, "the pipeline owns a failed item");
         assert_eq!(landed_status(), Some("applied"));
+    }
+
+    /// The bar's glyphs sit in a prompt beside a shell's own, so a two-cell one
+    /// shifts everything after it — the same rule as the status icons, and the
+    /// same reason: the spec is the only place either can go wrong.
+    #[test]
+    fn every_pile_glyph_is_one_cell_and_none_repeats() {
+        use unicode_width::UnicodeWidthStr;
+        let mut seen = std::collections::HashSet::new();
+        let sl = status_line();
+        assert!(!sl.mark.is_empty(), "the segment has no mark");
+        for p in &sl.piles {
+            assert_eq!(p.glyph.width(), 1, "{} glyph {:?} is not one cell", p.label, p.glyph);
+            assert!(!p.help.is_empty(), "{} has no help", p.label);
+            assert!(seen.insert(&p.glyph), "{} repeats another pile's glyph", p.label);
+        }
+        assert!(sl.piles.len() >= 2, "a legend of one pile explains nothing");
     }
 
     /// Icons are spec data, so the spec is where a two-cell glyph would sneak

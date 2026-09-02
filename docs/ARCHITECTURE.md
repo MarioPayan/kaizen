@@ -13,9 +13,13 @@ the thing together. The README covers the why; start there if you haven't.
    file format predates it, and the parser tolerates files written before any
    given field existed.
 2. **Session line.** A `SessionStart` hook (`hooks/session-status.sh`) runs
-   `kaizen status`: one line, no model, silent when there is nothing to say. It
-   counts open work only — a skill whose suggestions are all applied or
-   superseded is history and is not named.
+   `kaizen status`: one line, no model, silent when there is nothing to say.
+   `kaizen status --bar` is the same piles as glyphs, for a status line. Both
+   count open work only — a closed suggestion is history, and a skill whose
+   suggestions are all applied or superseded is not named. One `piles()` in
+   `scripts/cli.mjs` answers for both; the glyphs and their meanings are spec
+   data (`statusLine` in `lifecycle.json`), so the TUI's guide explains exactly
+   what the bar paints.
 
    The same hook is where the **weekly pass** fires, when `asks.enabled` is on
    and the `cadence.weekly` slot has gone by. That pass covers what step 1
@@ -102,9 +106,12 @@ Each module owns one thing; `index.mjs` is the public surface.
   copied), suggestions, orphans, metrics. Collapses git worktrees via
   `--git-common-dir` so one repo's skills count once. Tags each suggestion
   `surfaced` (a view preference — nothing is dropped from the state).
+  `assignBlockedBy` is exported separately: the status bar needs to know whether
+  a block waits on another card or on you, and cannot afford a full scan.
 - **`lifecycle.mjs`** — loads and validates `lifecycle.json`, answers every
   status question (`isTerminal`, `canTransition`, `hasLanded`,
-  `awaitingDecision`, `missingRequirements`…), and renders `docs/LIFECYCLE.md`.
+  `awaitingDecision`, `missingRequirements`…), carries the status-line legend
+  (`statusLine`, `pileGlyph`), and renders `docs/LIFECYCLE.md`.
   Everything is _derived_ from the spec, never listed by name — that is the
   whole defence against a renamed status silently breaking a filter.
 - **`paths.mjs`** — path containment. Every caller-supplied path is resolved

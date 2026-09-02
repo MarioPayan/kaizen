@@ -12,7 +12,13 @@ export {
   OBJECTIVES,
   EFFORTS,
 } from './config.mjs';
-export { buildState, discoverSkills, discoverProjectSkills, discoverSuggestions } from './scan.mjs';
+export {
+  buildState,
+  assignBlockedBy,
+  discoverSkills,
+  discoverProjectSkills,
+  discoverSuggestions,
+} from './scan.mjs';
 export {
   parseSuggestion,
   parseFrontmatter,
@@ -47,6 +53,8 @@ export {
   patchWindow,
   inPatchWindow,
   hasLanded,
+  statusLine,
+  pileGlyph,
 } from './lifecycle.mjs';
 export { readAsks, passDue, parseCadence, lastSlot, windowDays, historyPath, stampPath } from './asks.mjs';
 export { assertInside, isInside, parseSuggestionId, suggestionId } from './paths.mjs';

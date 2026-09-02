@@ -90,6 +90,31 @@ export function validateLifecycle(l) {
     if (r.n !== i) errors.push(`rung ${r.n}: rungs must be listed 0..n with no gaps`);
     if (!r.title || !r.detail || !r.cost) errors.push(`rung ${r.n}: needs title, detail and cost`);
   }
+  // The session line and the status bar draw these, and the TUI's guide reads
+  // the same block to explain them. A glyph that is blank, doubled or two cells
+  // wide breaks one of the three without touching the other two.
+  const sl = l.statusLine;
+  if (sl) {
+    if (!sl.mark) errors.push('statusLine: needs a mark');
+    if (!sl.help) errors.push('statusLine: needs help text');
+    const seenGlyph = new Map();
+    const seenPile = new Set();
+    for (const pile of sl.piles ?? []) {
+      if (!pile.id || !pile.label || !pile.help) errors.push(`pile "${pile.id}": needs id, label and help`);
+      if (seenPile.has(pile.id)) errors.push(`pile "${pile.id}": listed twice`);
+      seenPile.add(pile.id);
+      if ([...(pile.glyph ?? '')].length !== 1) {
+        errors.push(`pile "${pile.id}": glyph must be exactly one character (got "${pile.glyph}")`);
+      }
+      if (seenGlyph.has(pile.glyph)) {
+        errors.push(
+          `pile "${pile.id}": glyph "${pile.glyph}" already used by "${seenGlyph.get(pile.glyph)}"`,
+        );
+      }
+      seenGlyph.set(pile.glyph, pile.id);
+    }
+  }
+
   for (const f of l.fields ?? []) {
     if (!phaseIds.has(f.phase)) errors.push(`field "${f.id}": phase "${f.phase}" does not exist`);
     // Where a field lives is what makes "is it present" answerable. A body field
@@ -320,6 +345,16 @@ export function inPatchWindow(value, l = spec()) {
   return patchWindow(l).includes(canonicalStatus(value, l));
 }
 
+/**
+ * The legend for the one line a session starts with, and for the segment
+ * `kaizen status --bar` draws. Data, so the CLI paints the same glyph the TUI
+ * explains — the two used to be a comment in one file and nothing in the other.
+ */
+export const statusLine = (l = spec()) => l.statusLine ?? { mark: '', help: '', piles: [] };
+
+/** One pile's glyph, by id. Empty for a pile the spec does not name. */
+export const pileGlyph = (id, l = spec()) => statusLine(l).piles.find((p) => p.id === id)?.glyph ?? '';
+
 /** Has a commit already come out of this status? */
 export function hasLanded(value, l = spec()) {
   const at = phaseRequiring('applied_sha', l);
@@ -334,6 +369,22 @@ const BANNER = (what) =>
   `\`kaizen docs --check\` fails when this drifts.`;
 
 const statusById = (l, id) => l.statuses.find((s) => s.id === id);
+
+/** Prose as markdown lines, so the generator's output does not depend on prettier. */
+function wrapAt(text, width) {
+  const out = [];
+  let line = '';
+  for (const word of String(text).split(/\s+/)) {
+    if (line && line.length + 1 + word.length > width) {
+      out.push(line);
+      line = word;
+    } else {
+      line = line ? `${line} ${word}` : word;
+    }
+  }
+  if (line) out.push(line);
+  return out;
+}
 
 /** How a field is written down, in words. */
 const whereOf = (f) =>
@@ -424,6 +475,16 @@ export function renderMarkdown(l) {
     push('| Rung | What it is | Costs | Why |', '|---|---|---|---|');
     for (const r of l.rungs) {
       push(`| **${r.n}** | ${r.title} | ${r.cost} | ${r.detail} |`);
+    }
+    push('');
+  }
+
+  if (l.statusLine?.piles?.length) {
+    push('## The status line', '');
+    push(...wrapAt(l.statusLine.help, 88), '');
+    push('| | Pile | What it counts |', '|---|---|---|');
+    for (const pile of l.statusLine.piles) {
+      push(`| \`${pile.glyph}\` | ${pile.label} | ${pile.help} |`);
     }
     push('');
   }

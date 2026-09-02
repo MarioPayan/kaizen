@@ -288,5 +288,35 @@
       "detail": "Nothing written down. Where most recorded failures came from.",
       "cost": "tokens + drift"
     }
-  ]
+  ],
+  "statusLine": {
+    "mark": "改",
+    "help": "The one line the SessionStart hook prints, and the segment `kaizen status --bar` draws for a status line. Both count the same piles, and both count only open work \u2014 a closed suggestion is history, and history that greets you every session is noise. The mark alone, dimmed, means the backlog is clear.",
+    "piles": [
+      {
+        "id": "triage",
+        "glyph": "○",
+        "label": "to triage",
+        "help": "Filed and unjudged \u2014 the pile a triage pass consumes. Nothing here is waiting on you."
+      },
+      {
+        "id": "decide",
+        "glyph": "●",
+        "label": "awaiting you",
+        "help": "The only amber pile, because it is the only one that ever needs you: a patch waiting on your yes, plus any card parked on a call only you can make."
+      },
+      {
+        "id": "landed",
+        "glyph": "◐",
+        "label": "landed, unverified",
+        "help": "Half-done: the commit is in and its validation plan has not run yet. The verify phase drains this one, not you."
+      },
+      {
+        "id": "hottest",
+        "glyph": "▲",
+        "label": "hottest skill",
+        "help": "The skill carrying the most incidents that are still open, and how many. A skill whose findings all closed is history and is never named here."
+      }
+    ]
+  }
 }
