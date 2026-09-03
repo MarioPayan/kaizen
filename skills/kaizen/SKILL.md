@@ -242,11 +242,14 @@ user's skills repo that way.
 
 ```bash
 # in the throwaway worktree, not the target's live tree
-git diff > /tmp/kaizen-<scope-or-id>.patch
-git checkout -- . && git clean -fdq                   # back to HEAD; nothing to stash
-git apply --check /tmp/kaizen-<scope-or-id>.patch   # must pass before it is offered
+"${CLAUDE_PLUGIN_ROOT}/skills/_lib/proposal-patch.sh" \
+  /tmp/kaizen-<scope-or-id>.patch [<new paths>...]     # captures, cleans, then checks at HEAD
 git -C <repo> worktree remove --force /tmp/kaizen-wt  # leave nothing behind
 ```
+
+Pass only intentional new files as `<new paths>`; the helper uses intent-to-add
+so they enter the diff, then resets those paths before cleaning the worktree.
+Omit the optional arguments when the proposal creates no files.
 
 Store it beside the suggestion as `<suggestion-basename>.patch`.
 
