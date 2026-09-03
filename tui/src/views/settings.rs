@@ -173,8 +173,12 @@ pub fn rows(cfg: &Value) -> Vec<Row> {
         label: "auto".into(),
         kind: Kind::Toggle(b("dispatch.auto")),
         heading: false,
-        help: "send fable at new arrivals on its own — every run is a model call; off means you press a",
+        help: "send the runners at new arrivals on their own — every run is a model call; off means you press a",
     });
+    // Read-only here: a model name is a string nobody wants to step through
+    // one character at a time. Edit the JSON for these.
+    out.push(fact("opencode", s("dispatch.models.opencode"), "does the work — triage, plan, review; the ChatGPT subscription's model"));
+    out.push(fact("claude", s("dispatch.models.claude"), "checks it — every status opencode writes, and the verify at the end"));
 
     out.push(heading("scan"));
     out.push(Row {

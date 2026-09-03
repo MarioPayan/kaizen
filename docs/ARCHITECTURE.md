@@ -31,31 +31,39 @@ the thing together. The README covers the why; start there if you haven't.
    under `skill: session`. From there they are indistinguishable from any other
    suggestion — same grouping, same queue.
 
-3. **Triage / plan.** `/kaizen:triage` (the `skills/kaizen/SKILL.md` skill) reads
-   the state, confirms each problem still exists at HEAD, labels it, and writes
-   real patches plus validation plans. All file edits go through the CLI/server,
+3. **Triage / plan.** An `opencode` run (the `skills/kaizen/SKILL.md` skill in
+   its `run` mode) reads the state, confirms each problem still exists at HEAD,
+   labels it, and writes real patches plus validation plans — every status it
+   sets flagged `needs_review: claude`. All file edits go through the CLI/server,
    never by hand-editing status fields the model forbids.
-4. **Decide.** The only attended phase. `kaizen tui` — `a` advances the
+4. **Check.** A `claude` run (the same skill in `review` mode) takes every
+   flagged card and clears the flag, or sends the card back one status and
+   parks it on you with the reason. Until it clears, the card sits in the
+   board's `review` lane and no key can approve it.
+5. **Decide.** The only attended phase. `kaizen tui` — `a` advances the
    selected card (here, that is your yes), `A` the whole planned lane.
-5. **Apply.** The server lands each approved patch as one commit with a
-   `Kaizen-Suggestion:` trailer. `git log --grep=Kaizen-Suggestion` is the
-   ledger; `git revert` is the undo.
-6. **Verify.** The validation plan written in step 3 runs against what actually
-   landed. Only then is the suggestion terminal.
+6. **Apply.** The server lands each approved patch as one commit with a
+   `Kaizen-Suggestion:` trailer, closes the cards that were parked on it
+   (`blocked_on` naming the lead — never a card that merely shares the file),
+   and puts the card in line for its review. `git log --grep=Kaizen-Suggestion`
+   is the ledger; `git revert` is the undo.
+7. **Review, then verify.** opencode reads the commit against the plan, runs the
+   validation plan and writes `## Review`; claude runs it again and says whether
+   the loop closed. Only then is the suggestion terminal.
 
 ## Repo layout
 
-| Path                                     | What it is                                                                         |
-| ---------------------------------------- | ---------------------------------------------------------------------------------- |
-| `lifecycle.json`                         | The single source for phases, statuses, transitions, fields, rungs                 |
-| `packages/core`                          | `@kaizen/core` — the engine. Plain Node, zero dependencies                         |
-| `packages/server`                        | `@kaizen/server` — `node:http` API on loopback + SSE file watching                 |
-| `scripts/cli.mjs`                        | The one entry point: `init scan status validate triage asks doctor docs serve tui` |
-| `tui/`                                   | Rust/ratatui front end over the API                                                |
-| `skills/kaizen`                          | The triage skill (`/kaizen:triage`)                                                |
-| `skills/_lib`                            | `skill-reflect.md`, the capture convention skills follow                           |
-| `commands/`, `hooks/`, `.claude-plugin/` | Claude Code plugin surface                                                         |
-| `docs/LIFECYCLE.md`                      | Generated from `lifecycle.json` — never edit by hand                               |
+| Path                                     | What it is                                                                                              |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `lifecycle.json`                         | The single source for phases, statuses, transitions, fields, rungs                                      |
+| `packages/core`                          | `@kaizen/core` — the engine. Plain Node, zero dependencies                                              |
+| `packages/server`                        | `@kaizen/server` — `node:http` API on loopback + SSE file watching                                      |
+| `scripts/cli.mjs`                        | The one entry point: `init scan status validate triage drain asks doctor docs prune serve dispatch tui` |
+| `tui/`                                   | Rust/ratatui front end over the API                                                                     |
+| `skills/kaizen`                          | The triage skill (`/kaizen:triage`)                                                                     |
+| `skills/_lib`                            | `skill-reflect.md`, the capture convention skills follow                                                |
+| `commands/`, `hooks/`, `.claude-plugin/` | Claude Code plugin surface                                                                              |
+| `docs/LIFECYCLE.md`                      | Generated from `lifecycle.json` — never edit by hand                                                    |
 
 User state lives outside the repo: config in `~/.claude/kaizen/config.json`
 (`KAIZEN_CONFIG` overrides, which is how the tests isolate themselves),
@@ -71,6 +79,19 @@ a fenced run without two agents writing one file. With `dispatch.auto` on, a
 new arrival in a feedback directory is a backlog run without a key — gated on
 newcomers, so a card the pass parks does not re-trigger a run every time a seat
 frees.
+
+Two runners take the seats, and the spec says which: each phase names a
+`runner` (`opencode` does triage, plan and the post-apply review; `claude`
+verifies) and, where the runner's output is provisional, a `reviewer`. The
+server picks the binary from the card — `runnerOf`: the name on `needs_review`
+if set, else the next phase's runner — and for the backlog sends a reviewer
+first while anything is flagged. `dispatch.models` is what each is started
+with. Runs chain: a run that exits 0 and leaves a `(card, runner)` pair that was
+not pending when it started puts its own key back in line, so one `a` is the
+whole unattended stretch — opencode plans and flags, claude checks — and a run
+that produced nothing new, or died, chains nothing. The check is a third gate
+on status writes: a card wearing `needs_review` cannot move forward, from a key
+or a sweep, until the reviewer clears it.
 
 `blocked_on` carries two different waits, so `buildState` derives `blockedBy`:
 the open suggestion the block names, if it names one. A card waiting on another
@@ -110,8 +131,10 @@ Each module owns one thing; `index.mjs` is the public surface.
   a block waits on another card or on you, and cannot afford a full scan.
 - **`lifecycle.mjs`** — loads and validates `lifecycle.json`, answers every
   status question (`isTerminal`, `canTransition`, `hasLanded`,
-  `awaitingDecision`, `missingRequirements`…), carries the status-line legend
-  (`statusLine`, `pileGlyph`), and renders `docs/LIFECYCLE.md`.
+  `awaitingDecision`, `nextPhase`, `runnerOf`, `pendingPass`,
+  `missingRequirements`…), carries the status-line legend (`statusLine`,
+  `pileGlyph`), and renders `docs/LIFECYCLE.md`. `nextPhase` reads `next` in
+  order, because a status can go back now and the forward edge is listed first.
   Everything is _derived_ from the spec, never listed by name — that is the
   whole defence against a renamed status silently breaking a filter.
 - **`paths.mjs`** — path containment. Every caller-supplied path is resolved
@@ -136,24 +159,25 @@ A small route table plus `GET /api/events` (SSE), `node:http`, bound to
 `127.0.0.1` — that binding **is** the security boundary, because these routes
 write files and shell out to git.
 
-| Route                                  | Does                                                                         |
-| -------------------------------------- | ---------------------------------------------------------------------------- |
-| `GET /api/state`                       | `buildState(config)`                                                         |
-| `GET /api/config` / `POST /api/config` | read / validate-then-save (restarts watchers)                                |
-| `GET /api/skill?path=`                 | raw markdown, containment-checked                                            |
-| `GET /api/diff?id=`                    | the sibling `.patch`, if any                                                 |
-| `POST /api/suggestion`                 | one status move, gated (see below)                                           |
-| `POST /api/sweep`                      | one status move for all — moves the movable                                  |
-| `POST /api/dispatch`                   | one detached `claude` run — one id, or the backlog; queues behind a live one |
-| `GET /api/dispatch/log`                | the tail of the triage log, last 200 lines                                   |
-| `POST /api/apply`                      | `git apply` + one commit + writes `applied` + sha                            |
-| `POST /api/revert`                     | `git revert` a kaizen commit on a writable target                            |
+| Route                                  | Does                                                                                                 |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `GET /api/state`                       | `buildState(config)`                                                                                 |
+| `GET /api/config` / `POST /api/config` | read / validate-then-save (restarts watchers)                                                        |
+| `GET /api/skill?path=`                 | raw markdown, containment-checked                                                                    |
+| `GET /api/diff?id=`                    | the sibling `.patch`, if any                                                                         |
+| `POST /api/suggestion`                 | one status move, gated (see below)                                                                   |
+| `POST /api/sweep`                      | one status move for all — moves the movable                                                          |
+| `POST /api/dispatch`                   | one detached run, opencode or claude by the card — one id, or the backlog; queues behind a live one  |
+| `GET /api/dispatch/log`                | the tail of the triage log, last 200 lines                                                           |
+| `POST /api/apply`                      | `git apply` + one commit + writes `applied` + sha; closes the cards carried by it; queues the review |
+| `POST /api/revert`                     | `git revert` a kaizen commit on a writable target                                                    |
 
-Every status write passes two gates: the transition must be legal in the spec,
-and the destination phase's `requires` must already be present in the file
-(patch on disk, sections non-empty). `applied` is server-owned — only the code
-that saw the sha may write it. Apply additionally requires a writable target, a
-clean tree, and `git apply --check`.
+Every status write passes three gates: the transition must be legal in the
+spec, the card must not be waiting on a check (`needs_review`) unless the move
+is the way out, and the destination phase's `requires` must already be present
+in the file (patch on disk, sections non-empty). `applied` is server-owned —
+only the code that saw the sha may write it. Apply additionally requires a
+writable target, a clean tree, and `git apply --check`.
 
 `events.mjs` watches only the feedback directories (not skills trees — apply
 commits there would fire a storm; not scan roots — unbounded) and pushes
@@ -177,16 +201,17 @@ value`, three to a row, so reading a card does not need the vocabulary in your
 - `views/` — board (the main view: a lane per pipeline stage, all spec-derived;
   the stages stay visible even empty and each lane is subtitled with the phase
   it waits for and whose move it is, while loop-back lanes collapse; past the
-  stages sit the three lanes a card _waits_ in rather than holds — `working`
-  while a run has it, `blocked` while its `blocked_on` names something outside
-  the pipeline, `closed` for the terminals — each shown only when occupied, so
-  `a` always visibly moves the card somewhere; `working` stands even when empty,
-  because a column that appears under you shifts every lane to its right; lanes
-  wrap onto a second band instead of scrolling off the right, so the whole board
-  is one glance; decide/apply keys act on the selected card, and `b` writes or
-  clears what a card is waiting on), agents (every fable run going —
-  target, pid, age — the last few that ended with their exit code, and the line
-  waiting for a seat; the log itself stays in `~/.claude/kaizen/dispatch.log`), skills
+  stages sit the three lanes a card _waits_ in rather than holds — `review`
+  while a status the runner wrote waits on its check, `blocked` while its
+  `blocked_on` names another card, `closed` for the terminals; a run moves
+  nothing, the card keeps its lane and wears the mark (spinner, place in line,
+  `◌`); `review` stands even when empty, because a column that appears under
+  you shifts every lane to its right; lanes wrap onto a second band instead of
+  scrolling off the right, so the whole board is one glance; decide/apply keys
+  act on the selected card, and `b` writes or clears what a card is waiting
+  on), agents (every run going — who has it, target, pid, age — the last few
+  that ended with their exit code, and the line waiting for a seat; the log
+  itself stays in `~/.claude/kaizen/dispatch.log`), skills
   (failures per 100 lines of prose, worst first), settings (edit via `$EDITOR`,
   server validates).
 - `theme.rs` — one palette; `lifecycle.rs` — the embedded spec and its queries.

@@ -92,10 +92,10 @@ fn spawn_worker(client: Client, rx: mpsc::Receiver<Req>, tx: mpsc::Sender<Res>) 
                 ),
                 Req::Dispatch { id } => Res::Acted(client.dispatch(id.as_deref()).map(|(n, at)| {
                     match (&id, at) {
-                        (Some(id), 0) => format!("fable is on {} — its row relabels as it lands", short(id)),
-                        (None, 0) => format!("fable is on {n} — rows relabel as it lands"),
-                        (Some(id), at) => format!("{} is {at} in line — fable takes it next", short(id)),
-                        (None, at) => format!("the backlog is {at} in line — fable takes it next"),
+                        (Some(id), 0) => format!("a run is on {} — its row relabels as it lands", short(id)),
+                        (None, 0) => format!("a run is on {n} — rows relabel as it lands"),
+                        (Some(id), at) => format!("{} is {at} in line — the next seat takes it", short(id)),
+                        (None, at) => format!("the backlog is {at} in line — the next seat takes it"),
                     }
                 })),
                 Req::Apply { id } => Res::Acted(client.apply(&id).map(|(sha, closed)| {
@@ -390,9 +390,10 @@ impl App {
 /// refusal, in the footer's words — said here, before a 409 or a 422 travels
 /// the wire to say the same thing.
 ///
-/// Derived, so a lane cannot be left without its key: short of the decision the
-/// pass moves it, at the decision you do, right after it the server lands it,
-/// and past that nothing in the TUI does — the spec names who.
+/// Derived, so a lane cannot be left without its key: wherever a model moves
+/// the card a run is sent — opencode to do, claude to check — at the decision
+/// you do, right after it the server lands it. A card flagged for a check is
+/// the reviewer's whatever its status, so the flag is read before the status.
 ///
 /// Takes the card, not just its status, because the block is a fact about the
 /// card. A parked one refuses here rather than on the wire: the request would
@@ -408,7 +409,7 @@ fn advance(s: &Suggestion) -> Result<Req, String> {
         // landing is — and advancing anyway writes a status its own patch will
         // contradict.
         Err(format!("waiting on {} — {}", short(&s.blocked_by), s.blocked_on))
-    } else if awaits_pass(from) {
+    } else if !s.needs_review.is_empty() || awaits_pass(from) {
         if !s.blocked_on.is_empty() {
             // The block is on you, and a pass cannot do what you have to do.
             // `b` is how you answer it; this key would only buy a re-stamp.
@@ -428,7 +429,8 @@ fn advance(s: &Suggestion) -> Result<Req, String> {
 /// What to say when the run in the seat is gone. A fenced run is judged by
 /// where its card ended up — the status is the outcome, and the lane it lands
 /// in is named when that is off to the right; a backlog run by its exit code,
-/// when the state still holds it (a line behind it may already have moved on).
+/// when the state still holds it (a line behind it may already have moved on),
+/// and by name, since two runners take turns at the same backlog.
 fn run_outcome(state: &State, pid: u64, fenced: Option<&str>) -> (String, bool) {
     if let Some(id) = fenced {
         return match state.suggestions.iter().find(|s| s.id == id) {
@@ -440,17 +442,14 @@ fn run_outcome(state: &State, pid: u64, fenced: Option<&str>) -> (String, bool) 
         };
     }
     let left = state.suggestions.iter().filter(|s| awaits_pass(&s.status)).count();
-    let code = state
-        .dispatch
-        .as_ref()
-        .and_then(|d| d.runs.iter().find(|r| r.pid == pid))
-        .and_then(|r| r.exit_code);
-    match code {
-        Some(0) => (format!("fable pass done — {left} still to advance"), false),
-        Some(code) => (format!("fable pass failed (exit {code}) — 2 opens the agent tab"), true),
+    let run = state.dispatch.as_ref().and_then(|d| d.runs.iter().find(|r| r.pid == pid));
+    let who = run.map(|r| r.runner.as_str()).filter(|r| !r.is_empty()).unwrap_or("the run");
+    match run.and_then(|r| r.exit_code) {
+        Some(0) => (format!("{who} is done — {left} still to advance"), false),
+        Some(code) => (format!("{who} failed (exit {code}) — 2 opens the agent tab"), true),
         // Adopted across a restart, or already aged off the list: no code to
         // read, and nothing to alarm about.
-        None => (format!("fable pass ended — {left} still to advance"), false),
+        None => (format!("{who} ended — {left} still to advance"), false),
     }
 }
 
@@ -579,10 +578,18 @@ fn detail_lines(s: &Suggestion, width: usize) -> Vec<Line<'static>> {
             Span::styled(s.blocked_on.clone(), Style::new().fg(ink)),
         ]));
     }
+    if !s.needs_review.is_empty() {
+        // The status above is provisional until this name clears it.
+        lines.push(field("check", format!("waiting on {}", s.needs_review), theme::accent()));
+    }
 
-    for (heading, body) in
-        [("Context", &s.context), ("Suggestion", &s.suggestion), ("Rationale", &s.rationale)]
-    {
+    for (heading, body) in [
+        ("Context", &s.context),
+        ("Suggestion", &s.suggestion),
+        ("Rationale", &s.rationale),
+        ("Review", &s.review),
+        ("Verdict", &s.verdict),
+    ] {
         if body.trim().is_empty() {
             continue;
         }
@@ -623,7 +630,7 @@ fn column_values(tab: Tab, column: &str) -> Vec<(String, String)> {
             .statuses
             .iter()
             .map(|s| (format!("{} {}", status_icon(&s.id), s.abbrev), s.id.clone()))
-            .chain(pairs(&[("⟳ wrk", "working"), ("⚑ blk", "blocked"), ("· cls", "closed")]))
+            .chain(pairs(&[("◎ rvw", "review"), ("⚑ blk", "blocked"), ("· cls", "closed")]))
             .collect(),
         (Tab::Board, "card") => pairs(&[("▲", "high"), ("►", "medium"), ("▼", "low")]),
         (Tab::Board, "flag") => pairs(&[
@@ -675,7 +682,7 @@ fn help_keys(tab: Tab) -> Vec<Line<'static>> {
     if keys::resolve(KeyCode::Char('a'), tab) == Some(keys::Action::Advance) {
         for line in [
             "advance does what the lane waits for:",
-            "a fable pass, your yes, or the server",
+            "a run, your yes, or the server",
             "landing the patch — which needs a",
             "clean tree and a patch on disk",
         ] {
@@ -776,6 +783,11 @@ fn docs_lines(width: usize) -> Vec<Line<'static>> {
             Span::styled(
                 if p.attended { "   needs you" } else { "" }.to_string(),
                 Style::new().fg(theme::warn()),
+            ),
+            // And the other: whose word is provisional until someone else's.
+            Span::styled(
+                if p.reviewer.is_empty() { String::new() } else { format!("   checked by {}", p.reviewer) },
+                Style::new().fg(theme::accent()),
             ),
         ]));
         out.extend(prose(&p.summary, "      "));
@@ -1510,7 +1522,7 @@ mod tests {
             id: id.map(String::from),
             running: exit.is_none(),
             exit_code: exit,
-            started_at: None,
+            ..Default::default()
         }
     }
 
@@ -1614,14 +1626,14 @@ mod tests {
     }
 
     /// Lanes wrap onto a second band rather than scrolling off the right, so
-    /// the whole board is one glance. Eight lanes are 4 and 4 — balanced, and
+    /// the whole board is one glance. Nine lanes are 5 and 4 — balanced, and
     /// never a third band, which is a wall rather than a glance.
     #[test]
     fn lanes_wrap_onto_a_second_band_instead_of_scrolling_off_the_side() {
         let mut app = app_with_state();
-        // Enough cards to fill every stage plus all three holding lanes.
+        // Enough cards to fill every stage plus the review and blocked lanes.
         let all = app.state.as_mut().unwrap();
-        for (i, status) in ["triaged", "planned", "applied", "failed"].iter().enumerate() {
+        for (i, status) in ["triaged", "planned", "applied", "failed", "reviewed"].iter().enumerate() {
             let mut s = all.suggestions[0].clone();
             s.id = format!("user/x/2026-08-0{i}-filler.md");
             s.uid = format!("F{i}X");
@@ -1631,20 +1643,20 @@ mod tests {
             all.suggestions.push(s);
         }
         all.dispatch = Some(dispatch(vec![run(1, Some("user/x/2026-08-00-filler.md"), None)], vec![]));
-        assert_eq!(board::lanes(all).len(), 8, "six statuses plus working and blocked");
+        assert_eq!(board::lanes(all).len(), 9, "seven statuses plus review and blocked");
 
-        // Wide enough for all eight side by side at the minimum width, and
+        // Wide enough for all nine side by side at the minimum width, and
         // still two bands: a lane you can see but not read is not visible.
         let wide = render(&app, 200, 34);
         let bands = wide.lines().filter(|l| l.starts_with('╭')).count();
         assert_eq!(bands, 2, "two bands: {wide}");
-        for lane in ["recorded", "triaged", "planned", "approved", "applied", "failed"] {
+        for lane in ["recorded", "triaged", "planned", "approved", "applied", "reviewed", "failed"] {
             assert!(wide.contains(&format!("{lane} (")), "every lane on screen: {wide}");
         }
-        assert!(wide.contains("working (") && wide.contains("blocked ("), "{wide}");
-        // Four on top, four underneath — the top band ends after the fourth.
+        assert!(wide.contains("review (") && wide.contains("blocked ("), "{wide}");
+        // Five on top, four underneath — the top band ends after the fifth.
         let top = wide.lines().find(|l| l.starts_with('╭')).unwrap();
-        assert_eq!(top.matches('╭').count(), 4, "four lanes per band: {top}");
+        assert_eq!(top.matches('╭').count(), 5, "five lanes per band: {top}");
 
         // A board short enough that a second band would be unreadable keeps one.
         let short = render(&app, 200, 14);
@@ -1670,9 +1682,15 @@ mod tests {
     #[test]
     fn every_lane_says_what_it_waits_for_and_whose_move_it_is() {
         let text = render(&app_with_state(), 130, 30);
-        for caption in
-            ["→ triage (fable)", "→ plan (fable)", "→ decide (you)", "→ apply (auto)", "→ verify (auto)"]
-        {
+        for caption in [
+            "→ triage (opencode)",
+            "→ plan (opencode)",
+            "→ decide (you)",
+            "→ apply (server)",
+            "→ review (opencode)",
+            "→ verify (claude)",
+            "→ check (claude)",
+        ] {
             assert!(text.contains(caption), "missing {caption:?}: {text}");
         }
     }
@@ -1689,19 +1707,20 @@ mod tests {
         )
         .unwrap();
         let lanes = board::lanes(&state);
-        assert_eq!(lanes.len(), 7, "five stages, the standing working lane, one closed");
+        assert_eq!(lanes.len(), 8, "six stages, the standing review lane, one closed");
         assert!(lanes[0].title.contains("recorded"));
         let closed = lanes.last().unwrap();
         assert_eq!(closed.title, "closed");
         assert_eq!(closed.items.len(), 2);
     }
 
-    /// The promise `a` makes: press it and the card leaves the lane. Three of
-    /// its moves are not a new status, so three lanes exist to receive them —
-    /// and each is a fact already on the wire, not a status invented for the
-    /// view. A card in flight was the case that read as "the key did nothing".
+    /// Where a card is drawn is a fact already on the wire, never a status
+    /// invented for the view: a check owed puts it in `review`, a carrier puts
+    /// it in `blocked`, a terminal in `closed`. A run moves nothing — the card
+    /// keeps its lane and wears the mark — because a column that fills and
+    /// empties with every run rearranges the board under you.
     #[test]
-    fn a_card_waits_in_working_or_blocked_rather_than_in_the_lane_it_left() {
+    fn a_card_waits_in_review_or_blocked_and_a_run_leaves_it_where_it_stands() {
         let mut state: crate::api::State = serde_json::from_str(
             r#"{"suggestions":[
                 {"id":"a.md","slug":"one","status":"triaged","score":1},
@@ -1727,24 +1746,32 @@ mod tests {
         assert_eq!(lane(&state, "closed"), ["d.md"], "finished outranks parked");
         // Standing, and empty: it fills and empties with every run, and a column
         // that appears under you shifts every lane to its right.
+        // By glyph, because the `reviewed` stage answers to "review" too.
         let standing = |st: &crate::api::State| {
-            board::lanes(st).iter().any(|l| l.title.contains("working"))
+            board::lanes(st).iter().any(|l| l.title.contains("◎ review"))
         };
-        assert!(standing(&state) && lane(&state, "working").is_empty(), "no run, no cards in it");
+        assert!(standing(&state) && lane(&state, "◎ review").is_empty(), "nothing flagged, no cards in it");
 
-        // One card fenced to a run, one waiting for the seat: both are being
-        // worked on, and neither is where it was or where it is going.
+        // One card fenced to a run, one waiting for the seat: both stay where
+        // they stand — the mark says a run has them, the lane says what they are.
         state.dispatch = Some(dispatch(vec![run(4242, Some("a.md"), None)], vec![Some("b.md")]));
-        assert_eq!(lane(&state, "working"), ["b.md", "a.md"]);
-        assert!(lane(&state, "triaged").is_empty(), "both left the stage they were in");
-
-        // The run ends and the card comes back to whatever it now is.
-        state.dispatch = Some(dispatch(vec![run(4242, Some("a.md"), Some(0))], vec![]));
         assert_eq!(lane(&state, "triaged"), ["b.md", "a.md"]);
+        assert!(lane(&state, "◎ review").is_empty(), "a run is not a check owed");
 
-        // A backlog run is fenced to nothing, so it empties no lane.
-        state.dispatch = Some(dispatch(vec![run(4243, None, None)], vec![]));
-        assert!(standing(&state) && lane(&state, "working").is_empty());
+        // The run wrote a status and flagged it: the card is claude's now, and
+        // it sits in review until claude says so — not in planned, which `A`
+        // would approve.
+        state.suggestions[0].status = "planned".into();
+        state.suggestions[0].needs_review = "claude".into();
+        state.dispatch = Some(dispatch(vec![run(4242, Some("a.md"), Some(0))], vec![]));
+        assert_eq!(lane(&state, "◎ review"), ["a.md"]);
+        assert!(lane(&state, "planned").is_empty(), "an unchecked plan is not yours yet");
+        assert_eq!(lane(&state, "triaged"), ["b.md"]);
+
+        // The check clears and the card is where its status says.
+        state.suggestions[0].needs_review = String::new();
+        assert_eq!(lane(&state, "planned"), ["a.md"]);
+        assert!(standing(&state) && lane(&state, "◎ review").is_empty());
     }
 
     /// `A` widens a stage's one move over its lane. A holding lane has no such
@@ -1759,8 +1786,8 @@ mod tests {
             .collect();
         assert_eq!(
             holding,
-            [false, false, false, false, false, true, true],
-            "five stages, then working and blocked"
+            [false, false, false, false, false, false, true, true],
+            "six stages, then review and blocked"
         );
     }
 
@@ -1848,7 +1875,7 @@ mod tests {
         let st = state();
         // AST is parked, so it is drawn in the blocked lane rather than in
         // recorded — which is exactly what "whichever lane" has to mean.
-        assert_eq!(find_card(&st, "as"), Some((6, 0)), "uid prefix, blocked lane");
+        assert_eq!(find_card(&st, "as"), Some((7, 0)), "uid prefix, blocked lane");
         assert_eq!(find_card(&st, "att"), Some((0, 0)), "uid prefix, recorded lane");
         assert_eq!(find_card(&st, "aid"), Some((3, 0)), "case-blind uid, approved lane");
         assert_eq!(find_card(&st, "dead end"), Some((3, 0)), "a bit of the name");
@@ -1937,17 +1964,22 @@ mod tests {
             Err(why) => why,
             Ok(_) => panic!("expected a refusal"),
         };
-        assert!(matches!(advance(&card("recorded", "")), Ok(Req::Dispatch { id: Some(_) })), "fable triages");
-        assert!(matches!(advance(&card("triaged", "")), Ok(Req::Dispatch { id: Some(_) })), "fable plans");
+        assert!(matches!(advance(&card("recorded", "")), Ok(Req::Dispatch { id: Some(_) })), "opencode triages");
+        assert!(matches!(advance(&card("triaged", "")), Ok(Req::Dispatch { id: Some(_) })), "opencode plans");
         assert!(
             matches!(advance(&card("planned", "")), Ok(Req::SetStatus { status, .. }) if status == "approved"),
             "you decide"
         );
         assert!(matches!(advance(&card("approved", "")), Ok(Req::Apply { .. })), "the server lands");
-        assert!(matches!(advance(&card("failed", "")), Ok(Req::Dispatch { id: Some(_) })), "back to fable");
-        // Verify is the CLI's; the refusal names the actor rather than a key.
-        assert!(refusal(advance(&card("applied", ""))).contains("kaizen"));
+        assert!(matches!(advance(&card("failed", "")), Ok(Req::Dispatch { id: Some(_) })), "back to opencode");
+        assert!(matches!(advance(&card("applied", "")), Ok(Req::Dispatch { id: Some(_) })), "opencode reviews");
+        assert!(matches!(advance(&card("reviewed", "")), Ok(Req::Dispatch { id: Some(_) })), "claude verifies");
         assert!(refusal(advance(&card("verified", ""))).contains("terminal"));
+        // A plan nobody has checked is claude's, not yours: `a` sends the check,
+        // never the approval.
+        let mut unchecked = card("planned", "");
+        unchecked.needs_review = "claude".into();
+        assert!(matches!(advance(&unchecked), Ok(Req::Dispatch { id: Some(_) })), "claude checks");
 
         assert!(
             matches!(discard(&card("recorded", "")), Ok(Req::SetStatus { status, .. }) if status == "rejected"),

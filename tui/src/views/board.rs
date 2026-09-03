@@ -10,12 +10,13 @@
 //! the lane's subtitle says — `d` shows its patch, and `enter` opens it whole
 //! in a window over the board, so your place never moves.
 //!
-//! `a` is a promise that the card leaves the lane. Three of the moves it makes
-//! are not a new status: a pre-decision advance spawns a run that takes minutes,
-//! a card can be parked on something outside the pipeline, and a finished card
-//! is finished. So there are three lanes past the stages — `working`, `blocked`
-//! and `closed` — and every press lands the card in a stage or in one of them.
-//! A key that leaves the card visibly where it was is a key you stop trusting.
+//! A card is drawn where it stands, and a run does not move it: a card being
+//! worked on stays in its lane wearing the mark that says so — the spinner, its
+//! place in line, `◌` — because a column that fills and empties with every run
+//! is a board that rearranges itself under you. Three lanes sit past the
+//! stages for the waits a status cannot express: `review`, where a status the
+//! runner wrote sits until the reviewer clears it; `blocked`, for a card parked
+//! on another card; and `closed`, for the terminals.
 
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -25,7 +26,7 @@ use ratatui::Frame;
 
 use crate::api::{State, Suggestion};
 use crate::lifecycle::{
-    awaits_pass, is_terminal, lifecycle, next_statuses, pending_pass, status_icon,
+    is_terminal, lifecycle, next_phase, pending_pass, reviewers, status_icon,
 };
 use crate::theme::{self, severity_colour, severity_icon, tone_colour};
 use crate::ui::{title_of, titled, truncate};
@@ -53,54 +54,45 @@ pub struct Lane<'a> {
 }
 
 /// The three lanes that are not pipeline stages, in the order a card is tested
-/// against them. They exist so `a` keeps its promise: press it and the card
-/// leaves the lane, always — to the next stage, or to one of these.
+/// against them — each a wait a status cannot express.
 ///
-/// `working` is the answer to the wait a status cannot express. Advancing out
-/// of a pre-decision lane spawns a fable run that takes minutes and one seat,
-/// so the card is neither where it was nor where it is going; it used to sit in
-/// its old lane wearing a spinner, which reads as "the key did nothing".
+/// `review` holds a status the runner wrote provisionally: opencode planned
+/// the card and flagged it, and until claude clears the flag it is not in the
+/// planned lane, because the planned lane is what `A` approves. The card wears
+/// the spinner here while the check runs, and comes back to its stage when it
+/// passes — or goes back a stage, parked on you, when it does not.
 ///
-/// `blocked` draws the ⚑: a card whose frontmatter names something outside the
-/// pipeline it is waiting on. No key moves it forward — that is the whole
-/// meaning of the field — so it is honest to stop offering it a stage.
+/// `blocked` draws the ⚑: a card whose frontmatter names another card it is
+/// waiting on. No key moves it forward — that is the whole meaning of the
+/// field — so it is honest to stop offering it a stage.
 ///
 /// The terminals share one lane: three thin columns of finished work would
 /// crowd out the live ones, and "done or dismissed" is one glance either way.
-const WORKING: &str = "⟳ working";
+const REVIEW: &str = "◎ review";
 const BLOCKED: &str = "⚑ blocked";
 const CLOSED: &str = "closed";
 
 /// What a status waits for and whose move it is — the line that answers "why
 /// can't I approve this here". Derived, never written per status: the next
-/// phase is the one producing something this status can become, and who runs
-/// it falls out of `attended` and the pass gate.
+/// phase is the one producing what this status becomes, and its runner is the
+/// spec's own word for who.
 fn waits_for(status: &str) -> String {
-    let Some(next) =
-        lifecycle().phases.iter().find(|p| next_statuses(status).contains(&p.produces))
-    else {
-        return String::new();
-    };
-    let who = if next.attended {
-        "you"
-    } else if awaits_pass(status) {
-        "fable"
-    } else {
-        "auto"
-    };
-    format!("→ {} ({who})", next.title.to_lowercase())
+    match next_phase(status) {
+        Some(next) => format!("→ {} ({})", next.title.to_lowercase(), next.runner),
+        None => String::new(),
+    }
 }
 
 /// Lanes in spec order, then the three a card waits in. Generated from the
 /// spec, so a renamed status cannot strand a lane. The pipeline stages — each
 /// some phase's `produces` — stay visible even when empty, so the shape of the
 /// loop is on screen and "what comes between triaged and approved" is never a
-/// surprise; loop-back statuses collapse when empty, and `working`, `blocked`
-/// and `closed` appear only when occupied.
+/// surprise; loop-back statuses collapse when empty, `review` always stands,
+/// and `blocked` and `closed` appear only when occupied.
 ///
 /// A card is drawn in exactly one lane, and not always the one its status
-/// names: `home` decides, and it reads only facts already on the wire — the
-/// dispatch seat and line, `blocked_on`, and the spec's own terminals.
+/// names: `home` decides, and it reads only facts already on the wire —
+/// `needs_review`, `blocked_by`, and the spec's own terminals.
 pub fn lanes(state: &State) -> Vec<Lane<'_>> {
     let mut sorted: Vec<&Suggestion> = state.suggestions.iter().collect();
     // Newest first: what came in since you last looked is at the top of every
@@ -113,33 +105,18 @@ pub fn lanes(state: &State) -> Vec<Lane<'_>> {
             .then_with(|| a.id.cmp(&b.id))
     });
 
-    // The cards a run is holding: one fenced to the card, or a place in the
-    // queue for the next seat. A backlog run is fenced to nothing, so the cards
-    // it will eventually reach keep their lane and wear `◌` instead — being
-    // next in a sweep is not the same as being worked.
-    let held: Vec<&str> = state
-        .dispatch
-        .as_ref()
-        .map(|d| {
-            d.runs
-                .iter()
-                .filter(|r| r.running)
-                .filter_map(|r| r.id.as_deref())
-                .chain(d.queue.iter().filter_map(|q| q.as_deref()))
-                .collect()
-        })
-        .unwrap_or_default();
-
     // Where a card is drawn, which is not always its status. Order is the
-    // precedence: a run in progress outranks the block it may be about to
-    // write, and a finished card is finished whatever else is stamped on it.
+    // precedence: a finished card is finished whatever else is stamped on it,
+    // and a card waiting on another card is parked whether or not a check is
+    // owed on it. A run in progress moves nothing — the card keeps its lane
+    // and wears the mark.
     let home = |s: &Suggestion| -> Option<&'static str> {
-        if held.contains(&s.id.as_str()) {
-            Some(WORKING)
-        } else if is_terminal(&s.status) {
+        if is_terminal(&s.status) {
             Some(CLOSED)
         } else if !s.blocked_by.is_empty() {
             Some(BLOCKED)
+        } else if !s.needs_review.is_empty() {
+            Some(REVIEW)
         } else {
             None
         }
@@ -170,12 +147,13 @@ pub fn lanes(state: &State) -> Vec<Lane<'_>> {
         .map(|(_, lane)| lane)
         .collect();
 
-    // Appended in precedence order. `working` is drawn even when empty: it fills
+    // Appended in precedence order. `review` is drawn even when empty: it fills
     // and empties with every run, and a column that appears under you shifts
     // every lane to its right — you lose the card you were reading to a layout
     // change you did not ask for. The other two are steady enough to collapse.
+    let check = format!("→ check ({})", reviewers().join("/"));
     for (title, subtitle, tone, always) in [
-        (WORKING, "a run has it", "accent", true),
+        (REVIEW, check.as_str(), "accent", true),
         (BLOCKED, "waiting on another card", "warning", false),
         (CLOSED, "done or dismissed", "muted", false),
     ] {
@@ -291,9 +269,9 @@ pub fn draw(
             rows.push({
                 let mut spans = Vec::with_capacity(4);
                 if markers {
-                    // The spinner is the card being worked: an id-fenced fable
-                    // run, or a decide/apply key waiting on the server. A number
-                    // is the card's place in line for the seat. ◌ is a card the
+                    // The spinner is the card being worked: an id-fenced run,
+                    // or a decide/apply key waiting on the server. A number is
+                    // the card's place in line for the seat. ◌ is a card the
                     // backlog run has yet to reach — it drains live as the run
                     // relabels them.
                     let in_line = queue.iter().position(|q| q.as_deref() == Some(s.id.as_str()));
@@ -310,7 +288,7 @@ pub fn draw(
                             format!("{:<2}", at + 1),
                             Style::new().fg(theme::accent()),
                         ));
-                    } else if backlog_live && pending_pass(&s.status, &s.blocked_on) {
+                    } else if backlog_live && pending_pass(&s.status, &s.needs_review, &s.blocked_on) {
                         spans.push(ratatui::text::Span::styled(
                             "◌ ".to_string(),
                             Style::new().fg(theme::dim()),

@@ -16,14 +16,16 @@ let server;
 let base;
 let config;
 
-// Dispatch must never start a real claude run under vitest, so the app gets a
-// spawner that only looks like a child process. It records the id it was
-// fenced to, which is what the item-scope tests assert on.
+// Dispatch must never start a real run under vitest, so the app gets a spawner
+// that only looks like a child process. It records who it was started as and
+// the id it was fenced to, which is what the runner and item-scope tests
+// assert on.
 const spawned = [];
-const fakeClaude = (id) => {
+const fakeSpawn = (runner, id) => {
   const child = new EventEmitter();
   child.pid = 4242 + spawned.length;
   child.exitCode = null;
+  child.runner = runner;
   child.fencedTo = id;
   spawned.push(child);
   process.nextTick(() => child.emit('spawn'));
@@ -90,7 +92,7 @@ beforeAll(async () => {
     server: { host: '127.0.0.1', port: 0 },
   };
 
-  server = createApp(config, { spawnClaude: fakeClaude });
+  server = createApp(config, { spawn: fakeSpawn });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${server.address().port}`;
 });
@@ -157,7 +159,7 @@ describe('api', () => {
     expect(status).toBe(409);
     expect(body.error).toMatch(/is "planned"/);
     expect(body.error).toMatch(/cannot become "verified"/);
-    expect(body.error).toMatch(/approved, rejected/);
+    expect(body.error).toMatch(/approved, triaged, rejected/);
   });
 
   /**
@@ -265,6 +267,10 @@ describe('api', () => {
 
     const { status, body } = await api('POST', '/api/apply', { id: 'user/demo/2026-06-06-narrow.md' });
     expect(status).toBe(200);
+    // A landing is the runners' work again: the server put the card in line
+    // itself, and the free seat took it at once — opencode, to review it.
+    expect(spawned.at(-1)).toMatchObject({ runner: 'opencode', fencedTo: 'user/demo/2026-06-06-narrow.md' });
+    spawned.at(-1).emit('exit', 0, null);
 
     const files = git(skills, 'show', '--name-only', '--format=', body.sha).trim().split('\n');
     expect(files).toEqual(['demo/SKILL.md']);
@@ -333,16 +339,23 @@ describe('api', () => {
  * The commit that lands a fix closes its scope siblings — the 27-orphans
  * defect, solved mechanically instead of by a doctor report.
  */
-describe('apply closes the siblings of its scope', () => {
-  it('lands the lead as a commit and supersedes open siblings sharing its scope', async () => {
+/**
+ * A landing closes the cards that were riding on it — parked on the lead by a
+ * triage pass — and nothing else. It used to close every open card sharing
+ * the scope, and the first real landing superseded an unrelated finding that
+ * merely lived in the same file.
+ */
+describe('apply closes the siblings parked on it', () => {
+  it('lands the lead as a commit, supersedes the cards carried by it, and leaves a same-file stranger alone', async () => {
     const feedback = join(root, 'skills-feedback', 'demo');
-    const suggestionFile = (slug, status, scope) =>
+    const suggestionFile = (slug, status, scope, extra = '') =>
       writeFileSync(
         join(feedback, `2026-05-05-${slug}.md`),
-        `---\nskill: demo\ndate: 2026-05-05\nseverity: low\ntype: hygiene\nobjective: debt\neffort: S\nrung: 1\nscope: ${scope}\nstatus: ${status}\n---\n\n## Context\n\nc\n\n## Suggestion\n\ns\n\n## Plan\n\np\n\n## Validation\n\nv\n`,
+        `---\nskill: demo\ndate: 2026-05-05\nseverity: low\ntype: hygiene\nobjective: debt\neffort: S\nrung: 1\nscope: ${scope}\nstatus: ${status}\n${extra}---\n\n## Context\n\nc\n\n## Suggestion\n\ns\n\n## Plan\n\np\n\n## Validation\n\nv\n`,
       );
     suggestionFile('lead', 'approved', 'demo/SKILL.md');
-    suggestionFile('sib', 'recorded', 'demo/SKILL.md');
+    suggestionFile('sib', 'recorded', 'demo/SKILL.md', 'blocked_on: carried by the lead patch\n');
+    suggestionFile('same', 'recorded', 'demo/SKILL.md');
     suggestionFile('far', 'recorded', 'other/file.md');
     writeFileSync(
       join(feedback, '2026-05-05-lead.patch'),
@@ -363,11 +376,16 @@ describe('apply closes the siblings of its scope', () => {
     expect(status).toBe(200);
     expect(body.sha).toMatch(/^[0-9a-f]{40}$/);
     expect(body.closed).toBe(1);
+    // The landing handed the card to the runners; free the seat for the tests after.
+    expect(spawned.at(-1)).toMatchObject({ runner: 'opencode', fencedTo: 'user/demo/2026-05-05-lead.md' });
+    spawned.at(-1).emit('exit', 0, null);
 
     expect(readFileSync(join(feedback, '2026-05-05-lead.md'), 'utf8')).toMatch(/status: applied/);
     const sib = readFileSync(join(feedback, '2026-05-05-sib.md'), 'utf8');
     expect(sib).toMatch(/status: superseded/);
     expect(sib).toContain(`superseded_by: ${body.sha}`);
+    // Same file, its own problem: not carried by the lead, so not closed by it.
+    expect(readFileSync(join(feedback, '2026-05-05-same.md'), 'utf8')).toMatch(/status: recorded/);
     expect(readFileSync(join(feedback, '2026-05-05-far.md'), 'utf8')).toMatch(/status: recorded/);
 
     // The ledger holds the trailer that makes `git log --grep` the index.
@@ -427,12 +445,21 @@ describe('POST /api/dispatch', () => {
     expect(first.body.pending).toBeGreaterThan(0);
 
     // State carries the run while it lives — this is what the TUI's chip and
-    // agents tab draw. A backlog run has no fence, so `id` is null.
+    // agents tab draw. A backlog run has no fence, so `id` is null; nothing
+    // here is flagged for a check, so the work goes to the runner that does.
+    // The runs the landings above started are on the list too, ended; the
+    // newest entry is this one.
     const during = await api('GET', '/api/state');
-    expect(during.body.dispatch).toEqual({
-      runs: [{ running: true, pid: first.body.pid, exitCode: null, id: null, startedAt: expect.any(Number) }],
-      queue: [],
+    expect(during.body.dispatch.runs.at(-1)).toEqual({
+      running: true,
+      pid: first.body.pid,
+      exitCode: null,
+      id: null,
+      runner: 'opencode',
+      startedAt: expect.any(Number),
     });
+    expect(during.body.dispatch.runs.filter((r) => r.running)).toHaveLength(1);
+    expect(during.body.dispatch.queue).toEqual([]);
 
     const second = await api('POST', '/api/dispatch');
     expect(second.status).toBe(409);
@@ -440,9 +467,15 @@ describe('POST /api/dispatch', () => {
 
     spawned.at(-1).emit('exit', 1, null);
     const after = await api('GET', '/api/state');
-    expect(after.body.dispatch.runs).toEqual([
-      { running: false, pid: first.body.pid, exitCode: 1, id: null, startedAt: expect.any(Number) },
-    ]);
+    expect(after.body.dispatch.runs.at(-1)).toEqual({
+      running: false,
+      pid: first.body.pid,
+      exitCode: 1,
+      id: null,
+      runner: 'opencode',
+      startedAt: expect.any(Number),
+    });
+    expect(after.body.dispatch.runs.some((r) => r.running)).toBe(false);
 
     const third = await api('POST', '/api/dispatch');
     expect(third.status).toBe(200);
@@ -464,9 +497,14 @@ describe('POST /api/dispatch', () => {
     const missing = await api('POST', '/api/dispatch', { id: 'user/demo/2026-01-01-nope.md' });
     expect(missing.status).toBe(404);
 
-    // The first fixture has been applied by the tests above — a pass owes it
-    // nothing, and the refusal names its status rather than shrugging.
-    const done = await api('POST', '/api/dispatch', { id: 'user/demo/2026-01-01-a-thing.md' });
+    // A closed card is owed nothing, and the refusal names its status rather
+    // than shrugging. (An *applied* one is still work now — opencode reviews
+    // it — which is why the first fixture no longer serves here.)
+    writeFileSync(
+      join(root, 'skills-feedback', 'demo', '2026-01-02-said-no.md'),
+      '---\nskill: demo\ndate: 2026-01-02\nseverity: low\nstatus: rejected\n---\n\n## Context\n\nc\n\n## Suggestion\n\ns\n',
+    );
+    const done = await api('POST', '/api/dispatch', { id: 'user/demo/2026-01-02-said-no.md' });
     expect(done.status).toBe(422);
     expect(done.body.error).toMatch(/nothing for a pass/);
   });
@@ -493,7 +531,7 @@ describe('POST /api/dispatch', () => {
     const only = createApp(
       { ...config, targets: [{ name: 'user', skills, feedback, writable: true }] },
       {
-        spawnClaude: (id) => {
+        spawn: (_runner, id) => {
           const child = new EventEmitter();
           child.pid = 9900 + mine.length;
           mine.push(id);
@@ -595,7 +633,7 @@ describe('POST /api/dispatch', () => {
 
   it('runs fenced cards in parallel up to dispatch.maxAgents, and a backlog run alone', async () => {
     const mine = [];
-    const spawner = (id) => {
+    const spawner = (_runner, id) => {
       const child = new EventEmitter();
       child.pid = 9200 + mine.length;
       child.fencedTo = id;
@@ -603,7 +641,7 @@ describe('POST /api/dispatch', () => {
       process.nextTick(() => child.emit('spawn'));
       return child;
     };
-    const two = createApp({ ...config, dispatch: { auto: false, maxAgents: 2 } }, { spawnClaude: spawner });
+    const two = createApp({ ...config, dispatch: { auto: false, maxAgents: 2 } }, { spawn: spawner });
     await new Promise((r) => two.listen(0, '127.0.0.1', r));
     const call = async (method, path, body) => {
       const res = await fetch(`http://127.0.0.1:${two.address().port}${path}`, {
@@ -663,7 +701,7 @@ describe('POST /api/dispatch', () => {
     // at once — the first entry a pass can still move gets a run.
     writeFileSync(file, JSON.stringify({ runs: [{ pid: 2 ** 22 - 1, id: null, startedAt: 1 }], queue: [b] }));
     const mine = [];
-    const spawner = (id) => {
+    const spawner = (_runner, id) => {
       const child = new EventEmitter();
       child.pid = 9000 + mine.length;
       child.fencedTo = id;
@@ -671,7 +709,7 @@ describe('POST /api/dispatch', () => {
       process.nextTick(() => child.emit('spawn'));
       return child;
     };
-    const app2 = createApp(config, { spawnClaude: spawner });
+    const app2 = createApp(config, { spawn: spawner });
     await new Promise((r) => app2.listen(0, '127.0.0.1', r));
     await new Promise((r) => setImmediate(r));
     expect(mine.map((c) => c.fencedTo)).toEqual([b]);
@@ -685,7 +723,7 @@ describe('POST /api/dispatch', () => {
     // A pid still alive is adopted as the run in the seat: not respawned, and
     // its line waits behind it.
     writeFileSync(file, JSON.stringify({ runs: [{ pid: process.pid, id: b, startedAt: 5 }], queue: [null] }));
-    const app3 = createApp(config, { spawnClaude: spawner });
+    const app3 = createApp(config, { spawn: spawner });
     await new Promise((r) => app3.listen(0, '127.0.0.1', r));
     await new Promise((r) => setImmediate(r));
     expect(mine.length).toBe(1);
@@ -699,7 +737,7 @@ describe('POST /api/dispatch', () => {
 
   it('with dispatch.auto on, a new arrival is a run without a key, and a parked card is not a loop', async () => {
     const mine = [];
-    const spawner = (id) => {
+    const spawner = (_runner, id) => {
       const child = new EventEmitter();
       child.pid = 9100 + mine.length;
       child.fencedTo = id;
@@ -707,7 +745,7 @@ describe('POST /api/dispatch', () => {
       process.nextTick(() => child.emit('spawn'));
       return child;
     };
-    const auto = createApp({ ...config, dispatch: { auto: true, maxAgents: 1 } }, { spawnClaude: spawner });
+    const auto = createApp({ ...config, dispatch: { auto: true, maxAgents: 1 } }, { spawn: spawner });
     await new Promise((r) => auto.listen(0, '127.0.0.1', r));
     await new Promise((r) => setImmediate(r));
     // On start, what waits is new: one backlog run.
@@ -744,6 +782,173 @@ describe('POST /api/dispatch', () => {
     expect(body.text.endsWith('line 300\n')).toBe(true);
     expect(body.text).not.toContain('line 99\n');
     expect(body.text.split('\n').length).toBeLessThanOrEqual(201);
+  });
+});
+
+/**
+ * Two runners, one seat at a time: opencode does the work, claude checks it,
+ * and the server is what hands a card from one to the other. Each test here
+ * owns its corpus, because who runs next is a fact about every card in it.
+ */
+describe('runners and the chain', () => {
+  const card = (name, front, body = '') => [
+    name,
+    `---\nskill: demo\ndate: 2026-04-01\nseverity: low\n${front}\n---\n\n## Context\n\nc\n\n## Suggestion\n\ns\n${body}`,
+  ];
+
+  /** A server over its own corpus, with a spawner that remembers every call. */
+  const isolated = async (cards, dispatch = { auto: false, maxAgents: 1 }) => {
+    const alone = mkdtempSync(join(tmpdir(), 'kaizen-runners-'));
+    const skills = join(alone, 'skills');
+    const feedback = join(alone, 'skills-feedback');
+    mkdirSync(join(skills, 'demo'), { recursive: true });
+    mkdirSync(join(feedback, 'demo'), { recursive: true });
+    writeFileSync(join(skills, 'demo', 'SKILL.md'), '---\nname: demo\n---\n# demo\n');
+    for (const [name, text] of cards) writeFileSync(join(feedback, 'demo', name), text);
+    const mine = [];
+    const app = createApp(
+      { ...config, dispatch, targets: [{ name: 'user', skills, feedback, writable: true }] },
+      {
+        spawn: (runner, id) => {
+          const child = new EventEmitter();
+          child.pid = 9300 + mine.length;
+          child.runner = runner;
+          child.fencedTo = id;
+          mine.push(child);
+          process.nextTick(() => child.emit('spawn'));
+          return child;
+        },
+      },
+    );
+    await new Promise((r) => app.listen(0, '127.0.0.1', r));
+    const call = async (method, path, body) => {
+      const res = await fetch(`http://127.0.0.1:${app.address().port}${path}`, {
+        method,
+        headers: body ? { 'content-type': 'application/json' } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      return { status: res.status, body: await res.json() };
+    };
+    const settle = () => new Promise((r) => setImmediate(r));
+    const rewrite = (name, text) => writeFileSync(join(feedback, 'demo', name), text);
+    const close = async () => {
+      await new Promise((r) => app.close(r));
+      rmSync(alone, { recursive: true, force: true });
+    };
+    return { call, mine, settle, rewrite, close };
+  };
+
+  it('starts the runner the card names — opencode to do, claude to check — and checks first on the backlog', async () => {
+    const t = await isolated([
+      card('2026-04-01-fresh.md', 'status: recorded'),
+      card('2026-04-02-unchecked.md', 'status: planned\nneeds_review: claude'),
+      card('2026-04-03-landed.md', 'status: applied\napplied_sha: ' + 'b'.repeat(40)),
+    ]);
+    const fresh = 'user/demo/2026-04-01-fresh.md';
+    const unchecked = 'user/demo/2026-04-02-unchecked.md';
+    const landed = 'user/demo/2026-04-03-landed.md';
+
+    expect((await t.call('POST', '/api/dispatch', { id: fresh })).status).toBe(200);
+    expect(t.mine.at(-1)).toMatchObject({ runner: 'opencode', fencedTo: fresh });
+    // The wire says who has the seat, so the agents tab can name it.
+    const state = (await t.call('GET', '/api/state')).body;
+    expect(state.dispatch.runs.at(-1)).toMatchObject({ runner: 'opencode', id: fresh, running: true });
+    t.mine.at(-1).emit('exit', 0, null);
+    await t.settle();
+
+    // A plan nobody has checked is not yours yet: `a` on it sends claude.
+    expect((await t.call('POST', '/api/dispatch', { id: unchecked })).status).toBe(200);
+    expect(t.mine.at(-1)).toMatchObject({ runner: 'claude', fencedTo: unchecked });
+    t.mine.at(-1).emit('exit', 0, null);
+    await t.settle();
+
+    // A landed change is work again — opencode reviews it before claude does.
+    expect((await t.call('POST', '/api/dispatch', { id: landed })).status).toBe(200);
+    expect(t.mine.at(-1)).toMatchObject({ runner: 'opencode', fencedTo: landed });
+    t.mine.at(-1).emit('exit', 0, null);
+    await t.settle();
+
+    // The backlog: something is waiting on a check, so the check goes first.
+    expect((await t.call('POST', '/api/dispatch')).status).toBe(200);
+    expect(t.mine.at(-1)).toMatchObject({ runner: 'claude', fencedTo: null });
+    t.mine.at(-1).emit('exit', 0, null);
+    await t.settle();
+    expect(t.mine).toHaveLength(4);
+    await t.close();
+  });
+
+  /**
+   * One key press is the whole unattended stretch. The hand-off is earned, not
+   * scheduled: a run that produced nothing new chains nothing, and a run that
+   * died chains nothing — which is what keeps two runners from bouncing one
+   * card between them at a model call a hop.
+   */
+  it('chains the check after the work, and stops when a run left nothing new or died', async () => {
+    const t = await isolated([card('2026-04-01-fresh.md', 'status: recorded')]);
+    const fresh = 'user/demo/2026-04-01-fresh.md';
+    const planned = (flag) =>
+      card('2026-04-01-fresh.md', `status: planned${flag ? '\nneeds_review: claude' : ''}`)[1];
+
+    expect((await t.call('POST', '/api/dispatch', { id: fresh })).status).toBe(200);
+    expect(t.mine.at(-1).runner).toBe('opencode');
+    // opencode planned it and flagged it: the card changed hands, so the seat
+    // goes to claude without anyone asking.
+    t.rewrite('2026-04-01-fresh.md', planned(true));
+    t.mine.at(-1).emit('exit', 0, null);
+    await t.settle();
+    expect(t.mine).toHaveLength(2);
+    expect(t.mine.at(-1)).toMatchObject({ runner: 'claude', fencedTo: fresh });
+    // claude cleared the flag: a plan that is yours to approve is nobody's run.
+    t.rewrite('2026-04-01-fresh.md', planned(false));
+    t.mine.at(-1).emit('exit', 0, null);
+    await t.settle();
+    expect(t.mine).toHaveLength(2);
+    expect((await t.call('GET', '/api/state')).body.dispatch.queue).toEqual([]);
+
+    // A run that wrote nothing leaves the same work waiting: no hop.
+    t.rewrite('2026-04-01-fresh.md', card('2026-04-01-fresh.md', 'status: recorded')[1]);
+    expect((await t.call('POST', '/api/dispatch', { id: fresh })).status).toBe(200);
+    t.mine.at(-1).emit('exit', 0, null);
+    await t.settle();
+    expect(t.mine).toHaveLength(3);
+
+    // A run that died is not trusted with a hop, whatever it wrote first.
+    expect((await t.call('POST', '/api/dispatch', { id: fresh })).status).toBe(200);
+    t.rewrite('2026-04-01-fresh.md', planned(true));
+    t.mine.at(-1).emit('exit', 1, null);
+    await t.settle();
+    expect(t.mine).toHaveLength(4);
+    await t.close();
+  });
+
+  /**
+   * The third gate on a status write. `A` on the planned lane sweeps to
+   * approved; without this, an unchecked plan would ride into the decision on
+   * the strength of a patch nobody had read. The way out stays open — a lane
+   * you cannot leave is the worse bug.
+   */
+  it('refuses to move an unchecked status forward, skips it in a sweep, and still lets it out', async () => {
+    const t = await isolated([
+      card(
+        '2026-04-05-unchecked.md',
+        'status: planned\nneeds_review: claude',
+        '\n## Plan\n\np\n\n## Validation\n\nv\n',
+      ),
+    ]);
+    const id = 'user/demo/2026-04-05-unchecked.md';
+    t.rewrite('2026-04-05-unchecked.patch', 'diff --git a/x b/x\n');
+
+    const forward = await t.call('POST', '/api/suggestion', { id, status: 'approved' });
+    expect(forward.status).toBe(409);
+    expect(forward.body.error).toMatch(/waiting on claude's check/);
+
+    const sweep = await t.call('POST', '/api/sweep', { status: 'approved' });
+    expect(sweep.status).toBe(409);
+    expect(sweep.body.error).toMatch(/nothing can become approved/);
+
+    const out = await t.call('POST', '/api/suggestion', { id, status: 'rejected' });
+    expect(out.status).toBe(200);
+    await t.close();
   });
 });
 

@@ -82,6 +82,13 @@ export function validateLifecycle(l) {
     for (const r of p.requires ?? []) {
       if (!fieldIds.has(r)) errors.push(`phase "${p.id}": requires unknown field "${r}"`);
     }
+    // The runner is what the server spawns and what a lane's subtitle names;
+    // a phase without one is a stage nobody moves a card out of. A reviewer is
+    // the second name on a status the runner writes provisionally.
+    if (typeof p.runner !== 'string' || !p.runner.trim()) errors.push(`phase "${p.id}": needs a runner`);
+    if (p.reviewer !== undefined && (typeof p.reviewer !== 'string' || !p.reviewer.trim())) {
+      errors.push(`phase "${p.id}": reviewer must be a name, or absent`);
+    }
   }
   for (const [i, r] of (l.rungs ?? []).entries()) {
     // Position is meaning here: rung 2 is "one above rung 1", and the docs and
@@ -215,37 +222,68 @@ export function awaitingDecision(l = spec()) {
 }
 
 /**
- * Can the unattended pre-decision pass still move this status forward?
+ * Does a model move this status forward?
  *
- * True when a legal transition leads into something a phase before the
- * attended one produces — so `recorded` (can become triaged), `triaged` (can
- * become planned) and `failed` (can become planned again) all qualify, while
- * `planned` waits on you and everything later waits on the server. This is
- * the dispatch gate: counting only the untriaged once refused to plan a
+ * True when the next phase is neither yours (attended) nor the server's (the
+ * one that produces a commit) — so `recorded`, `triaged`, `failed`, `applied`
+ * and `reviewed` all qualify, while `planned` waits on you and `approved` on
+ * git. It used to stop at the decision, and `applied → verified` had no
+ * dispatch at all; counting only the untriaged, before that, refused to plan a
  * backlog that was fully triaged and not planned at all.
  */
 export function awaitsPass(value, l = spec()) {
-  const at = l.phases.findIndex((p) => p.attended);
-  if (at <= 0) return false;
-  return l.phases.slice(0, at).some((p) => canTransition(value, p.produces, l));
+  const next = nextPhase(value, l);
+  if (!next || next.attended) return false;
+  return l.phases.indexOf(next) !== phaseRequiring('applied_sha', l);
 }
 
 /**
- * Is there anything an unattended pass can do for this card *right now*?
+ * The phase a status moves into: the first entry of `next` that some phase
+ * produces, in `next` order. Order matters now that a status can also go
+ * *back* — `triaged` lists `planned` before `recorded`, and the phase that
+ * produces `recorded` sits first in the file, so "first phase whose product is
+ * reachable" would send every triaged card back to capture.
+ */
+export function nextPhase(value, l = spec()) {
+  for (const id of nextStatuses(value, l)) {
+    const p = l.phases.find((x) => x.produces === id);
+    if (p) return p;
+  }
+  return null;
+}
+
+/**
+ * Who moves this card next — the spec's own word for it.
+ *
+ * A card wearing `needs_review` is the reviewer's whatever its status says: the
+ * runner wrote that status provisionally and the name on the flag is who has to
+ * clear it. Otherwise it is the runner of the next phase. Empty for a terminal.
+ * The server picks a spawner by this; the board's lanes say it in words.
+ */
+export function runnerOf(s, l = spec()) {
+  return s.needsReview || nextPhase(s.status, l)?.runner || '';
+}
+
+/**
+ * Is there anything an unattended run can do for this card *right now*?
  *
  * `awaitsPass` answers for the status alone, which is not the whole question:
  * a card carrying `blocked_on` is parked on something outside the pipeline —
  * a carrier patch that has to land first, a read-only target, a file only you
- * can move. A pass fenced to one of those can do nothing but re-stamp
+ * can move. A run fenced to one of those can do nothing but re-stamp
  * `confirmed_at`, and it costs a model run to find that out, again after every
  * reseat. The field that says so is already in frontmatter, so the gate reads
- * it instead of paying an agent to rediscover it.
+ * it instead of paying an agent to rediscover it. A card wearing `needs_review`
+ * is the other way round: its status may be one that waits on you, and it is
+ * still a model's move — the reviewer's.
  *
- * Takes a built suggestion (`blockedOn`), not raw frontmatter — both callers
- * hold one, and the server's dispatch gate and the TUI's `a` must agree.
+ * Takes a built suggestion (`blockedOn`, `needsReview`), not raw frontmatter —
+ * both callers hold one, and the server's dispatch gate and the TUI's `a` must
+ * agree.
  */
 export function pendingPass(s, l = spec()) {
-  return awaitsPass(s.status, l) && !s.blockedOn;
+  if (s.blockedOn) return false;
+  return !!s.needsReview || awaitsPass(s.status, l);
 }
 
 /**
@@ -407,12 +445,28 @@ export function renderMarkdown(l) {
   );
 
   push('## Phases', '');
-  push('| # | Phase | Who runs it | Attended | Comes to rest at |', '|---|---|---|---|---|');
+  push('| # | Phase | Who runs it | Checked by | Attended | Comes to rest at |', '|---|---|---|---|---|---|');
   l.phases.forEach((p, i) => {
     const s = statusById(l, p.produces);
-    push(`| ${i + 1} | **${p.title}** | ${p.actor} | ${p.attended ? 'yes' : 'no'} | \`${s.id}\` |`);
+    push(
+      `| ${i + 1} | **${p.title}** | ${p.actor} | ${p.reviewer ?? ''} | ${p.attended ? 'yes' : 'no'} | \`${s.id}\` |`,
+    );
   });
   push('');
+  // The check is a fact about the spec — which phases name a reviewer — so the
+  // sentence that explains the flag is derived from them, and vanishes with them.
+  const checked = l.phases.filter((p) => p.reviewer);
+  if (checked.length) {
+    const who = [...new Set(checked.map((p) => p.reviewer))].join(' or ');
+    const which = checked.map((p) => `\`${p.produces}\``).join(', ');
+    push(
+      `A status written by a checked phase — ${which} — is provisional: the runner writes`,
+      `\`needs_review: ${who}\` beside it, and the card is not where its status says until ${who}`,
+      'has cleared the flag. A check that fails sends the card back one status and parks it',
+      'on you (`blocked_on`), with a `## Verdict` saying why; clearing the block sends it round again.',
+      '',
+    );
+  }
   for (const p of l.phases) {
     push(`### ${p.title}`, '', p.summary, '');
     if (p.requires?.length) {

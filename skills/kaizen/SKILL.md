@@ -13,16 +13,17 @@ The bias throughout: **a fix belongs at the lowest rung that works.** A skill th
 
 ## The lifecycle
 
-Six phases, and a suggestion rests in exactly one status between each. The phases, the statuses, what each phase must produce, and which transitions are legal are **not written here** — they live in `lifecycle.json` at the repo root, which the app, the TUI and `docs/LIFECYCLE.md` all read. Restating them in this file would be a sixth copy, and the five that already existed are why the spec exists.
+Seven phases, and a suggestion rests in exactly one status between each. The phases, the statuses, what each phase must produce, and which transitions are legal are **not written here** — they live in `lifecycle.json` at the repo root, which the app, the TUI and `docs/LIFECYCLE.md` all read. Restating them in this file would be a sixth copy, and the five that already existed are why the spec exists.
 
 | Phase | Who | Step below | Comes to rest at |
 |---|---|---|---|
 | Capture | the skill that hit the problem | `skill-reflect`, not this skill | `recorded` |
-| Triage | kaizen, unattended | Steps 2–4 | `triaged` |
-| Plan | kaizen, unattended | Step 5 | `planned` |
+| Triage | opencode, checked by claude | Steps 2–4 | `triaged` |
+| Plan | opencode, checked by claude | Step 5 | `planned` |
 | Decide | **you** | Step 6 | `approved` |
 | Apply | the server | Step 7 | `applied` |
-| Verify | kaizen, unattended | Step 7, after the commit | `verified` |
+| Review | opencode, checked by claude | Step 7a | `reviewed` |
+| Verify | claude | Step 6b, on a `reviewed` card | `verified` |
 
 Read it with `kaizen docs`, in the app's Docs tab, or with `D` in the TUI. All three render the same file.
 
@@ -32,6 +33,20 @@ Two things the phases exist to prevent, both observed:
 - **A fix nobody confirmed was needed.** Triage re-reads the scope file at HEAD before labelling. 27 of those 39 had already been fixed months earlier; the status said otherwise because nothing ever re-checked.
 
 Files written before the spec carry the older names — `new` and `proposed`. They are read as `recorded` and `planned`; the aliases are in the spec and every renderer resolves them.
+
+---
+
+## Who runs what
+
+Two models take turns, and the spec says which is whose (`runner` and `reviewer` on each phase):
+
+- **opencode is the runner.** It does the work of every unattended phase — triage, plan, and the review of a landed change — on the ChatGPT subscription, so the Claude subscription is spent on judgement only. If you are opencode reading this, your `MODE` is `run`.
+- **claude is the reviewer.** It does not triage or plan; it checks what opencode wrote, and it verifies what landed. If you are claude reading this from a server run, your `MODE` is `review`.
+- **The flag is the hand-off.** Every status the runner writes is provisional. Go as far as the phase gates let you in one run — a `recorded` card is triaged *and then planned* before it is handed over, so one check covers the labels and the plan — and write `"needs_review": "claude"` in the same `triage --apply` call as the status you stop at. A card you leave short of `planned` (a call only the user can make, per Step 5) is flagged where it stops. The board draws a flagged card in the `review` lane, the server hands the next seat to claude on its own, and nothing — not `A`, not a sweep — can move the card forward until claude clears the flag. A status without the flag is a status claude has agreed with.
+- **A check that fails sends the card back.** claude writes the status one phase back (`planned → triaged`, `triaged → recorded`, `reviewed → applied`), clears the flag, parks the card on the user with `"blocked_on": "review: <one line>"`, and puts the findings under `## Verdict`. The user reads it, and `b` clears the block — which is what sends opencode round again, with the verdict as its brief. `x` is still the way out.
+- **The server chains them.** One `a` on a card, one `A` on a lane, one `kaizen dispatch [id]`: opencode runs, flags, exits; claude runs, clears or sends back. Neither is sent by hand.
+
+**In an interactive Claude session**, `/kaizen:triage [id]` is a hand-off, not a pass. Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/cli.mjs" dispatch [id]` — the server must be up (`kaizen serve`; `kaizen tui` starts it) — report what it said, and stop. Do not triage or plan yourself. `review`, `drain` and `report` still run where they are invoked.
 
 ---
 
@@ -50,7 +65,7 @@ Files written before the spec carry the older names — `new` and `proposed`. Th
 
 ## Inputs
 
-- `MODE` — (optional) `triage` (default), `drain`, `report`
+- `MODE` — (optional) `run` (the runner's pass: Steps 1–5 and 7a), `review` (the reviewer's: Step 6b), `drain` (Step 7), `report` (read-only). No mode in an interactive Claude session means the hand-off above.
 - `TARGET` — (optional) a suggestion id or skill name to limit the pass
 
 ## Outputs
@@ -96,6 +111,11 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/cli.mjs" triage --apply decisions.json
 #                    "confirmed_at": "2026-08-09 @ c9168b6", "status": "triaged" }, …]
 ```
 
+Then go on to plan (Step 5) in the same run. The `needs_review` flag goes on the
+status you stop at — `planned`, normally — not on `triaged` in passing: one
+check covers both, and a flag here would cost a claude run and a second
+opencode run for nothing.
+
 It validates every value against the closed vocabularies and **writes nothing if
 any entry is bad**, so a typo costs one retry rather than leaving half the queue
 in a state nobody planned. Copy `id` verbatim from the scan — it is
@@ -113,6 +133,7 @@ For each suggestion where `triaged` is false, decide:
 | `effort` | `S` · `M` · `L` |
 | `confirmed_at` | the date and short sha you re-read the scope file at, per Step 3 |
 | `status` | `triaged` once confirmed and labelled · `superseded` if the fix already landed |
+| `needs_review` | `claude`, beside the status you stop at — the hand-off; the reviewer clears it |
 
 Two rules while triaging:
 
@@ -153,7 +174,7 @@ When several suggestions share one `scope`, that repetition is evidence prose al
 
 - The fix **must** land at rung 0 or rung 1. Patching one skill's prose is not an acceptable outcome — the recurrence is proof that prose already failed there repeatedly.
 - Add one line to the shared authoring conventions of the target tree so future skills inherit the rule.
-- Write **one** proposal for the scope, not one per member. Members reference it.
+- Write **one** proposal for the scope, not one per member. Members reference it as data: `"blocked_on": "carried by <lead slug>"` on each. That line is what the landing reads to close them — a card that merely shares the file, with its own problem, is not carried and is not closed.
 
 Say plainly which scopes cross that line and what single artefact each collapses into.
 
@@ -205,45 +226,68 @@ Someone else's uncommitted work would otherwise ride into the diff, and the
 tests would exercise their WIP instead of the patch — 21 modified files of
 foreign WIP sat in the kaizen repo during the 2026-08-15 pass. `git apply
 --check` reads a working tree, so run it against one that does not already hold
-the change: `git stash` in the worktree first, then once more against the live
-tree with `git -C <repo>`, which is what the drain will actually see.
+the change: discard the worktree's edits first — it is throwaway — then once
+more against the live tree with `git -C <repo>`, which is what the drain will
+actually see. **Never `git stash` in the worktree**: the stash is shared with
+the live repo, and eight passes left eight `WIP on (no branch)` entries in the
+user's skills repo that way.
 
 ```bash
 # in the throwaway worktree, not the target's live tree
 git diff > /tmp/kaizen-<scope-or-id>.patch
+git checkout -- . && git clean -fdq                   # back to HEAD; nothing to stash
 git apply --check /tmp/kaizen-<scope-or-id>.patch   # must pass before it is offered
+git -C <repo> worktree remove --force /tmp/kaizen-wt  # leave nothing behind
 ```
 
 Store it beside the suggestion as `<suggestion-basename>.patch`.
 
-Then set `status: planned`. For a rung-1 proposal the script it introduces ships
-with `--self-check` — which is usually also its validation plan, so the two fall
-out of the same work.
+Then set `status: planned` — with `"needs_review": "claude"` beside it, the
+hand-off for the labels and the plan together. For a rung-1 proposal the script
+it introduces ships with `--self-check` — which is usually also its validation
+plan, so the two fall out of the same work.
 
 If a plan cannot be written without judgement calls the user should make, leave
 `status: triaged` and explain what is undecided. Do not write a speculative
 patch to satisfy the gate.
 
-## Step 6 — Present, and stop
+## Step 6 — Stop
 
-This is the one attended phase, so it is the only place the loop pauses.
+This is where the runner stops. Do not present a table for approval: a plan is
+not approvable until claude has checked it, and the flag you wrote is what
+sends claude. Say in one line what you flagged and what you parked, and end.
 
-Show a ranked table for everything at `planned`: scope or suggestion,
-incidents, rung, scope, the one-line plan, **and how it will be validated**. The
-validation column is the point — it is what turns "do you want this change" into
-"do you want this change, and here is how we will know it worked". Highest score
-first.
+**Nothing applies without the user's approval.** There is no bypass — the config used to declare an `autoApply` list and nothing ever read it, so the setting has been removed rather than left describing behaviour that did not exist. The decision is the one attended phase, and it happens on the board: `kaizen tui`, where a checked plan sits in `planned` with its patch (`d`) and its validation plan (`enter`), `a` approves one and `A` the lane.
 
-**Nothing applies without the user's approval.** There is no bypass — the config used to declare an `autoApply` list and nothing ever read it, so the setting has been removed rather than left describing behaviour that did not exist. Say what is waiting and stop.
+## Step 6b — Check (`MODE=review`, claude)
 
-The TUI is the other way to approve, and the faster one when the queue is long: `kaizen tui` — `A` approves everything approvable as one decision, and tab 2 is the board when you want the whole state at a glance.
+The reviewer's pass, and the only thing claude does short of the decision. Read
+the state (Step 1) and take every card wearing `needs_review` — or the one
+`TARGET` names. For each, the check is the phase's own gate re-run by a second
+pair of eyes:
+
+| Card is | Check |
+|---|---|
+| `triaged` | The labels fit the Context — type, objective, effort, and a rung with its one-sentence justification; `scope` names the file the fix lands in; `confirmed_at` names a commit, and the problem is still there at HEAD — or the card should have been `superseded`, with where the fix lives. |
+| `planned` | Everything in the `triaged` row first — the labels arrived in the same run, unchecked. Then: `## Plan` says which files and what stays out; `## Validation` names a command and a passing result, not "read it and see"; the sibling `.patch` passes `git apply --check` against the live tree and does what the plan says, nothing more; the rung is the lowest that works. |
+| `reviewed` | This is the verify phase. Run the command `## Validation` names against the tree the commit landed in (`applied_sha`), and read `## Review` against what you see. |
+
+Then write the verdict in one `triage --apply` call:
+
+- **Pass** → `"needs_review": ""` and `"verdict": "pass — <what you checked>"`. For a `reviewed` card that call also carries `"status": "verified"` and `"verified_at": "<date — what the command returned>"`.
+- **Send back** → the status one phase back (`triaged` → `"recorded"`, `planned` → `"triaged"`, `reviewed` → `"applied"`), `"needs_review": ""`, `"blocked_on": "review: <one line>"`, and `"verdict": "<what is wrong, and what would fix it>"`. The card parks on the user; clearing the block sends opencode round again with your verdict as its brief. Do not fix it yourself — the point of the split is that claude judges and opencode does.
+- **The validation plan failed on a `reviewed` card** → `"status": "failed"`, the output under `"verdict"`, no flag. `failed` goes back to `planned`, not to the start: the problem is still real and still triaged, only the fix was wrong. Do not revert — show the `git revert <applied_sha>` that would, and let the user choose.
+
+A check is not a re-triage. If the labels are defensible, pass them; the
+send-back is for a claim that does not hold at HEAD, a patch that does not
+apply or does more than its plan, a validation plan that proves nothing.
 
 ## Step 7 — Apply, then verify (`MODE=drain`)
 
 For each suggestion at `status: approved`:
 
 1. Confirm the target is `writable` in config. Project targets are read-only by default; refuse and say so.
-2. Confirm the tree is clean: `git -C <skills> status --porcelain` must be empty. Applying into a dirty tree mixes the user's work with kaizen's and makes `git revert` stop being a clean undo. Refuse and say which files are dirty.
+2. Confirm the patch's own files are clean: `git -C <skills> status --porcelain -- <paths the patch touches>` must be empty, and nothing may be staged. Untracked files elsewhere are fine — the server stages only the patch's paths, so they cannot ride into the commit. Uncommitted work in a file the patch touches would be clobbered and make `git revert` stop being a clean undo; refuse and say which files.
 3. `git apply --index` the patch (staging exactly the paths it touches — a patch cannot then be half-committed by a wrong `git add`), run the script's `--self-check` if there is one.
 4. Commit one suggestion per commit:
 
@@ -255,7 +299,7 @@ kaizen(<type>/<objective>): <scope or slug>
 Kaizen-Suggestion: <suggestion id>
 ```
 
-5. After the validation plan has run (next section), stamp the whole walk in one call — it checks every transition and every phase requirement against the spec, all-or-nothing:
+5. Once opencode has reviewed the landing and claude has verified it (below), the whole walk stamps in one call — it checks every transition and every phase requirement against the spec, all-or-nothing, and it passes through `reviewed`, so it refuses a card with no `## Review`:
 
 ```bash
 kaizen drain --apply - <<'JSON'
@@ -265,22 +309,25 @@ JSON
 
 `git log --grep=Kaizen-Suggestion` is then the applied-changes ledger, for free. Rollback is `git revert <sha>`.
 
-### Then verify — the drain is not finished at `applied`
+### Step 7a — Review the landed change (`MODE=run`, opencode)
 
 `applied` means git accepted a diff. It does not mean the problem is fixed, and
 treating the two as the same thing is why a queue can fill with landed changes
-nobody ever checked.
+nobody ever checked. So a landed card is the runner's work again before it is
+the reviewer's.
 
-For each suggestion just applied, run the command its `## Validation` section
-names, against the tree the commit landed in:
+For each card at `applied`: `git -C <repo> show <applied_sha>` and read it
+against `## Plan`; run the command `## Validation` names against that tree;
+then write, in one call, `"review": "<what the commit does, whether it matches
+the plan, what the validation returned, anything you would not have shipped>"`,
+`"status": "reviewed"` and `"needs_review": "claude"`. The server hands the card
+to claude from there.
 
-- **It passes** → `status: verified`, and stamp `verified_at` with the date and
-  what the command returned. That is a terminal state, and the only one that
-  claims the loop closed.
-- **It fails** → `status: failed`, and put the output in the body. `failed` goes
-  back to `planned`, not to the start: the problem is still real and still
-  triaged, only the fix was wrong. Do not revert automatically — show the user
-  the failure and the `git revert <sha>` that undoes it, and let them choose.
+### Then verify — the drain is not finished at `reviewed`
+
+claude's Step 6b on a `reviewed` card: the validation plan runs again under the
+reviewer's own eyes, and the card ends `verified` with `verified_at` — the only
+status that claims the loop closed — or `failed`.
 
 A validation plan that cannot be run — because it named something vague — is
 itself a finding. File it against the plan step rather than marking the
@@ -288,11 +335,12 @@ suggestion verified on the strength of the diff looking correct.
 
 ## Step 8 — Run the rubric against kaizen itself
 
-Kaizen is not exempt from the loop it runs. Once per **backlog** pass — skip this
-step when `TARGET` is set. The server fans out one fenced pass per suggestion,
-and three of them once ran this rubric against the same tree within a minute:
-its result says nothing about the one card a fenced pass is deciding, and
-`doctor --file` from concurrent passes races on the date-keyed filename.
+Kaizen is not exempt from the loop it runs. Once per **backlog** pass of the
+reviewer — skip this step when `TARGET` is set, and skip it as the runner:
+kaizen judging kaizen is claude's job, and the server fans runs out — three
+once ran this rubric against the same tree within a minute. Its result says
+nothing about the one card a fenced pass is deciding, and `doctor --file` from
+concurrent passes races on the date-keyed filename.
 
 ```bash
 npm run check --prefix "${CLAUDE_PLUGIN_ROOT}"          # rung-1 signals: types, lint, tests

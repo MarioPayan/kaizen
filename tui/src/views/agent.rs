@@ -1,4 +1,5 @@
-//! The agents: every fable run the server has going, and who waits for a seat.
+//! The agents: every run the server has going — opencode doing, claude
+//! checking — and who waits for a seat.
 //!
 //! One row per run — spinner, what it is on, pid, age — live ones first, then
 //! the last few that ended with how they ended. Under them, the line, in order.
@@ -20,7 +21,7 @@ use crate::ui::{short, titled};
 /// The columns, and what they mean. Same contract as the sibling views: the
 /// help card explains the screen from this list alone.
 pub const COLUMNS: &[(&str, &str)] = &[
-    ("agent", "one fable run — spinner while it goes, what it is on, its pid and age; ended runs stay a while with their exit code"),
+    ("agent", "one run — who has the seat, spinner while it goes, what it is on, its pid and age; ended runs stay a while with their exit code"),
     ("line", "who waits for a seat, in order; dispatch.maxAgents in settings is how many run at once, and a backlog run always runs alone"),
 ];
 
@@ -47,10 +48,21 @@ fn target(id: Option<&str>) -> String {
     }
 }
 
+/// "opencode · " in front of what the run is on — or nothing, for a run adopted
+/// across a restart from a record that never said who.
+fn who(r: &Run) -> String {
+    if r.runner.is_empty() {
+        String::new()
+    } else {
+        format!("{} · ", r.runner)
+    }
+}
+
 fn run_line(r: &Run, spin: char) -> Line<'static> {
     if r.running {
         let mut spans = vec![
             Span::styled(format!("{spin} "), Style::new().fg(theme::accent())),
+            Span::styled(who(r), Style::new().fg(theme::accent())),
             Span::raw(format!("{} · pid {}", target(r.id.as_deref()), r.pid)),
         ];
         if let Some(at) = r.started_at {
@@ -66,6 +78,7 @@ fn run_line(r: &Run, spin: char) -> Line<'static> {
     };
     Line::from(vec![
         Span::styled("  ", Style::new()),
+        Span::styled(who(r), Style::new().fg(theme::dim())),
         Span::styled(target(r.id.as_deref()), Style::new().fg(theme::dim())),
         Span::styled(format!(" · {word}"), Style::new().fg(colour)),
         Span::styled(format!(" · pid {}", r.pid), Style::new().fg(theme::dim())),
@@ -91,7 +104,7 @@ pub fn draw(frame: &mut Frame, area: Rect, dispatch: Option<&Dispatch>, spin: ch
         .collect();
     if lines.is_empty() {
         lines.push(Line::styled(
-            "idle — a on a board card sends fable at it, A at the backlog",
+            "idle — a on a board card sends a run at it, A at the backlog",
             Style::new().fg(theme::dim()),
         ));
     }

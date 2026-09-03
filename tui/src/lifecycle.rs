@@ -52,6 +52,13 @@ pub struct PhaseSpec {
     pub id: String,
     pub title: String,
     pub actor: String,
+    /// Who does the work, as the server spawns it and the lane names it:
+    /// `opencode`, `claude`, `you`, `server`, `skill`.
+    pub runner: String,
+    /// Who has to clear the runner's output before the card moves on. Empty
+    /// for a phase whose status is settled the moment it is written.
+    #[serde(default)]
+    pub reviewer: String,
     pub produces: String,
     pub attended: bool,
     pub summary: String,
@@ -124,7 +131,9 @@ pub fn next_statuses(from: &str) -> &'static [String] {
     status_spec(from).map(|s| s.next.as_slice()).unwrap_or(&[])
 }
 
-/// Is this move legal?
+/// Is this move legal? The views ask `forward` and `exit` instead, which
+/// answer for a lane; this is what the tests pin the spec's edges with.
+#[cfg(test)]
 pub fn can_transition(from: &str, to: &str) -> bool {
     let Some(target) = status_spec(to) else { return false };
     next_statuses(from).iter().any(|n| n == &target.id)
@@ -176,21 +185,43 @@ pub fn actor_of(status: &str) -> Option<&'static str> {
     lifecycle().phases.iter().find(|p| p.produces == status).map(|p| p.actor.as_str())
 }
 
-/// Can the unattended pre-decision pass (triage, plan) still move this status
-/// forward? Mirrors the server's dispatch gate so the TUI counts the same work
-/// the server would accept a dispatch for.
-pub fn awaits_pass(status: &str) -> bool {
-    let l = lifecycle();
-    let Some(at) = l.phases.iter().position(|p| p.attended) else { return false };
-    l.phases[..at].iter().any(|p| can_transition(status, &p.produces))
+/// The phase a status moves into: the one producing `forward(status)`. By
+/// `next` order, not phase order — a status can go back now, and capture sits
+/// first in the file, so "first phase whose product is reachable" would send
+/// every triaged card to the pile it came from.
+pub fn next_phase(status: &str) -> Option<&'static PhaseSpec> {
+    let to = forward(status)?;
+    lifecycle().phases.iter().find(|p| p.produces == to)
 }
 
-/// Is there anything an unattended pass can do for this card right now? The
-/// server's gate, mirrored: `awaits_pass` answers for the status, and a card
-/// carrying `blocked_on` answers no whatever its status — it is parked on
+/// Every reviewer the spec names, once each, in phase order — the name the
+/// review lane wears.
+pub fn reviewers() -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = Vec::new();
+    for p in &lifecycle().phases {
+        if !p.reviewer.is_empty() && !out.contains(&p.reviewer.as_str()) {
+            out.push(&p.reviewer);
+        }
+    }
+    out
+}
+
+/// Does a model move this status forward? True when the next phase is neither
+/// yours nor the server's — so a run is what `a` sends. Mirrors the server's
+/// dispatch gate so the TUI counts the same work the server would accept a
+/// dispatch for.
+pub fn awaits_pass(status: &str) -> bool {
+    let Some(next) = next_phase(status) else { return false };
+    !next.attended && Some(next.produces.as_str()) != landed_status()
+}
+
+/// Is there anything an unattended run can do for this card right now? The
+/// server's gate, mirrored: `awaits_pass` answers for the status, a card
+/// flagged for a check is the reviewer's whatever its status, and a card
+/// carrying `blocked_on` answers no whatever else is true — it is parked on
 /// something outside the pipeline, and a run fenced to it can only re-stamp.
-pub fn pending_pass(status: &str, blocked_on: &str) -> bool {
-    awaits_pass(status) && blocked_on.is_empty()
+pub fn pending_pass(status: &str, needs_review: &str, blocked_on: &str) -> bool {
+    blocked_on.is_empty() && (!needs_review.is_empty() || awaits_pass(status))
 }
 
 #[cfg(test)]
@@ -199,16 +230,43 @@ mod tests {
 
     /// The dispatch gate. `triaged` is the one that was once refused: the old
     /// gate counted untriaged items only, and a fully-triaged backlog with no
-    /// plans read as "nothing to do".
+    /// plans read as "nothing to do". `applied` and `reviewed` are the ones it
+    /// used to stop short of: a landed change is opencode's to review and then
+    /// claude's to verify, and neither had a key.
     #[test]
-    fn the_pass_covers_recorded_triaged_and_failed_but_not_the_decided() {
+    fn a_run_moves_everything_that_is_not_yours_or_the_servers() {
         assert!(awaits_pass("recorded"));
         assert!(awaits_pass("triaged"));
         assert!(awaits_pass("failed"), "a failed item goes back for a new plan");
+        assert!(awaits_pass("applied"), "a landed change gets reviewed");
+        assert!(awaits_pass("reviewed"), "and then verified");
         assert!(!awaits_pass("planned"), "planned waits on you");
         assert!(!awaits_pass("approved"), "approved waits on the server");
         assert!(!awaits_pass("verified"));
         assert!(!awaits_pass("rejected"));
+
+        // The flag overrides the status: an unchecked plan is claude's, and a
+        // block overrides everything.
+        assert!(pending_pass("planned", "claude", ""));
+        assert!(!pending_pass("planned", "", ""));
+        assert!(!pending_pass("planned", "claude", "waiting on a call"));
+        assert!(!pending_pass("recorded", "", "waiting on a call"));
+    }
+
+    /// Whose move it is comes off the spec, and the back-edges a failed check
+    /// adds never become the way forward: `triaged` can go to `recorded` now,
+    /// and its next phase is still plan.
+    #[test]
+    fn the_next_phase_is_the_forward_one_and_names_its_runner() {
+        let next = |s: &str| next_phase(s).map(|p| (p.id.as_str(), p.runner.as_str()));
+        assert_eq!(next("recorded"), Some(("triage", "opencode")));
+        assert_eq!(next("triaged"), Some(("plan", "opencode")));
+        assert_eq!(next("planned"), Some(("decide", "you")));
+        assert_eq!(next("approved"), Some(("apply", "server")));
+        assert_eq!(next("applied"), Some(("review", "opencode")));
+        assert_eq!(next("reviewed"), Some(("verify", "claude")));
+        assert_eq!(next("verified"), None);
+        assert_eq!(reviewers(), ["claude"]);
     }
 
     /// `a` and `x` are one key each across every lane, so what they do has to
@@ -219,6 +277,8 @@ mod tests {
         assert_eq!(forward("recorded"), Some("triaged"));
         assert_eq!(forward("planned"), Some("approved"));
         assert_eq!(forward("failed"), Some("planned"), "failed goes back for a plan");
+        assert_eq!(forward("applied"), Some("reviewed"), "a landed change is reviewed before it is verified");
+        assert_eq!(forward("reviewed"), Some("verified"));
         assert_eq!(forward("verified"), None);
         assert_eq!(exit("recorded"), Some("rejected"), "you can still say no");
         assert_eq!(exit("approved"), Some("superseded"), "a yes given can only be overtaken");

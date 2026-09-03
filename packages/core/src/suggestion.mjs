@@ -169,6 +169,10 @@ export function parseSuggestion({ id, file, skill, target, text }) {
     // decision only the user can make. Data, not log prose: twelve identical
     // triaged rows once hid that nine of them were waiting on three calls.
     blockedOn: data.blocked_on || '',
+    // Who has to check the status before the card is where it says: the
+    // runner writes the reviewer's name here beside every status it sets, and
+    // the reviewer clears it. Empty means the status is settled.
+    needsReview: data.needs_review || '',
     // Which commit the problem was last confirmed to still exist at. Step 3
     // says a confirmation is worth exactly as much as its commit; without this
     // in the scan, a targeted pass had to open the file to learn the stamp,
@@ -181,6 +185,10 @@ export function parseSuggestion({ id, file, skill, target, text }) {
     context: section(body, 'Context'),
     suggestion: section(body, 'Suggestion'),
     rationale: section(body, 'Why it matters'),
+    // What the two reviews wrote, so the detail window can show a rejected
+    // card's reason without opening the file — the block line is one sentence.
+    review: section(body, 'Review'),
+    verdict: section(body, 'Verdict'),
     missing,
     triaged: missing.length === 0,
     score: score({ severity, effort, recurrences }),

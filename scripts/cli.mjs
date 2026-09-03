@@ -12,6 +12,7 @@
  *   docs      regenerate what lifecycle.json implies (--check fails on drift)
  *   prune     delete closed suggestions older than a month (--dry-run)
  *   serve     start the local app + API
+ *   dispatch  send a card, or the backlog, to the runners via the server
  *   tui       the queue in the terminal (starts `serve` if the port is dead)
  */
 import {
@@ -62,9 +63,9 @@ import {
   assignBlockedBy,
   nextStatuses,
   missingRequirements,
-  requirementsFor,
   section,
   renderMarkdown,
+  spec,
 } from '@kaizen/core';
 
 // Bare `kaizen` is the board: the command you reach for is the one that needs no
@@ -243,7 +244,12 @@ function cmdScan() {
     state.suggestions = state.suggestions.filter(
       (s) => (!id || s.id === id) && (!skill || s.skill === skill) && (!scope || s.scope === scope),
     );
-    if (skill) state.skills = state.skills.filter((k) => k.name === skill);
+    // A fenced read is fenced on both halves. `--id` used to trim the
+    // suggestions and hand back every skill on the machine anyway — the
+    // first opencode run got a dump too long to show and had to re-read it
+    // from a file to find the one card it asked for.
+    const kept = new Set(skill ? [skill] : state.suggestions.map((s) => s.skill));
+    state.skills = state.skills.filter((k) => kept.has(k.name));
   }
   stdout.write(JSON.stringify(state, null, has('--pretty') ? 2 : 0));
 }
@@ -269,8 +275,11 @@ function piles(surfaced) {
     // call only you can make: `blocked_on` naming something that is not another
     // open card is the board's lit flag, and `b` is the key that answers it.
     // Those cards were invisible here — a `triaged` row waiting on you for a
-    // week reported as nothing at all.
-    awaitingYou: open.filter((s) => wants.includes(s.status) || (s.blockedOn && !s.blockedBy)).length,
+    // week reported as nothing at all. A card still wearing `needs_review` is
+    // not yours yet whatever its status: the reviewer has it.
+    awaitingYou: open.filter(
+      (s) => (wants.includes(s.status) && !s.needsReview) || (s.blockedOn && !s.blockedBy),
+    ).length,
     landed: open.filter((s) => hasLanded(s.status)).length,
     // A card whose commit is in is addressed, pending verification — it is the
     // `landed` pile's business, not evidence the skill is still costing you.
@@ -499,6 +508,10 @@ const TRIAGE_FIELDS = {
   // Why an item is parked short of the next phase, when the reason is a
   // decision only the user can make. One line; empty clears it.
   blocked_on: null,
+  // Who has to check a status before the card is where it says. The runner
+  // writes the reviewer's name in the same call as the status; the reviewer
+  // clears it with an empty value once the work holds up.
+  needs_review: null,
   // Remapping an orphan onto its successor is a triage decision, and the
   // edge-case list already calls for it. The folder is the scanner's signal, so
   // a remap is a move plus this field.
@@ -510,16 +523,17 @@ const TRIAGE_FIELDS = {
 };
 
 /**
- * The plan phase's own output lives in the body, not the frontmatter: `## Plan`
- * and `## Validation`, straight off the spec's body fields for that phase.
+ * A phase's output can live in the body rather than the frontmatter: `## Plan`
+ * and `## Validation` for plan, `## Review` for review, `## Verdict` for a
+ * check — every body field the spec declares, keyed by id, valued by heading.
  * Without a writer for them the "write the whole pass in one call" rule held for
  * triage and verify and was silently false for plan — every pass rediscovered
  * `cat >>` by reading source. Free text; the section is replaced if the heading
  * exists and appended otherwise.
  */
 const BODY_FIELDS = Object.fromEntries(
-  requirementsFor('planned')
-    .filter((f) => f.where === 'body')
+  spec()
+    .fields.filter((f) => f.where === 'body')
     .map((f) => [f.id, f.heading]),
 );
 
@@ -586,10 +600,11 @@ function validateDecisions(decisions, byId) {
         errors.push(`${where}.${key}: "${text}" must be one of ${allowed.join(', ')}`);
         continue;
       }
-      // `blocked_on` is the one field whose empty value is itself a decision:
-      // the parking reason, cleared once the call is made (Step 5). Every
-      // other free-text field arriving empty is a mistake.
-      if (!allowed && !text.trim() && key !== 'blocked_on') {
+      // Two fields have an empty value that is itself a decision: `blocked_on`
+      // is the parking reason, cleared once the call is made (Step 5), and
+      // `needs_review` is the reviewer's name, cleared once the check passed.
+      // Every other free-text field arriving empty is a mistake.
+      if (!allowed && !text.trim() && key !== 'blocked_on' && key !== 'needs_review') {
         errors.push(`${where}.${key}: must not be empty`);
         continue;
       }
@@ -1133,6 +1148,52 @@ async function cmdServe() {
   await startServer(config);
 }
 
+/* ------------------------------------------------------------ dispatch ---- */
+
+/**
+ * Hand a card, or the backlog, to the server's seats — the same request `a`
+ * and `A` make from the board, for a shell or a Claude session that has no
+ * board open. The server picks the runner from the card (opencode does, claude
+ * checks) and chains the check after the work, so one call is the whole
+ * unattended stretch.
+ *
+ * Goes through the server rather than spawning here: the seats, the line and
+ * the chain live there, and a second launcher would be a second queue.
+ *
+ *   kaizen dispatch                  # the backlog
+ *   kaizen dispatch <suggestion id>  # one card
+ */
+async function cmdDispatch() {
+  const config = requireConfig();
+  const { host, port } = config.server ?? { host: '127.0.0.1', port: 7777 };
+  const id = args.find((a) => !a.startsWith('--')) ?? null;
+  let res;
+  try {
+    res = await fetch(`http://${host}:${port}/api/dispatch`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(id ? { id } : {}),
+    });
+  } catch {
+    // Not started here on purpose: the TUI already knows how to start the
+    // server, and a second implementation of that rule would drift from it.
+    console.error(
+      `cannot reach the kaizen server at http://${host}:${port} — start it: kaizen serve, ` +
+        'from a terminal of your own (a server started inside a Claude session dies with it; ' +
+        '`systemd-run --user --unit=kaizen-serve` keeps one alive)',
+    );
+    exit(1);
+  }
+  const body = await res.json();
+  if (!res.ok) {
+    console.error(body.error ?? `server said ${res.status}`);
+    exit(1);
+  }
+  const what = id ? id.split('/').at(-1) : 'the backlog';
+  if (body.queued) console.log(`${what}: in line, place ${body.queued} (${body.pending} pending)`);
+  else console.log(`${what}: started as pid ${body.pid} (${body.pending} pending)`);
+}
+
 /* ----------------------------------------------------------------- tui ---- */
 
 const TUI_BIN = join(here, '..', 'tui', 'target', 'release', 'kaizen-tui');
@@ -1174,11 +1235,13 @@ const commands = {
   docs: cmdDocs,
   prune: cmdPrune,
   serve: cmdServe,
+  dispatch: cmdDispatch,
   tui: cmdTui,
   help: () =>
     console.log(
       'usage: kaizen                                            # the board, in the terminal\n' +
-        '       kaizen <init|scan|status|validate|triage|drain|asks|doctor|docs|prune|serve|tui> [--fix] [--pretty]\n' +
+        '       kaizen <init|scan|status|validate|triage|drain|asks|doctor|docs|prune|serve|dispatch|tui> [--fix] [--pretty]\n' +
+        '       kaizen dispatch [<suggestion id>]                 # send a card, or the backlog, to the runners\n' +
         '       kaizen doctor [--file]\n' +
         '       kaizen asks [--json|--due|--stamp]                # asks you keep repeating\n' +
         '       kaizen triage --apply <file.json|-> [--dry-run]\n' +

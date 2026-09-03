@@ -2,8 +2,8 @@
  * The local API.
  *
  * A small route table, `node:http`, bound to loopback. Every route is a file
- * read, a file write, or a git call — save one, which starts a detached claude
- * run — there is no layer here worth a framework.
+ * read, a file write, or a git call — save one, which starts a detached run
+ * (opencode to do, claude to check) — there is no layer here worth a framework.
  *
  * Two things are not negotiable and are enforced rather than documented:
  *   - the socket binds 127.0.0.1, because these routes write files and shell out
@@ -35,6 +35,7 @@ import { fileURLToPath } from 'node:url';
 import {
   buildState,
   configPath,
+  defaultConfig,
   resolveTargets,
   saveConfig,
   validateConfig,
@@ -46,7 +47,9 @@ import {
   parseFrontmatter,
   canonicalStatus,
   canTransition,
+  isTerminal,
   pendingPass,
+  runnerOf,
   nextStatuses,
   statusIds,
   missingRequirements,
@@ -195,6 +198,24 @@ function assertRequirements(config, id, to) {
   );
 }
 
+/**
+ * The third gate, for a status the runner wrote provisionally.
+ *
+ * A card wearing `needs_review` is where its status says only once the reviewer
+ * agrees — so a forward move from the board, or a sweep of the planned lane,
+ * must not carry an unchecked plan into `approved`. The way out is never gated:
+ * closing a card is the one move that owes the reviewer nothing.
+ */
+function assertChecked(config, id, to) {
+  const { path } = suggestionFile(config, id);
+  const { data } = parseFrontmatter(readFileSync(path, 'utf8'));
+  if (!data.needs_review || isTerminal(to)) return;
+  throw new HttpError(
+    409,
+    `${id.split('/').at(-1)} is waiting on ${data.needs_review}'s check — a runs it; it cannot become "${to}" until that clears.`,
+  );
+}
+
 async function git(cwd, args) {
   try {
     const { stdout } = await run('git', ['-C', cwd, ...args], { maxBuffer: 10 * 1024 * 1024 });
@@ -295,6 +316,9 @@ const routes = {
       runs: ctx.runs.map((r) => ({
         pid: r.pid,
         id: r.triageId,
+        // Which binary has the seat — the agents tab names it, and the
+        // footer's "pass done" says whose.
+        runner: r.runner ?? '',
         running: !r.done,
         exitCode: r.done ? (r.done.code ?? -1) : null,
         // Epoch ms, not ISO like `generatedAt`: the TUI renders "up 3m" and
@@ -317,7 +341,7 @@ const routes = {
     ctx.config = withDefaults(next);
     // The target list may have changed, and with it what is worth watching.
     ctx.events?.restart();
-    // Flipping auto on is the ask: send fable at what is waiting, now.
+    // Flipping auto on is the ask: send the runners at what is waiting, now.
     if (ctx.config.dispatch?.auto) {
       ctx.events?.watch();
       maybeAutoDispatch(ctx);
@@ -375,6 +399,7 @@ const routes = {
       // move. Notes still land, so a re-decision can add its reason.
       if (from !== to) {
         assertTransition(from, to, id);
+        assertChecked(ctx.config, id, to);
         assertRequirements(ctx.config, id, to);
       }
       patch.status = to;
@@ -408,6 +433,7 @@ const routes = {
     const moved = [];
     for (const s of candidates) {
       try {
+        assertChecked(ctx.config, s.id, to);
         assertRequirements(ctx.config, s.id, to);
       } catch {
         continue;
@@ -427,7 +453,7 @@ const routes = {
   'POST /api/dispatch': async (req, _res, ctx) => {
     // `null` is the backlog, on the wire and in the queue alike.
     const { id = null } = await readBody(req);
-    const pending = passPending(ctx, id);
+    const { pending, state } = passPending(ctx, id);
     // The same work twice is the one thing that still refuses: the card (or
     // the backlog) already has an agent on it.
     const dup = live(ctx).find((r) => r.triageId === id);
@@ -438,7 +464,7 @@ const routes = {
       );
     }
     if (canSeat(ctx, id) && !ctx.queue.length) {
-      const child = await launch(ctx, id);
+      const child = await launch(ctx, id, state);
       return { pid: child.pid, pending };
     }
     // No seat, or a line already ahead: take a place rather than refuse, so
@@ -515,22 +541,41 @@ const routes = {
     const sha = (await git(root, ['rev-parse', 'HEAD'])).trim();
     writeFrontmatter(path, { status: 'applied', applied_sha: sha });
 
-    // One scope is one fix, so the commit that lands it closes the siblings.
-    // This is what the 27 orphans were: the drain marked only the suggestion
-    // named in its trailer, and everything else sharing the scope rotted as
-    // open work. Mechanical now, with the sha recorded so the trail survives.
-    const { data: appliedData } = parseFrontmatter(readFileSync(path, 'utf8'));
+    // The commit that lands a fix closes the cards that were riding on it —
+    // the members a triage pass parked on this one (`blocked_on` naming it),
+    // which is how Step 4 says a scope's members reference their lead. This is
+    // what the 27 orphans were: the drain marked only the suggestion named in
+    // its trailer, and everything else rotted as open work. It used to close
+    // every card sharing the *scope*, and the first real landing superseded an
+    // unrelated finding that merely lived in the same file: a scope is one
+    // place, not always one fix. Mechanical, with the sha recorded so the
+    // trail survives.
+    const state = buildState(ctx.config);
     let closed = 0;
-    if (appliedData.scope) {
-      for (const s of buildState(ctx.config).suggestions) {
-        if (s.id === id || s.scope !== appliedData.scope) continue;
-        if (!canTransition(s.status, 'superseded')) continue;
-        writeFrontmatter(suggestionFile(ctx.config, s.id).path, {
-          status: 'superseded',
-          superseded_by: sha,
-        });
-        closed++;
-      }
+    for (const s of state.suggestions) {
+      if (s.id === id || s.blockedBy !== id) continue;
+      if (!canTransition(s.status, 'superseded')) continue;
+      writeFrontmatter(suggestionFile(ctx.config, s.id).path, {
+        status: 'superseded',
+        superseded_by: sha,
+      });
+      closed++;
+    }
+    // A landed change is the runners' work again — opencode reviews it, claude
+    // verifies — so the landing puts the card in line itself. The first real
+    // drain stalled here: the chain hands runs to each other, but nothing
+    // handed the server's own act on to a run.
+    const landed = state.suggestions.find((s) => s.id === id);
+    if (
+      landed &&
+      pendingPass(landed) &&
+      !ctx.queue.includes(id) &&
+      !live(ctx).some((r) => r.triageId === id)
+    ) {
+      ctx.queue.push(id);
+      persistDispatch(ctx);
+      ctx.events.broadcast('dispatch', { queued: ctx.queue.length });
+      drain(ctx);
     }
     return { id, sha, closed };
   },
@@ -551,12 +596,14 @@ const routes = {
 /* ------------------------------------------------------------ dispatch ---- */
 
 /**
- * The gate: what a pass could move if it ran now. With an id the pass is fenced
- * to one suggestion — the skill accepts it as an argument. Without one it takes
- * the backlog. Either way the gate is `pendingPass`, not the untriaged count:
- * the pass also plans the triaged and re-plans the failed, and gating on triage
- * alone refused exactly those — while a parked card looks pending by status and
- * has nothing for a run to do.
+ * The gate: what a run could move if it started now. With an id the run is
+ * fenced to one suggestion — the skill accepts it as an argument. Without one
+ * it takes the backlog. Either way the gate is `pendingPass`, not the untriaged
+ * count: a run also plans the triaged, re-plans the failed, reviews the applied
+ * and checks the flagged, and gating on triage alone refused exactly those —
+ * while a parked card looks pending by status and has nothing for a run to do.
+ *
+ * Returns the state it read, so the launch that follows does not scan again.
  */
 function passPending(ctx, id) {
   const state = buildState(ctx.config);
@@ -570,11 +617,37 @@ function passPending(ctx, id) {
       const why = s.blockedOn ? `is parked: ${s.blockedOn}` : `is "${s.status}" — nothing for a pass to do`;
       throw new HttpError(422, `${id.split('/').at(-1)} ${why}`);
     }
-    return 1;
+    return { pending: 1, state };
   }
   const pending = state.suggestions.filter((s) => pendingPass(s)).length;
   if (!pending) throw new HttpError(422, 'nothing for a pass to do — all work is decided or yours');
-  return pending;
+  return { pending, state };
+}
+
+/** The cards a run keyed on `id` could touch right now, each with whose move it is. */
+function pendingCards(state, id) {
+  return state.suggestions.filter((s) => (id === null || s.id === id) && pendingPass(s));
+}
+
+/**
+ * The same, as `card → runner` pairs. A card that changes hands is a new pair,
+ * and a new pair is the only thing that earns another run — see `chain`.
+ */
+function pendingPairs(state, id) {
+  return new Set(pendingCards(state, id).map((s) => `${s.id} → ${runnerOf(s)}`));
+}
+
+/**
+ * Who a run keyed on `id` is for. A fenced run is whoever its card names. The
+ * backlog goes to a reviewer first while any card is waiting on one — a check
+ * finishes work already done and drains toward you — and otherwise to whoever
+ * the first pending card needs. Empty when nothing pends, which `passPending`
+ * has already refused.
+ */
+function runnerFor(state, id) {
+  const pending = pendingCards(state, id);
+  const first = pending.find((s) => s.needsReview) ?? pending[0];
+  return first ? runnerOf(first) : '';
 }
 
 /** The runs still going. */
@@ -595,20 +668,29 @@ function canSeat(ctx, id) {
 }
 
 /** Take a seat with one run, and hand it on when the run ends. */
-async function launch(ctx, id) {
-  const child = ctx.spawnClaude(id);
+async function launch(ctx, id, state = buildState(ctx.config)) {
+  const runner = runnerFor(state, id);
+  let child;
+  try {
+    child = ctx.spawn(runner, id);
+  } catch (e) {
+    throw new HttpError(500, `could not start ${runner || 'a run'} — ${e.message}`);
+  }
   await new Promise((launched, failed) => {
     child.once('spawn', launched);
-    child.once('error', (e) => failed(new HttpError(500, `could not start claude — ${e.message}`)));
+    child.once('error', (e) => failed(new HttpError(500, `could not start ${runner} — ${e.message}`)));
   });
   // `done` rather than `exitCode`: a signal death leaves exitCode null, which
   // reads as still-running and would wedge the seat forever. The broadcast is
   // what tells the TUI the run ended even when it wrote no files.
   child.once('exit', (code, signal) => seatFreed(ctx, child, { code, signal }));
-  // What the run is on and since when, so the agents tab can say more than
-  // "a pid exists". Recorded here, not in the spawner — tests stub that.
+  // What the run is on, who has it and since when, so the agents tab can say
+  // more than "a pid exists". Recorded here, not in the spawner — tests stub
+  // that. `seen` is what the run found waiting; the chain compares against it.
   child.startedAt = Date.now();
   child.triageId = id;
+  child.runner = runner;
+  child.seen = pendingPairs(state, id);
   remember(ctx, child);
   persistDispatch(ctx);
   ctx.events.broadcast('dispatch', { pid: child.pid, running: true });
@@ -632,7 +714,29 @@ function seatFreed(ctx, run, done) {
   run.done = done;
   persistDispatch(ctx);
   ctx.events.broadcast('dispatch', { pid: run.pid, ...done });
+  chain(ctx, run);
   drain(ctx);
+}
+
+/**
+ * The hand-off between runners, so one key press is the whole unattended
+ * stretch: opencode plans and flags, claude checks, and neither has to be sent
+ * by hand. A run that ended well and left work that was not there when it
+ * started — a card now wanting a different runner — puts its own key back in
+ * line, where it is re-gated like any other entry.
+ *
+ * Everything else ends here: a crash, a run that moved nothing, a card that
+ * is now yours. Each hop has to produce something new, which is what stops
+ * two runners bouncing one card between them forever.
+ */
+function chain(ctx, run) {
+  if (run.done?.code !== 0 || !run.seen) return;
+  const now = pendingPairs(buildState(ctx.config), run.triageId);
+  const fresh = [...now].some((pair) => !run.seen.has(pair));
+  if (!fresh || ctx.queue.includes(run.triageId)) return;
+  ctx.queue.push(run.triageId);
+  persistDispatch(ctx);
+  ctx.events.broadcast('dispatch', { queued: ctx.queue.length });
 }
 
 /**
@@ -646,7 +750,7 @@ function dispatchPath() {
 
 function persistDispatch(ctx) {
   const record = {
-    runs: live(ctx).map((r) => ({ pid: r.pid, id: r.triageId, startedAt: r.startedAt })),
+    runs: live(ctx).map((r) => ({ pid: r.pid, id: r.triageId, runner: r.runner, startedAt: r.startedAt })),
     queue: ctx.queue,
   };
   try {
@@ -682,7 +786,14 @@ function restoreDispatch(ctx) {
   };
   for (const r of Array.isArray(saved.runs) ? saved.runs : []) {
     if (!r.pid || !alive(r.pid)) continue;
-    const adopted = { pid: r.pid, triageId: r.id ?? null, startedAt: r.startedAt, done: undefined };
+    // No `seen`: an adopted run's exit code is unknowable, so it never chains.
+    const adopted = {
+      pid: r.pid,
+      triageId: r.id ?? null,
+      runner: r.runner ?? '',
+      startedAt: r.startedAt,
+      done: undefined,
+    };
     remember(ctx, adopted);
     const poll = setInterval(() => {
       if (alive(r.pid)) return;
@@ -703,12 +814,15 @@ function restoreDispatch(ctx) {
 function maybeAutoDispatch(ctx) {
   if (!ctx.config.dispatch?.auto) return;
   if (!canSeat(ctx, null) || ctx.queue.length) return;
-  const waiting = buildState(ctx.config).suggestions.filter((s) => pendingPass(s));
-  const newcomers = waiting.filter((s) => !ctx.autoSeen.has(s.id));
-  ctx.autoSeen = new Set(waiting.map((s) => s.id));
+  const state = buildState(ctx.config);
+  // Pairs, not ids: a card that changed hands — opencode flagged it for claude
+  // — is new work, even though the card itself was seen before.
+  const waiting = pendingPairs(state, null);
+  const newcomers = [...waiting].filter((pair) => !ctx.autoSeen.has(pair));
+  ctx.autoSeen = waiting;
   if (!newcomers.length) return;
-  launch(ctx, null).catch(() => {
-    // claude would not start; the next change tries again.
+  launch(ctx, null, state).catch(() => {
+    // The runner would not start; the next change tries again.
   });
 }
 
@@ -725,50 +839,94 @@ async function drain(ctx) {
     const id = ctx.queue.shift();
     persistDispatch(ctx);
     try {
-      passPending(ctx, id);
-      await launch(ctx, id);
+      const { state } = passPending(ctx, id);
+      await launch(ctx, id, state);
     } catch {
-      // Nothing to do, or claude would not start: the next in line gets a turn.
-      // Nobody is on the wire to tell; the log line the spawner writes is the
-      // record of what did run.
+      // Nothing to do, or the runner would not start: the next in line gets a
+      // turn. Nobody is on the wire to tell; the log line the spawner writes
+      // is the record of what did run.
     }
   }
   // The line is empty: if arrivals came in during the runs, auto takes them.
   if (!ctx.queue.length) maybeAutoDispatch(ctx);
 }
 
+/** The plugin root: where the skill the runners follow lives. */
+const ROOT = resolve(here, '..', '..');
+
 /**
- * One detached `claude` run working the whole backlog through the kaizen
- * skill. Detached and logged to a file rather than held: triage can outlive a
- * server restart, and the log is where a run that never wrote anything
- * explains itself. `bypassPermissions` because the run is headless — triage
- * labels files and changes no code, but it still reads repos and shells out,
- * and a permission prompt nobody can see is a hang.
+ * What each runner the spec names is started with. The id rides along as the
+ * fence — the skill accepts it as an argument — and no id means the backlog.
+ *
+ * claude has the skill as a slash command and is sent in its `review` mode:
+ * the checker, never the doer. opencode has no plugin root and no commands, so
+ * it is told the path the skill's commands expand and which mode of the skill
+ * is its own. `bypassPermissions` for claude and opencode's own config for
+ * opencode, because both are headless — a permission prompt nobody can see is
+ * a hang. Claude's model is a config value; opencode's model is the ChatGPT
+ * subscription's, and which one is config too.
  */
-// ponytail: model pinned and one agent per run — make the model config, or fan
-// out per suggestion, when one context stops covering the backlog.
-function spawnTriage(id) {
-  const log = join(dirname(configPath()), 'dispatch.log');
-  const out = openSync(log, 'a');
-  // The id rides as the skill's argument, which fences the pass to that one
-  // suggestion; no id means the whole backlog.
-  const child = spawn(
+const RUNNERS = {
+  claude: (id, model) => [
     'claude',
     [
       '-p',
-      id ? `/kaizen:triage ${id}` : '/kaizen:triage',
+      id ? `/kaizen:triage review ${id}` : '/kaizen:triage review',
       '--model',
-      'claude-fable-5',
+      model,
       '--permission-mode',
       'bypassPermissions',
     ],
-    { cwd: homedir(), detached: true, stdio: ['ignore', out, out] },
-  );
+  ],
+  opencode: (id, model) => [
+    'opencode',
+    [
+      'run',
+      '--dir',
+      homedir(),
+      '-m',
+      model,
+      `You are opencode, running kaizen's unattended pass: the runner, never the reviewer. ` +
+        `CLAUDE_PLUGIN_ROOT is already set in your environment (${ROOT}), so the skill's ` +
+        `commands resolve as written. Read ${ROOT}/skills/kaizen/SKILL.md and follow its Runner mode for ` +
+        `${id ? `the suggestion ${id}` : 'the whole backlog'}. Never push. ` +
+        `When you are done, print KAIZEN_DONE on its own line.`,
+    ],
+  ],
+};
+
+/**
+ * One detached run. Detached and logged to a file rather than held: a run can
+ * outlive a server restart, and the log is where a run that never wrote
+ * anything explains itself.
+ */
+function spawnRun(runner, id, config) {
+  const make = RUNNERS[runner];
+  if (!make) throw new Error(`the spec names "${runner}" and this server cannot start it`);
+  // The config's word, else the default's: `withDefaults` merges one level
+  // deep, so a config that pins only one runner's model has dropped the other.
+  const model = config.dispatch?.models?.[runner] ?? defaultConfig().dispatch.models[runner] ?? '';
+  const [cmd, argv] = make(id, model);
+  const log = join(dirname(configPath()), 'dispatch.log');
+  const out = openSync(log, 'a');
+  // The plugin root rides in the environment, not in the prompt: the skill's
+  // commands are written against `${CLAUDE_PLUGIN_ROOT}`, and a runner whose
+  // every shell call is a fresh process cannot `export` it once — the first
+  // real run lost a round-trip to `Cannot find module '/scripts/cli.mjs'`.
+  const child = spawn(cmd, argv, {
+    cwd: homedir(),
+    detached: true,
+    stdio: ['ignore', out, out],
+    env: { ...process.env, CLAUDE_PLUGIN_ROOT: ROOT },
+  });
   child.unref();
   // The runs share one append-only file; this line is the only boundary
   // between them. Written on the child's own fd before it can produce output,
   // so it always precedes the run it labels.
-  writeSync(out, `--- ${new Date().toISOString()} pid ${child.pid ?? '?'} ${id ?? 'backlog'} ---\n`);
+  writeSync(
+    out,
+    `--- ${new Date().toISOString()} pid ${child.pid ?? '?'} ${runner} ${id ?? 'backlog'} ---\n`,
+  );
   closeSync(out);
   return child;
 }
@@ -786,7 +944,15 @@ export function createApp(config, deps = {}) {
     queue: [],
     autoSeen: new Set(),
   };
-  ctx.spawnClaude = deps.spawnClaude ?? spawnTriage;
+  // `(runner, id) → child`. Tests hand in one that only looks like a process —
+  // and a test that forgets must not reach the real one: the day the injection
+  // key was renamed, vitest started opencode against a fixture, headless and
+  // with every permission granted. Under vitest there is no real spawner.
+  const real = (runner, id) => spawnRun(runner, id, ctx.config);
+  const refuse = () => {
+    throw new Error('no spawner injected — a test must hand createApp a fake one');
+  };
+  ctx.spawn = deps.spawn ?? (process.env.VITEST ? refuse : real);
   ctx.events = createEventStream(ctx);
   ctx.onChange = () => maybeAutoDispatch(ctx);
   restoreDispatch(ctx);

@@ -19,6 +19,11 @@ import {
   LIFECYCLE_PATH,
   section,
   missingRequirements,
+  nextPhase,
+  runnerOf,
+  awaitsPass,
+  pendingPass,
+  awaitingDecision,
 } from '../src/lifecycle.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
@@ -31,12 +36,22 @@ const ok = () => ({
       id: 'one',
       title: 'One',
       actor: 'a',
+      runner: 'a',
       produces: 'start',
       attended: false,
       summary: 's',
       requires: ['f'],
     },
-    { id: 'two', title: 'Two', actor: 'b', produces: 'done', attended: true, summary: 's', requires: [] },
+    {
+      id: 'two',
+      title: 'Two',
+      actor: 'b',
+      runner: 'you',
+      produces: 'done',
+      attended: true,
+      summary: 's',
+      requires: [],
+    },
   ],
   statuses: [
     {
@@ -80,6 +95,52 @@ describe('the shipped spec', () => {
       .statuses.filter((s) => s.next.includes('approved'))
       .map((s) => s.id);
     expect(into).toEqual(['planned']);
+  });
+
+  /**
+   * A status can go back now — a check that fails sends the card to the pile
+   * it came from — and the phase a status *moves into* has to stay the forward
+   * one. Capture produces `recorded` and sits first in the file, so "first
+   * phase whose product is reachable" would send every triaged card there.
+   */
+  it('reads the next phase in next order, so a back-edge never becomes the way forward', () => {
+    expect(nextPhase('recorded').id).toBe('triage');
+    expect(nextPhase('triaged').id).toBe('plan');
+    expect(nextPhase('planned').id).toBe('decide');
+    expect(nextPhase('applied').id).toBe('review');
+    expect(nextPhase('reviewed').id).toBe('verify');
+    expect(nextPhase('failed').id).toBe('plan');
+    expect(nextPhase('verified')).toBeNull();
+  });
+
+  /**
+   * Whose move it is falls out of the spec, and a card wearing `needs_review`
+   * is the reviewer's whatever its status says — that is the whole difference
+   * between a plan you can approve and one nobody has checked yet.
+   */
+  it('names the runner from the phase, or the reviewer from the flag', () => {
+    const card = (status, needsReview = '', blockedOn = '') => ({ status, needsReview, blockedOn });
+    expect(runnerOf(card('recorded'))).toBe('opencode');
+    expect(runnerOf(card('triaged'))).toBe('opencode');
+    expect(runnerOf(card('planned'))).toBe('you');
+    expect(runnerOf(card('approved'))).toBe('server');
+    expect(runnerOf(card('applied'))).toBe('opencode');
+    expect(runnerOf(card('reviewed'))).toBe('claude');
+    expect(runnerOf(card('planned', 'claude'))).toBe('claude');
+    expect(runnerOf(card('verified'))).toBe('');
+
+    // The dispatch gate: a model's move, and not parked.
+    for (const s of ['recorded', 'triaged', 'failed', 'applied', 'reviewed']) {
+      expect(awaitsPass(s), s).toBe(true);
+      expect(pendingPass(card(s)), s).toBe(true);
+    }
+    for (const s of ['planned', 'approved', 'verified', 'rejected']) expect(awaitsPass(s), s).toBe(false);
+    expect(pendingPass(card('planned', 'claude'))).toBe(true);
+    expect(pendingPass(card('triaged', '', 'waiting on a call'))).toBe(false);
+    expect(pendingPass(card('planned', 'claude', 'waiting on a call'))).toBe(false);
+    // The pile at the door of the decision is still one status; what the
+    // callers subtract from it is the flag.
+    expect(awaitingDecision()).toEqual(['planned']);
   });
 
   it('can reach a terminal state from every live one', () => {
@@ -152,6 +213,14 @@ describe('validateLifecycle', () => {
         l.statuses[0].terminal = true;
       }),
     ).toContainEqual(expect.stringContaining('unreachable'));
+  });
+
+  it('rejects a phase with no runner, and a reviewer that is not a name', () => {
+    expect(errorsFor((l) => delete l.phases[0].runner)).toContain('phase "one": needs a runner');
+    expect(errorsFor((l) => (l.phases[0].reviewer = ''))).toContain(
+      'phase "one": reviewer must be a name, or absent',
+    );
+    expect(errorsFor((l) => (l.phases[0].reviewer = 'b'))).toEqual([]);
   });
 
   it('rejects a phase producing a status nobody defined', () => {
@@ -290,6 +359,15 @@ describe('the generated artifacts', () => {
 
   it('state the approval invariant as derived, not asserted', () => {
     expect(renderMarkdown(spec())).toContain('`approved` is reachable only from `planned`');
+  });
+
+  it('explain the check flag from the phases that name a reviewer', () => {
+    const md = renderMarkdown(spec());
+    expect(md).toContain('| Checked by |');
+    expect(md).toContain('`needs_review: claude`');
+    // Derived: a spec with no reviewers says nothing about a flag nobody sets.
+    const unchecked = { ...spec(), phases: spec().phases.map(({ reviewer: _r, ...p }) => p) };
+    expect(renderMarkdown(unchecked)).not.toContain('is provisional');
   });
 
   it.each([['docs/LIFECYCLE.md', renderMarkdown, 'markdown']])(

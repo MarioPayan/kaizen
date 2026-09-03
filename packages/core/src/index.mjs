@@ -46,6 +46,8 @@ export {
   awaitingDecision,
   awaitsPass,
   pendingPass,
+  nextPhase,
+  runnerOf,
   entryStatus,
   section,
   requirementsFor,

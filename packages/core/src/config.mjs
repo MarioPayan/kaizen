@@ -44,11 +44,17 @@ export function defaultConfig() {
     // disk and stays one click away.
     surface: defaultSurface(),
     applyGuards: { requireCleanTree: true, requireDiffApplies: true },
-    // `auto` sends fable at new arrivals on its own, so the board you open is
+    // `auto` sends a run at new arrivals on its own, so the board you open is
     // already at the decision — off by default, every run is a model call.
     // `maxAgents` is how many fenced runs may go at once; the rest wait in
-    // line. A backlog run always runs alone.
-    dispatch: { auto: false, maxAgents: 1 },
+    // line. A backlog run always runs alone. `models` is what each runner the
+    // spec names is started with: opencode does the work on the ChatGPT
+    // subscription, claude checks it.
+    dispatch: {
+      auto: false,
+      maxAgents: 1,
+      models: { opencode: 'openai/gpt-5.6-sol', claude: 'claude-fable-5' },
+    },
     server: { host: '127.0.0.1', port: 7777 },
   };
 }
@@ -127,6 +133,19 @@ export function validateConfig(cfg) {
     if (typeof cfg.dispatch.auto !== 'boolean') errs.push('dispatch.auto must be true or false');
     const n = cfg.dispatch.maxAgents;
     if (!Number.isInteger(n) || n < 1 || n > 8) errs.push('dispatch.maxAgents must be 1-8');
+    // A model named is a model spelled out; one left out falls back to the
+    // default at spawn time, so a config that pins only opencode's is fine.
+    const models = cfg.dispatch.models;
+    if (models !== undefined) {
+      if (!models || typeof models !== 'object' || Array.isArray(models)) {
+        errs.push('dispatch.models must be an object');
+      } else {
+        for (const [runner, model] of Object.entries(models)) {
+          if (typeof model !== 'string' || !model.trim())
+            errs.push(`dispatch.models.${runner} must name a model`);
+        }
+      }
+    }
   }
 
   if (cfg.server) {

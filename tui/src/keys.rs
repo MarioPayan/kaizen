@@ -46,7 +46,7 @@ pub enum Action {
     Help,
     Guide,
     /// Board: move the selected card one lane on, by whatever that lane waits
-    /// for — a fable pass, your yes, or the server landing the patch.
+    /// for — a run, your yes, or the server landing the patch.
     Advance,
     /// Board: the same, for every card the selected lane's move can take.
     AdvanceAll,
@@ -136,7 +136,7 @@ pub const BINDINGS: &[Binding] = &[
         action: Action::Lane(1),
     },
     // One verb per direction, the same in every lane: `a` moves the card on,
-    // `x` takes it out. What "on" costs — fable, you, or git — is the lane's
+    // `x` takes it out. What "on" costs — a run, you, or git — is the lane's
     // business, and its subtitle says which. The shifted key widens the same
     // verb to the lane; one footer entry carries both spellings, and the
     // shifted binding rides under it as a blank-hint alternate.

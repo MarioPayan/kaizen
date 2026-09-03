@@ -51,6 +51,10 @@ pub struct Suggestion {
     /// parks out of the way and one that stands in its lane with the flag up.
     #[serde(rename = "blockedBy")]
     pub blocked_by: String,
+    /// Who has to check the status before the card is where it says — the
+    /// runner's flag, cleared by the reviewer. Empty once settled.
+    #[serde(rename = "needsReview")]
+    pub needs_review: String,
     #[serde(rename = "appliedSha")]
     pub applied_sha: String,
     /// When the problem was last confirmed to still exist, and at which commit.
@@ -62,6 +66,10 @@ pub struct Suggestion {
     pub context: String,
     pub suggestion: String,
     pub rationale: String,
+    /// What opencode found on the landed change, and what claude decided on
+    /// each check — the reason behind a block, readable without the file.
+    pub review: String,
+    pub verdict: String,
     pub missing: Vec<String>,
     pub triaged: bool,
     pub surfaced: bool,
@@ -99,13 +107,16 @@ pub struct Skill {
     pub worktrees: u64,
 }
 
-/// One fable run, as the server reports it — still going, or how it ended.
+/// One run, as the server reports it — still going, or how it ended.
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct Run {
     pub pid: u64,
     /// The suggestion the run is fenced to; `None` means the whole backlog.
     pub id: Option<String>,
+    /// Who has the seat — `opencode` or `claude`. Empty for a run adopted
+    /// across a restart from a record that predates the field.
+    pub runner: String,
     pub running: bool,
     #[serde(rename = "exitCode")]
     pub exit_code: Option<i64>,

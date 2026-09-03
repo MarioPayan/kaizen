@@ -1,11 +1,12 @@
 {
-  "$comment": "The suggestion lifecycle, once. Every consumer reads THIS file: packages/data generates a typed module from it, docs/LIFECYCLE.md is generated from it, and tui/src/tui.rs embeds it at compile time. Nothing is published yet, so there is no legacy vocabulary to carry — a status is written exactly as its id. Do not restate any of this in prose anywhere — a sixth copy is how the previous five got out of sync. Regenerate with `kaizen docs`; `kaizen docs --check` fails when a generated artifact has drifted.",
+  "$comment": "The suggestion lifecycle, once. Every consumer reads THIS file: docs/LIFECYCLE.md is generated from it, and tui/src/tui.rs embeds it at compile time. Nothing is published yet, so there is no legacy vocabulary to carry — a status is written exactly as its id. Do not restate any of this in prose anywhere — a sixth copy is how the previous five got out of sync. Regenerate with `kaizen docs`; `kaizen docs --check` fails when a generated artifact has drifted. Each phase names its `runner` — who does the work — and, where the runner is a model whose output is provisional, its `reviewer`: the runner writes `needs_review: <reviewer>` beside every status it sets, and the reviewer clears it, or sends the card back a status and parks it on you.",
   "version": 1,
   "phases": [
     {
       "id": "capture",
       "title": "Capture",
       "actor": "the skill that hit the problem",
+      "runner": "skill",
       "produces": "recorded",
       "attended": false,
       "summary": "A skill finishes a run, notices something that cost it, and files it. Write down everything the next reader will need, because they were not there. Capture is cheap and never blocks the run that files it.",
@@ -14,7 +15,9 @@
     {
       "id": "triage",
       "title": "Triage",
-      "actor": "kaizen, unattended",
+      "actor": "opencode, unattended",
+      "runner": "opencode",
+      "reviewer": "claude",
       "produces": "triaged",
       "attended": false,
       "summary": "Decide whether the problem is real, still present, and correctly described — then label it. Re-read the scope file at HEAD before anything else: months pass between capture and triage, and a suggestion whose fix already landed is superseded, not work. Labelling changes no code, so it needs no approval.",
@@ -23,7 +26,9 @@
     {
       "id": "plan",
       "title": "Plan",
-      "actor": "kaizen, unattended",
+      "actor": "opencode, unattended",
+      "runner": "opencode",
+      "reviewer": "claude",
       "produces": "planned",
       "attended": false,
       "summary": "Turn a validated problem into something that can be approved: the change itself as a real patch, and the validation plan that will prove it worked. A plan without a validation plan is a guess with a diff attached.",
@@ -33,6 +38,7 @@
       "id": "decide",
       "title": "Decide",
       "actor": "you",
+      "runner": "you",
       "produces": "approved",
       "attended": true,
       "summary": "The only attended phase. You are shown the change and the validation plan together and say yes or no. Nothing reaches this phase without both, which is the point: approving an idea nobody has written is how a queue fills with decisions that cannot be drained.",
@@ -42,18 +48,31 @@
       "id": "apply",
       "title": "Apply",
       "actor": "the server",
+      "runner": "server",
       "produces": "applied",
       "attended": false,
       "summary": "Land the patch as one commit per suggestion, into a clean tree, on a writable target. The commit carries a Kaizen-Suggestion trailer, so `git log --grep=Kaizen-Suggestion` is the ledger for free and `git revert <sha>` is the undo.",
       "requires": ["applied_sha"]
     },
     {
+      "id": "review",
+      "title": "Review",
+      "actor": "opencode, unattended",
+      "runner": "opencode",
+      "reviewer": "claude",
+      "produces": "reviewed",
+      "attended": false,
+      "summary": "Read the commit that landed against the plan that promised it, run the validation plan, and write down what was found — the second pair of eyes before the one that decides. A review that is a sentence of approval is not one; say what was checked and what it returned.",
+      "requires": ["review"]
+    },
+    {
       "id": "verify",
       "title": "Verify",
-      "actor": "kaizen, unattended",
+      "actor": "claude, unattended",
+      "runner": "claude",
       "produces": "verified",
       "attended": false,
-      "summary": "Run the validation plan written during planning against the change that actually landed. This is the phase that makes the loop closed rather than open: without it, applied means nothing more than the diff did not conflict.",
+      "summary": "Claude reads what opencode found, runs the validation plan written during planning against the change that actually landed, and says whether the loop closed. This is the phase that makes it closed rather than open: without it, applied means nothing more than the diff did not conflict.",
       "requires": ["verified_at"]
     }
   ],
@@ -66,7 +85,7 @@
       "phase": "capture",
       "tone": "accent",
       "terminal": false,
-      "help": "Filed with its context and waiting for triage. Nobody has judged it yet.",
+      "help": "Filed with its context and waiting for triage. Nobody has judged it yet — or a check sent it back to be judged again.",
       "next": ["triaged", "rejected", "superseded"]
     },
     {
@@ -77,8 +96,8 @@
       "phase": "triage",
       "tone": "accent",
       "terminal": false,
-      "help": "Confirmed to still be a real problem at HEAD, and labelled. Ready for someone to plan a fix.",
-      "next": ["planned", "rejected", "superseded"]
+      "help": "Confirmed to still be a real problem at HEAD, and labelled. Ready for a plan — or, sent back here by a check that found the plan wanting.",
+      "next": ["planned", "recorded", "rejected", "superseded"]
     },
     {
       "id": "planned",
@@ -88,8 +107,8 @@
       "phase": "plan",
       "tone": "warning",
       "terminal": false,
-      "help": "A patch and a validation plan both exist. This is the only status that can be approved.",
-      "next": ["approved", "rejected", "superseded"]
+      "help": "A patch and a validation plan both exist. This is the only status that can be approved — once claude has checked it: a card still wearing needs_review is not yours yet.",
+      "next": ["approved", "triaged", "rejected", "superseded"]
     },
     {
       "id": "approved",
@@ -111,7 +130,18 @@
       "tone": "muted",
       "terminal": false,
       "help": "Landed as a commit. The server sets this after git succeeded — it cannot be set by hand.",
-      "next": ["verified", "failed"]
+      "next": ["reviewed", "failed"]
+    },
+    {
+      "id": "reviewed",
+      "label": "Reviewed",
+      "abbrev": "rvw",
+      "icon": "",
+      "phase": "review",
+      "tone": "muted",
+      "terminal": false,
+      "help": "opencode has read the landed change and written what it found. Claude runs the validation plan next and decides whether the loop closed.",
+      "next": ["verified", "failed", "applied"]
     },
     {
       "id": "verified",
@@ -257,10 +287,24 @@
       "help": "The commit. Set by the server, never by hand."
     },
     {
+      "id": "review",
+      "phase": "review",
+      "where": "body",
+      "heading": "Review",
+      "help": "What opencode found on the landed change: the commit read against the plan, the validation command run and what it returned, and anything it would not have shipped."
+    },
+    {
       "id": "verified_at",
       "phase": "verify",
       "where": "frontmatter",
       "help": "When the validation plan was run against the landed change, and what it returned."
+    },
+    {
+      "id": "verdict",
+      "phase": "verify",
+      "where": "body",
+      "heading": "Verdict",
+      "help": "Claude's call on the runner's work — pass or reject, and why. Written on every check, and the brief opencode reads when a rejected card comes back around."
     }
   ],
   "rungs": [
@@ -291,25 +335,25 @@
   ],
   "statusLine": {
     "mark": "改",
-    "help": "The one line the SessionStart hook prints, and the segment `kaizen status --bar` draws for a status line. Both count the same piles, and both count only open work \u2014 a closed suggestion is history, and history that greets you every session is noise. The mark alone, dimmed, means the backlog is clear.",
+    "help": "The one line the SessionStart hook prints, and the segment `kaizen status --bar` draws for a status line. Both count the same piles, and both count only open work — a closed suggestion is history, and history that greets you every session is noise. The mark alone, dimmed, means the backlog is clear.",
     "piles": [
       {
         "id": "triage",
         "glyph": "○",
         "label": "to triage",
-        "help": "Filed and unjudged \u2014 the pile a triage pass consumes. Nothing here is waiting on you."
+        "help": "Filed and unjudged — the pile a triage pass consumes. Nothing here is waiting on you."
       },
       {
         "id": "decide",
         "glyph": "●",
         "label": "awaiting you",
-        "help": "The only amber pile, because it is the only one that ever needs you: a patch waiting on your yes, plus any card parked on a call only you can make."
+        "help": "The only amber pile, because it is the only one that ever needs you: a checked patch waiting on your yes, plus any card parked on a call only you can make."
       },
       {
         "id": "landed",
         "glyph": "◐",
         "label": "landed, unverified",
-        "help": "Half-done: the commit is in and its validation plan has not run yet. The verify phase drains this one, not you."
+        "help": "Half-done: the commit is in and its validation plan has not run yet. The review and verify phases drain this one, not you."
       },
       {
         "id": "hottest",

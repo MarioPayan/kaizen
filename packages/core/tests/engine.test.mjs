@@ -124,6 +124,12 @@ describe('scoring', () => {
     expect(suggestion({ slug: 'free-thing' }).blockedOn).toBe('');
   });
 
+  it('carries needs_review through as data — who has to check the status before it counts', () => {
+    const flagged = suggestion({ slug: 'flagged-thing', needs_review: 'claude' });
+    expect(flagged.needsReview).toBe('claude');
+    expect(suggestion({ slug: 'settled-thing' }).needsReview).toBe('');
+  });
+
   it('carries confirmed_at through as data, so a pass can judge the stamp without opening the file', () => {
     const stamped = suggestion({ slug: 'checked-thing', confirmed_at: '2026-08-17 @ abc1234' });
     expect(stamped.confirmedAt).toBe('2026-08-17 @ abc1234');

@@ -30,7 +30,7 @@ const run = (stamps) => {
 const FILE = () => join(root, 'feedback', 'demo', '2026-01-01-walkable.md');
 const SHA = 'a'.repeat(40);
 
-const suggestion = (status, { plan = true } = {}) =>
+const suggestion = (status, { plan = true, review = true } = {}) =>
   [
     '---',
     'skill: demo',
@@ -61,6 +61,9 @@ const suggestion = (status, { plan = true } = {}) =>
     '',
     'file:1',
     ...(plan ? ['', '## Plan', '', 'The edit.', '', '## Validation', '', 'grep returns 1.'] : []),
+    // The walk passes through `reviewed`, whose phase insists on a write-up:
+    // a hand drain owes the same review an unattended one would have made.
+    ...(review ? ['', '## Review', '', 'Read the commit; grep returned 1.'] : []),
     '',
   ].join('\n');
 
@@ -95,6 +98,15 @@ describe('kaizen drain', () => {
     );
     // All-or-nothing: the refusal left the file untouched.
     expect(readFileSync(FILE(), 'utf8')).toContain('status: triaged');
+
+    // `reviewed` sits on the way to `verified` now, and its phase wants the
+    // review written down — a drain that skipped it would claim a second pair
+    // of eyes that never looked.
+    writeFileSync(FILE(), suggestion('planned', { review: false }));
+    writeFileSync(FILE().replace(/\.md$/, '.patch'), 'diff --git a/x b/x\n');
+    expect(() => run([{ id: 'user/demo/2026-01-01-walkable.md', sha: SHA, verified_at: 'x' }])).toThrow(
+      /cannot pass "reviewed" — missing review/,
+    );
   });
 
   it('refuses a terminal start and a missing verified_at', () => {
