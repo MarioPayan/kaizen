@@ -135,4 +135,17 @@ describe('scoring', () => {
     expect(stamped.confirmedAt).toBe('2026-08-17 @ abc1234');
     expect(suggestion({ slug: 'unchecked-thing' }).confirmedAt).toBe('');
   });
+
+  it.each(['Why', 'What cost time'])('reads narrative capture headings, including %s', (rationale) => {
+    const s = parseSuggestion({
+      id: 'a/b/c.md',
+      file: 'c.md',
+      skill: 'b',
+      target: 'a',
+      text: `---\nseverity: low\n---\n## What ran\n\nran it\n\n## Proposal\n\nfix it\n\n## ${rationale}\n\nit stalled\n`,
+    });
+    expect(s.context).toBe('ran it');
+    expect(s.suggestion).toBe('fix it');
+    expect(s.rationale).toBe('it stalled');
+  });
 });

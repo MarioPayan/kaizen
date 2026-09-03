@@ -131,6 +131,14 @@ export function ageOf(date, today = localToday()) {
   return 'older';
 }
 
+function captureSection(body, ...headings) {
+  for (const heading of headings) {
+    const value = section(body, heading);
+    if (value) return value;
+  }
+  return '';
+}
+
 export function parseSuggestion({ id, file, skill, target, text }) {
   const { data, body } = parseFrontmatter(text);
   const fromName = splitFilename(file);
@@ -182,9 +190,9 @@ export function parseSuggestion({ id, file, skill, target, text }) {
     outcome: data.outcome || '',
     recurrences,
     incidents: 1 + recurrences,
-    context: section(body, 'Context'),
-    suggestion: section(body, 'Suggestion'),
-    rationale: section(body, 'Why it matters'),
+    context: captureSection(body, 'Context', 'What ran'),
+    suggestion: captureSection(body, 'Suggestion', 'Proposal'),
+    rationale: captureSection(body, 'Why it matters', 'Why', 'What cost time'),
     // What the two reviews wrote, so the detail window can show a rejected
     // card's reason without opening the file — the block line is one sentence.
     review: section(body, 'Review'),
