@@ -115,7 +115,7 @@ const repoCache = new Map();
 
 function repoIdentity(dir) {
   if (repoCache.has(dir)) return repoCache.get(dir);
-  let identity = { repo: dir, isWorktree: false };
+  let identity = { repo: dir, isWorktree: false, versioned: false };
   try {
     const common = execFileSync(
       'git',
@@ -126,7 +126,11 @@ function repoIdentity(dir) {
       },
     ).trim();
     if (common) {
-      identity = { repo: dirname(common), isWorktree: resolve(common) !== resolve(dir, '.git') };
+      identity = {
+        repo: dirname(common),
+        isWorktree: resolve(common) !== resolve(dir, '.git'),
+        versioned: true,
+      };
     }
   } catch {
     /* not a git repo — treat the directory as its own identity */
@@ -152,7 +156,7 @@ export function discoverProjectSkills({ roots = [], depth = 3 } = {}) {
     const candidate = join(dir, '.claude', 'skills');
     if (existsSync(candidate) && !seenDirs.has(candidate)) {
       seenDirs.add(candidate);
-      const { repo, isWorktree } = repoIdentity(dir);
+      const { repo, isWorktree, versioned } = repoIdentity(dir);
       if (isWorktree) worktreeCount.set(repo, (worktreeCount.get(repo) ?? 0) + 1);
 
       for (const skill of discoverSkills(candidate, { target: `project:${repo}`, kind: 'project' })) {
@@ -161,7 +165,7 @@ export function discoverProjectSkills({ roots = [], depth = 3 } = {}) {
         const key = `${repo}::${skill.name}`;
         if (seenSkills.has(key)) continue;
         seenSkills.add(key);
-        out.push({ ...skill, project: repo, foundIn: dir });
+        out.push({ ...skill, project: repo, foundIn: dir, versioned });
       }
     }
     for (const entry of safeReaddir(dir, { withFileTypes: true })) {
@@ -282,7 +286,13 @@ export function buildState(config) {
   }
 
   if (config.scan?.enabled) {
-    skills.push(...discoverProjectSkills({ roots: config.scan.roots, depth: config.scan.depth }));
+    const projectSkills = discoverProjectSkills({ roots: config.scan.roots, depth: config.scan.depth });
+    skills.push(...projectSkills);
+    for (const project of new Set(projectSkills.filter((s) => !s.versioned).map((s) => s.project))) {
+      warnings.push(
+        `project skills are not in a Git repository — confirmation and patch planning are unavailable: ${project}`,
+      );
+    }
   }
 
   // `surface` is a view preference, not a filter on what exists. Every suggestion

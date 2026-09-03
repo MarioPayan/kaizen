@@ -9,7 +9,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { discoverProjectSkills } from '../src/scan.mjs';
+import { buildState, discoverProjectSkills } from '../src/scan.mjs';
 
 let root;
 const git = (cwd, ...args) =>
@@ -80,6 +80,18 @@ describe('project skill discovery', () => {
     const gamma = found.find((s) => s.name === 'gamma');
     expect(gamma).toBeDefined();
     expect(gamma.worktrees).toBe(0);
+    expect(gamma.versioned).toBe(false);
+    expect(found.find((s) => s.name === 'beta').versioned).toBe(true);
+  });
+
+  it('warns once when an unversioned project prevents confirmation and patch planning', () => {
+    const state = buildState({
+      targets: [],
+      scan: { enabled: true, roots: [root], depth: 2 },
+    });
+    expect(state.warnings).toEqual([
+      `project skills are not in a Git repository — confirmation and patch planning are unavailable: ${join(root, 'plain-dir')}`,
+    ]);
   });
 
   it('respects the depth bound', () => {
