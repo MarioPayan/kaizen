@@ -205,6 +205,10 @@ that counts as passing:
 what would prove the fix worked, that is a sign the fix is not understood yet —
 leave it at `triaged` and say so.
 
+Before offering the plan, run `kaizen verify --dry <id>`. It applies the sidecar
+patch and runs the fenced `bash` block above in a throwaway worktree; a validation
+that has not passed this command is not ready for review.
+
 Both sections are written through the same call as the frontmatter, so a plan
 pass is one write like triage and verify: `kaizen triage --apply` with
 `[{ "id": …, "status": "planned", "plan": "…", "validation": "…" }]` upserts

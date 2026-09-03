@@ -1,0 +1,78 @@
+import { describe, it, expect, afterEach } from 'vitest';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const cli = resolve(fileURLToPath(import.meta.url), '..', '..', '..', '..', 'scripts', 'cli.mjs');
+const roots = [];
+
+const git = (cwd, ...args) =>
+  execFileSync('git', ['-C', cwd, ...args], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: 't',
+      GIT_AUTHOR_EMAIL: 't@t',
+      GIT_COMMITTER_NAME: 't',
+      GIT_COMMITTER_EMAIL: 't@t',
+    },
+  });
+
+function fixture(validation) {
+  const root = mkdtempSync(join(tmpdir(), 'kaizen-cli-verify-'));
+  roots.push(root);
+  const repo = join(root, 'repo');
+  const feedback = join(root, 'feedback');
+  mkdirSync(join(repo, 'skills', 'demo'), { recursive: true });
+  mkdirSync(join(feedback, 'demo'), { recursive: true });
+  writeFileSync(join(repo, 'skills', 'demo', 'SKILL.md'), '---\nname: demo\n---\n# demo\n');
+  git(repo, 'init', '-q', '-b', 'main');
+  git(repo, 'add', '-A');
+  git(repo, 'commit', '-q', '-m', 'init');
+
+  const file = join(feedback, 'demo', '2026-01-01-dry.md');
+  writeFileSync(
+    file,
+    `---\nskill: demo\ndate: 2026-01-01\nseverity: low\ntype: tooling\nobjective: guardrail\nscope: added.txt\nrung: 1\neffort: S\nstatus: planned\nconfirmed_at: 2026-01-01 @ abc1234\n---\n\n## Plan\n\nAdd the file.\n\n## Validation\n\n\`\`\`bash\n${validation}\n\`\`\`\n`,
+  );
+  writeFileSync(
+    file.replace(/\.md$/, '.patch'),
+    'diff --git a/added.txt b/added.txt\nnew file mode 100644\nindex 0000000..ce01362\n--- /dev/null\n+++ b/added.txt\n@@ -0,0 +1 @@\n+hello\n',
+  );
+  const config = join(root, 'config.json');
+  writeFileSync(
+    config,
+    JSON.stringify({ targets: [{ name: 'user', skills: join(repo, 'skills'), feedback, writable: true }] }),
+  );
+  return { root, repo, config, id: 'user/demo/2026-01-01-dry.md' };
+}
+
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+describe('kaizen verify --dry', () => {
+  it('applies the patch and runs validation only in a throwaway worktree', () => {
+    const f = fixture('test -f "$KAIZEN_TARGET_ROOT/added.txt"');
+    const out = execFileSync('node', [cli, 'verify', '--dry', f.id], {
+      encoding: 'utf8',
+      env: { ...process.env, KAIZEN_CONFIG: f.config },
+    });
+    expect(out).toContain(`pass ${f.id}`);
+    expect(existsSync(join(f.repo, 'added.txt'))).toBe(false);
+  });
+
+  it('reports a failing validation and leaves the target untouched', () => {
+    const f = fixture('echo validation-output\nexit 7');
+    const ran = spawnSync('node', [cli, 'verify', '--dry', f.id], {
+      encoding: 'utf8',
+      env: { ...process.env, KAIZEN_CONFIG: f.config },
+    });
+    expect(ran.status).toBe(1);
+    expect(ran.stdout).toContain('validation-output');
+    expect(ran.stderr).toContain(`fail ${f.id} (exit 7)`);
+    expect(existsSync(join(f.repo, 'added.txt'))).toBe(false);
+  });
+});

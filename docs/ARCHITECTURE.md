@@ -53,17 +53,17 @@ the thing together. The README covers the why; start there if you haven't.
 
 ## Repo layout
 
-| Path                                     | What it is                                                                                              |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `lifecycle.json`                         | The single source for phases, statuses, transitions, fields, rungs                                      |
-| `packages/core`                          | `@kaizen/core` — the engine. Plain Node, zero dependencies                                              |
-| `packages/server`                        | `@kaizen/server` — `node:http` API on loopback + SSE file watching                                      |
-| `scripts/cli.mjs`                        | The one entry point: `init scan status validate triage drain asks doctor docs prune serve dispatch tui` |
-| `tui/`                                   | Rust/ratatui front end over the API                                                                     |
-| `skills/kaizen`                          | The triage skill (`/kaizen:triage`)                                                                     |
-| `skills/_lib`                            | `skill-reflect.md`, the capture convention skills follow                                                |
-| `commands/`, `hooks/`, `.claude-plugin/` | Claude Code plugin surface                                                                              |
-| `docs/LIFECYCLE.md`                      | Generated from `lifecycle.json` — never edit by hand                                                    |
+| Path                                     | What it is                                                                                                     |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `lifecycle.json`                         | The single source for phases, statuses, transitions, fields, rungs                                             |
+| `packages/core`                          | `@kaizen/core` — the engine. Plain Node, zero dependencies                                                     |
+| `packages/server`                        | `@kaizen/server` — `node:http` API on loopback + SSE file watching                                             |
+| `scripts/cli.mjs`                        | The one entry point: `init scan status validate triage verify drain asks doctor docs prune serve dispatch tui` |
+| `tui/`                                   | Rust/ratatui front end over the API                                                                            |
+| `skills/kaizen`                          | The triage skill (`/kaizen:triage`)                                                                            |
+| `skills/_lib`                            | `skill-reflect.md`, the capture convention skills follow                                                       |
+| `commands/`, `hooks/`, `.claude-plugin/` | Claude Code plugin surface                                                                                     |
+| `docs/LIFECYCLE.md`                      | Generated from `lifecycle.json` — never edit by hand                                                           |
 
 User state lives outside the repo: config in `~/.claude/kaizen/config.json`
 (`KAIZEN_CONFIG` overrides, which is how the tests isolate themselves),
