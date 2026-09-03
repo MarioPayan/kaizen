@@ -131,9 +131,8 @@ pub fn next_statuses(from: &str) -> &'static [String] {
     status_spec(from).map(|s| s.next.as_slice()).unwrap_or(&[])
 }
 
-/// Is this move legal? The views ask `forward` and `exit` instead, which
-/// answer for a lane; this is what the tests pin the spec's edges with.
-#[cfg(test)]
+/// Is this move legal? The lanes ask `forward` and `exit`; the ways out of a
+/// parked card ask this, because a send-back is neither.
 pub fn can_transition(from: &str, to: &str) -> bool {
     let Some(target) = status_spec(to) else { return false };
     next_statuses(from).iter().any(|n| n == &target.id)

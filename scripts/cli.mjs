@@ -67,6 +67,7 @@ import {
   nextStatuses,
   missingRequirements,
   section,
+  writeSection,
   renderMarkdown,
   spec,
 } from '@kaizen/core';
@@ -543,35 +544,6 @@ const BODY_FIELDS = Object.fromEntries(
     .fields.filter((f) => f.where === 'body')
     .map((f) => [f.id, f.heading]),
 );
-
-/**
- * Upsert one `## Heading` section in a suggestion body. The frontmatter block
- * is carried through untouched, which is the counterpart of `writeFrontmatter`
- * leaving the body alone.
- */
-function writeSection(file, heading, text) {
-  const raw = readFileSync(file, 'utf8');
-  const head = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/.exec(raw)?.[0] ?? '';
-  const lines = raw.slice(head.length).split(/\r?\n/);
-  const isHeading = (l) => /^##\s/.test(l);
-  const wanted = heading.toLowerCase();
-  const start = lines.findIndex((l) => {
-    const m = /^##\s+(.*?)\s*$/.exec(l);
-    return !!m && m[1].toLowerCase() === wanted;
-  });
-  const block = [`## ${heading}`, '', text.trim(), ''];
-  let out;
-  if (start === -1) {
-    out = [...lines];
-    while (out.length && out.at(-1) === '') out.pop();
-    out.push('', ...block);
-  } else {
-    let end = start + 1;
-    while (end < lines.length && !isHeading(lines[end])) end++;
-    out = [...lines.slice(0, start), ...block, ...lines.slice(end)];
-  }
-  writeFileSync(file, head + out.join('\n').replace(/\n*$/, '\n'));
-}
 
 /** Turn a decision list into writes, or into every reason it cannot be one. */
 function validateDecisions(decisions, byId) {

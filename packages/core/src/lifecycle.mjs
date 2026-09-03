@@ -20,7 +20,7 @@
  * moves on its own turns the check into noise people learn to skip.
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -311,6 +311,38 @@ export function section(body, heading) {
   const out = [];
   for (let i = start + 1; i < lines.length && !isHeading(lines[i]); i++) out.push(lines[i]);
   return out.join('\n').trim();
+}
+
+/**
+ * Upsert one `## Heading` section in a suggestion file: replaced in place when
+ * the heading exists, appended otherwise. The frontmatter block is carried
+ * through untouched, which is the counterpart of `writeFrontmatter` leaving
+ * the body alone. Beside `section` because they are the two halves of one
+ * format; it used to live in the CLI, and the server grew a second reader of
+ * body sections before it grew a writer.
+ */
+export function writeSection(file, heading, text) {
+  const raw = readFileSync(file, 'utf8');
+  const head = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/.exec(raw)?.[0] ?? '';
+  const lines = raw.slice(head.length).split(/\r?\n/);
+  const isHeading = (l) => /^##\s/.test(l);
+  const wanted = String(heading).toLowerCase();
+  const start = lines.findIndex((l) => {
+    const m = /^##\s+(.*?)\s*$/.exec(l);
+    return !!m && m[1].toLowerCase() === wanted;
+  });
+  const block = [`## ${heading}`, '', String(text).trim(), ''];
+  let out;
+  if (start === -1) {
+    out = [...lines];
+    while (out.length && out.at(-1) === '') out.pop();
+    out.push('', ...block);
+  } else {
+    let end = start + 1;
+    while (end < lines.length && !isHeading(lines[end])) end++;
+    out = [...lines.slice(0, start), ...block, ...lines.slice(end)];
+  }
+  writeFileSync(file, head + out.join('\n').replace(/\n*$/, '\n'));
 }
 
 /** What the phase producing this status insists on before you may leave it. */

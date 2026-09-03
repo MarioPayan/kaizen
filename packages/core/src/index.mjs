@@ -51,6 +51,7 @@ export {
   runnerOf,
   entryStatus,
   section,
+  writeSection,
   requirementsFor,
   missingRequirements,
   patchWindow,

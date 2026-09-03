@@ -45,8 +45,11 @@ the thing together. The README covers the why; start there if you haven't.
 6. **Apply.** The server lands each approved patch as one commit with a
    `Kaizen-Suggestion:` trailer, closes the cards that were parked on it
    (`blocked_on` naming the lead — never a card that merely shares the file),
-   and puts the card in line for its review. `git log --grep=Kaizen-Suggestion`
-   is the ledger; `git revert` is the undo.
+   and puts the card in line for its review. A patch that cannot land parks
+   the card with git's reason instead of failing the same way tomorrow; `a`
+   on any parked card opens its ways out (a new plan, an answer, another
+   target, out), and `approved → triaged` is the edge a send-back takes.
+   `git log --grep=Kaizen-Suggestion` is the ledger; `git revert` is the undo.
 7. **Review, then verify.** opencode reads the commit against the plan, runs the
    validation plan and writes `## Review`; claude runs it again and says whether
    the loop closed. Only then is the suggestion terminal.
@@ -159,18 +162,19 @@ A small route table plus `GET /api/events` (SSE), `node:http`, bound to
 `127.0.0.1` — that binding **is** the security boundary, because these routes
 write files and shell out to git.
 
-| Route                                  | Does                                                                                                 |
-| -------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `GET /api/state`                       | `buildState(config)`                                                                                 |
-| `GET /api/config` / `POST /api/config` | read / validate-then-save (restarts watchers)                                                        |
-| `GET /api/skill?path=`                 | raw markdown, containment-checked                                                                    |
-| `GET /api/diff?id=`                    | the sibling `.patch`, if any                                                                         |
-| `POST /api/suggestion`                 | one status move, gated (see below)                                                                   |
-| `POST /api/sweep`                      | one status move for all — moves the movable                                                          |
-| `POST /api/dispatch`                   | one detached run, opencode or claude by the card — one id, or the backlog; queues behind a live one  |
-| `GET /api/dispatch/log`                | the tail of the triage log, last 200 lines                                                           |
-| `POST /api/apply`                      | `git apply` + one commit + writes `applied` + sha; closes the cards carried by it; queues the review |
-| `POST /api/revert`                     | `git revert` a kaizen commit on a writable target                                                    |
+| Route                                  | Does                                                                                                                                                                                                                                           |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/state`                       | `buildState(config)`                                                                                                                                                                                                                           |
+| `GET /api/config` / `POST /api/config` | read / validate-then-save (restarts watchers)                                                                                                                                                                                                  |
+| `GET /api/skill?path=`                 | raw markdown, containment-checked                                                                                                                                                                                                              |
+| `GET /api/diff?id=`                    | the sibling `.patch`, if any                                                                                                                                                                                                                   |
+| `POST /api/suggestion`                 | one status move, gated (see below)                                                                                                                                                                                                             |
+| `POST /api/sweep`                      | one status move for all — moves the movable                                                                                                                                                                                                    |
+| `POST /api/dispatch`                   | one detached run, opencode or claude by the card — one id, or the backlog; queues behind a live one                                                                                                                                            |
+| `GET /api/dispatch/log`                | the tail of the triage log, last 200 lines                                                                                                                                                                                                     |
+| `POST /api/apply`                      | `git apply` + one commit + writes `applied` + sha; closes the cards carried by it; queues the review. A patch that cannot land parks the card (`blocked_on: apply: …`, `parked: true` in the 422); a tree that is not ready is a plain refusal |
+| `POST /api/unblock`                    | one of a parked card's ways out — `replan`, `clear`, `answer`, `supersede`, `reject`, `retarget` — composed from the same gated writes a key makes; what the user typed lands under `## Answer`                                                |
+| `POST /api/revert`                     | `git revert` a kaizen commit on a writable target                                                                                                                                                                                              |
 
 Every status write passes three gates: the transition must be legal in the
 spec, the card must not be waiting on a check (`needs_review`) unless the move

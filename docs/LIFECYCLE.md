@@ -69,7 +69,7 @@ Cannot be left until these are present: `verified_at`.
 | `recorded`   | `rec` | capture | Filed with its context and waiting for triage. Nobody has judged it yet — or a check sent it back to be judged again.                                                    |
 | `triaged`    | `tri` | triage  | Confirmed to still be a real problem at HEAD, and labelled. Ready for a plan — or, sent back here by a check that found the plan wanting.                                |
 | `planned`    | `pln` | plan    | A patch and a validation plan both exist. This is the only status that can be approved — once claude has checked it: a card still wearing needs_review is not yours yet. |
-| `approved`   | `apr` | decide  | You said yes to a specific patch. It lands on the next drain.                                                                                                            |
+| `approved`   | `apr` | decide  | You said yes to a specific patch. It lands on the next drain — or, if that patch no longer lands, goes back for a new plan and a new yes.                                |
 | `applied`    | `apl` | apply   | Landed as a commit. The server sets this after git succeeded — it cannot be set by hand.                                                                                 |
 | `reviewed`   | `rvw` | review  | opencode has read the landed change and written what it found. Claude runs the validation plan next and decides whether the loop closed.                                 |
 | `verified`   | `ver` | verify  | The validation plan passed against the landed change. Done, and provably so.                                                                                             |
@@ -83,7 +83,7 @@ Cannot be left until these are present: `verified_at`.
 recorded   → triaged | rejected | superseded
 triaged    → planned | recorded | rejected | superseded
 planned    → approved | triaged | rejected | superseded
-approved   → applied | superseded
+approved   → applied | triaged | superseded
 applied    → reviewed | failed
 reviewed   → verified | failed | applied
 verified   → (terminal)
@@ -117,6 +117,7 @@ cannot be written down.
 | `review`       | Review      | a `## Review` section         | What opencode found on the landed change: the commit read against the plan, the validation command run and what it returned, and anything it would not have shipped.                                                               |
 | `verified_at`  | Verify      | frontmatter                   | When the validation plan was run against the landed change, and what it returned.                                                                                                                                                  |
 | `verdict`      | Verify      | a `## Verdict` section        | Claude's call on the runner's work — pass or reject, and why. Written on every check, and the brief opencode reads when a rejected card comes back around.                                                                         |
+| `answer`       | Decide      | a `## Answer` section         | What you said when a run parked the card on you, or why you sent it back — the brief the next run reads beside any verdict.                                                                                                        |
 
 ## The determinism ladder
 

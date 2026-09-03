@@ -8,11 +8,13 @@
  * about a file on disk, not about intent.
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import prettier from 'prettier';
 import {
+  writeSection,
   loadLifecycle,
   validateLifecycle,
   renderMarkdown,
@@ -141,6 +143,18 @@ describe('the shipped spec', () => {
     // The pile at the door of the decision is still one status; what the
     // callers subtract from it is the flag.
     expect(awaitingDecision()).toEqual(['planned']);
+  });
+
+  /**
+   * A yes is given to a specific patch. When that patch no longer lands the
+   * plan is redone and the decision re-made — so approved can go back to
+   * triaged — while the way forward and the way out stay what they were.
+   */
+  it('lets an approval go back for a new plan without changing where it goes otherwise', () => {
+    const { statuses } = spec();
+    expect(statuses.find((s) => s.id === 'approved').next).toEqual(['applied', 'triaged', 'superseded']);
+    expect(nextPhase('approved').id).toBe('apply');
+    expect(spec().fields.find((f) => f.id === 'answer')).toMatchObject({ where: 'body', heading: 'Answer' });
   });
 
   it('can reach a terminal state from every live one', () => {
@@ -303,6 +317,23 @@ describe('section', () => {
   it('matches the heading case-insensitively but not by prefix', () => {
     expect(section('## plan\n\nx\n', 'Plan')).toBe('x');
     expect(section('## Planning\n\nx\n', 'Plan')).toBe('');
+  });
+});
+
+describe('writeSection', () => {
+  it('replaces a present section in place and appends an absent one, leaving the frontmatter alone', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kaizen-section-'));
+    const file = join(dir, 'card.md');
+    writeFileSync(file, '---\nstatus: triaged\n---\n\n## Context\n\nc\n\n## Verdict\n\nold\n');
+    writeSection(file, 'Verdict', 'new');
+    writeSection(file, 'Answer', 'said');
+    const text = readFileSync(file, 'utf8');
+    expect(text.startsWith('---\nstatus: triaged\n---\n')).toBe(true);
+    expect(section(text, 'Verdict')).toBe('new');
+    expect(section(text, 'Answer')).toBe('said');
+    expect(section(text, 'Context')).toBe('c');
+    expect(text.match(/^## Verdict/gm)).toHaveLength(1);
+    rmSync(dir, { recursive: true, force: true });
   });
 });
 

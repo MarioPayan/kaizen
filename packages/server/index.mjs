@@ -21,6 +21,7 @@ import {
   utimesSync,
   unlinkSync,
   mkdirSync,
+  renameSync,
   openSync,
   closeSync,
   writeSync,
@@ -54,6 +55,8 @@ import {
   statusIds,
   missingRequirements,
   requirementsFor,
+  writeSection,
+  suggestionId,
 } from '@kaizen/core';
 import { createEventStream } from './events.mjs';
 
@@ -61,12 +64,15 @@ const run = promisify(execFile);
 const here = dirname(fileURLToPath(import.meta.url));
 
 class HttpError extends Error {
-  constructor(status, message, fields) {
+  constructor(status, message, fields, extra) {
     super(message);
     this.status = status;
     // Per-field messages, when the failure has them. The Settings form reads
     // these; everything else reads `message`.
     this.fields = fields;
+    // Anything else the refusal wants to say beside its sentence — `apply`
+    // says whether it parked the card, so a lane walk knows to keep going.
+    this.extra = extra;
   }
 }
 
@@ -519,11 +525,26 @@ const routes = {
     // that can never open. The patch check further down is the real precondition.
 
     const patch = path.replace(/\.md$/, '.patch');
-    if (!existsSync(patch)) throw new HttpError(422, 'no proposal patch for this suggestion yet');
+    // A landing that cannot happen because of the *patch* parks the card with
+    // the reason, so the board shows it standing with the flag up and its ways
+    // out, instead of flashing one truncated line and leaving it in approved
+    // to fail the same way tomorrow — fourteen cards did exactly that. A tree
+    // that is not ready (dirty paths, something staged, read-only) is about
+    // the tree, not the card, and stays a transient refusal.
+    const park = (why) => {
+      const reason = `apply: ${String(why).trim().split('\n').at(-1)}`;
+      writeFrontmatter(path, { blocked_on: reason });
+      throw new HttpError(422, reason, undefined, { parked: true });
+    };
+    if (!existsSync(patch)) park('no proposal patch for this suggestion yet');
 
     if (ctx.config.applyGuards?.requireCleanTree !== false) await assertApplyable(root, patch);
     if (ctx.config.applyGuards?.requireDiffApplies !== false) {
-      await git(root, ['apply', '--check', patch]);
+      try {
+        await git(root, ['apply', '--check', patch]);
+      } catch (e) {
+        park(e.message);
+      }
     }
 
     // `--index` rather than apply-then-`add -A`: it stages exactly the paths the
@@ -578,6 +599,115 @@ const routes = {
       drain(ctx);
     }
     return { id, sha, closed };
+  },
+
+  /**
+   * One of the ways out of a parked card, picked from the board's menu.
+   *
+   * Each choice is a short sequence of writes the TUI should not have to know,
+   * and every one of them goes through the same three gates a key press does —
+   * the route composes them, it does not bypass them. What the user typed lands
+   * under `## Answer`, which is the brief the next run reads beside any verdict.
+   */
+  'POST /api/unblock': async (req, _res, ctx) => {
+    const { id, choice, text = '', target: targetName } = await readBody(req);
+    const { path, target } = suggestionFile(ctx.config, id);
+    const from = currentStatus(ctx.config, id);
+    const { data } = parseFrontmatter(readFileSync(path, 'utf8'));
+    const said = String(text).trim();
+    const stamp = new Date().toISOString().slice(0, 10);
+
+    // A status move, gated like any other, with the flag cleared in the same
+    // write so the card does not land in the review lane on its way out.
+    const move = (to, extra = {}) => {
+      assertTransition(from, to, id);
+      assertChecked(ctx.config, id, to);
+      assertRequirements(ctx.config, id, to);
+      writeFrontmatter(path, { status: to, blocked_on: '', ...extra });
+    };
+    // Back in line for whoever the card now needs, if anyone.
+    const queue = () => {
+      const s = buildState(ctx.config).suggestions.find((x) => x.id === id);
+      if (!s || !pendingPass(s) || ctx.queue.includes(id) || live(ctx).some((r) => r.triageId === id))
+        return false;
+      ctx.queue.push(id);
+      persistDispatch(ctx);
+      ctx.events.broadcast('dispatch', { queued: ctx.queue.length });
+      drain(ctx);
+      return true;
+    };
+
+    switch (choice) {
+      case 'replan': {
+        // The yes was for a patch that no longer lands, or the plan was found
+        // wanting: back to triaged for a new plan, with why under Answer.
+        if (data.blocked_on) writeSection(path, 'Answer', `${stamp} — sent back: ${data.blocked_on}`);
+        move('triaged');
+        return {
+          id,
+          did: queue() ? 'sent back for a new plan — opencode has it' : 'sent back for a new plan',
+        };
+      }
+      case 'clear': {
+        writeFrontmatter(path, { blocked_on: '' });
+        return { id, did: queue() ? 'cleared — a run has it' : 'cleared' };
+      }
+      case 'answer': {
+        if (!said) throw new HttpError(400, 'an answer needs words');
+        writeSection(path, 'Answer', `${stamp} — ${said}`);
+        writeFrontmatter(path, { blocked_on: '' });
+        return { id, did: queue() ? 'answered — a run has it' : 'answered' };
+      }
+      case 'supersede': {
+        if (!said) throw new HttpError(400, 'say where the fix lives');
+        writeSection(path, 'Answer', `${stamp} — superseded by hand: ${said}`);
+        move('superseded');
+        return { id, did: 'superseded' };
+      }
+      case 'reject': {
+        move('rejected');
+        return { id, did: 'rejected' };
+      }
+      case 'retarget': {
+        // The patch was written against the wrong repo root — filed under one
+        // target, fixing another. Move the card and its patch to the target
+        // whose repo the fix lands in, and send it back for a plan against
+        // that root; the old patch is kept beside it as the brief's draft.
+        const to = resolveTargets(ctx.config).find((t) => t.name === targetName);
+        if (!to) throw new HttpError(404, `unknown target "${targetName}"`);
+        if (!to.writable || !to.feedback) throw new HttpError(403, `target "${to.name}" cannot take a card`);
+        if (to.name === target.name)
+          throw new HttpError(409, `${id.split('/').at(-1)} is already under "${to.name}"`);
+        const { skill, file } = parseSuggestionId(id);
+        const dir = join(to.feedback, skill);
+        mkdirSync(dir, { recursive: true });
+        const dest = join(dir, file);
+        if (existsSync(dest)) throw new HttpError(409, `"${to.name}" already holds ${file}`);
+        writeSection(
+          path,
+          'Answer',
+          `${stamp} — moved from target "${target.name}" to "${to.name}": plan against that repo`,
+        );
+        if (canTransition(from, 'triaged')) move('triaged');
+        else writeFrontmatter(path, { blocked_on: '' });
+        renameSync(path, dest);
+        const patch = path.replace(/\.md$/, '.patch');
+        if (existsSync(patch)) renameSync(patch, dest.replace(/\.md$/, '.patch'));
+        const moved = suggestionId(to.name, skill, file);
+        const s = buildState(ctx.config).suggestions.find((x) => x.id === moved);
+        let queued = false;
+        if (s && pendingPass(s) && !ctx.queue.includes(moved)) {
+          ctx.queue.push(moved);
+          persistDispatch(ctx);
+          ctx.events.broadcast('dispatch', { queued: ctx.queue.length });
+          drain(ctx);
+          queued = true;
+        }
+        return { id: moved, did: queued ? `moved to ${to.name} — opencode has it` : `moved to ${to.name}` };
+      }
+      default:
+        throw new HttpError(400, 'choice must be one of replan, clear, answer, supersede, reject, retarget');
+    }
   },
 
   'POST /api/revert': async (req, _res, ctx) => {
@@ -984,7 +1114,7 @@ export function createApp(config, deps = {}) {
     } catch (e) {
       const status = e.status ?? 500;
       if (status >= 500) console.error(e);
-      json(res, status, e.fields ? { error: e.message, errors: e.fields } : { error: e.message });
+      json(res, status, { error: e.message, ...(e.fields ? { errors: e.fields } : {}), ...(e.extra ?? {}) });
     }
   });
 }

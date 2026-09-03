@@ -10,6 +10,7 @@ mod lifecycle;
 mod theme;
 mod tui;
 mod ui;
+mod unblock;
 mod views;
 
 const HELP: &str = "\

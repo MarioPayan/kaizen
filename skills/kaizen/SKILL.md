@@ -43,7 +43,8 @@ Two models take turns, and the spec says which is whose (`runner` and `reviewer`
 - **opencode is the runner.** It does the work of every unattended phase — triage, plan, and the review of a landed change — on the ChatGPT subscription, so the Claude subscription is spent on judgement only. If you are opencode reading this, your `MODE` is `run`.
 - **claude is the reviewer.** It does not triage or plan; it checks what opencode wrote, and it verifies what landed. A check is claude re-running the phase's own gate on the runner's output — the same questions the phase asked, asked again by someone who did not do the work. If you are claude reading this from a server run, your `MODE` is `review`.
 - **The flag is the hand-off.** Every status the runner writes is provisional. Go as far as the phase gates let you in one run — a `recorded` card is triaged *and then planned* before it is handed over, so one check covers the labels and the plan — and write `"needs_review": "claude"` in the same `triage --apply` call as the status you stop at. A card you leave short of `planned` (a call only the user can make, per Step 5) is flagged where it stops. The board draws a flagged card in the `review` lane, the server hands the next seat to claude on its own, and nothing — not `A`, not a sweep — can move the card forward until claude clears the flag. A status without the flag is a status claude has agreed with.
-- **A check that fails sends the card back.** claude writes the status one phase back (`planned → triaged`, `triaged → recorded`, `reviewed → applied`), clears the flag, parks the card on the user with `"blocked_on": "review: <one line>"`, and puts the findings under `## Verdict`. The user reads it, and `b` clears the block — which is what sends opencode round again, with the verdict as its brief. `x` is still the way out.
+- **A check that fails sends the card back.** claude writes the status one phase back (`planned → triaged`, `triaged → recorded`, `reviewed → applied`), clears the flag, parks the card on the user with `"blocked_on": "review: <one line>"`, and puts the findings under `## Verdict`. A landing that cannot happen parks the card the same way — `"blocked_on": "apply: <git's line>"` — and a runner that needs a call only the user can make parks it in its own words (Step 5).
+- **A parked card offers its ways out.** `a` on it opens the menu: send it back for a new plan, clear the block, answer it, move it to the target whose repo the fix lands in, supersede, reject. What the user types lands under `## Answer`. A card that comes round again therefore carries a `## Verdict` and/or an `## Answer`, and **the runner reads both as its brief** before doing anything else. `x` is still the way out.
 - **The server chains them.** One `a` on a card, one `A` on a lane, one `kaizen dispatch [id]`: opencode runs, flags, exits; claude runs, clears or sends back. Neither is sent by hand.
 
 **In an interactive Claude session**, `/kaizen:triage [id]` is a hand-off, not a pass. Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/cli.mjs" dispatch [id]` — the server must be up (`kaizen serve`; `kaizen tui` starts it) — report what it said, and stop. Do not triage or plan yourself. `review`, `drain` and `report` still run where they are invoked.
@@ -221,9 +222,10 @@ the next phase because of a decision only the user can make — where content
 should live, a repo that is not writable, a structural call — record the reason
 in one line via the triage CLI: `"blocked_on": "<why>"`. The queue and the
 board flag it and show the line, which is how the user learns nine rows are
-waiting on three calls without reading a report. Clear it (empty string) when
-the call is made. A final report in prose is still welcome; it is just not the
-only place the reason lives.
+waiting on three calls without reading a report. The user answers from the
+board's menu, and what they said lands under `## Answer` — read it when the
+card comes round again; it is the call you asked for. A final report in prose
+is still welcome; it is just not the only place the reason lives.
 
 **3. The patch** — a real diff, not a description of one. Make it in a
 throwaway worktree at HEAD, never in the live tree: `git -C <repo> worktree add

@@ -118,8 +118,8 @@
       "phase": "decide",
       "tone": "positive",
       "terminal": false,
-      "help": "You said yes to a specific patch. It lands on the next drain.",
-      "next": ["applied", "superseded"]
+      "help": "You said yes to a specific patch. It lands on the next drain — or, if that patch no longer lands, goes back for a new plan and a new yes.",
+      "next": ["applied", "triaged", "superseded"]
     },
     {
       "id": "applied",
@@ -305,6 +305,13 @@
       "where": "body",
       "heading": "Verdict",
       "help": "Claude's call on the runner's work — pass or reject, and why. Written on every check, and the brief opencode reads when a rejected card comes back around."
+    },
+    {
+      "id": "answer",
+      "phase": "decide",
+      "where": "body",
+      "heading": "Answer",
+      "help": "What you said when a run parked the card on you, or why you sent it back — the brief the next run reads beside any verdict."
     }
   ],
   "rungs": [

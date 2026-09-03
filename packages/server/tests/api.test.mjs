@@ -4,7 +4,7 @@
  * target, and applying into a tree with uncommitted work in it.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
@@ -949,6 +949,197 @@ describe('runners and the chain', () => {
     const out = await t.call('POST', '/api/suggestion', { id, status: 'rejected' });
     expect(out.status).toBe(200);
     await t.close();
+  });
+});
+
+/**
+ * A landing that cannot happen parks the card with the reason, and a parked
+ * card has ways out. Own corpus, own git repo: the choices move files and
+ * statuses, and the shared fixture above counts its cards.
+ */
+describe('parking and the ways out', () => {
+  let alone;
+  let skills;
+  let feedback;
+  let other;
+  let app;
+  let mine;
+  const call = async (method, path, body) => {
+    const res = await fetch(`http://127.0.0.1:${app.address().port}${path}`, {
+      method,
+      headers: body ? { 'content-type': 'application/json' } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { status: res.status, body: await res.json() };
+  };
+  const front = (file) => readFileSync(join(feedback, 'demo', file), 'utf8');
+  const card = (name, status, extra = '') =>
+    writeFileSync(
+      join(feedback, 'demo', name),
+      `---\nskill: demo\ndate: 2026-04-10\nseverity: low\ntype: hygiene\nobjective: debt\neffort: S\nrung: 1\nscope: demo/SKILL.md\nconfirmed_at: 2026-04-10 @ abc1234\nstatus: ${status}\n${extra}---\n\n## Context\n\nc\n\n## Suggestion\n\ns\n\n## Plan\n\np\n\n## Validation\n\nv\n`,
+    );
+
+  beforeAll(async () => {
+    alone = mkdtempSync(join(tmpdir(), 'kaizen-park-'));
+    skills = join(alone, 'skills');
+    feedback = join(alone, 'skills-feedback');
+    other = join(alone, 'other-feedback');
+    mkdirSync(join(skills, 'demo'), { recursive: true });
+    mkdirSync(join(feedback, 'demo'), { recursive: true });
+    mkdirSync(join(alone, 'other-skills', 'demo'), { recursive: true });
+    mkdirSync(other, { recursive: true });
+    writeFileSync(join(skills, 'demo', 'SKILL.md'), '---\nname: demo\n---\n# demo\n');
+    writeFileSync(join(alone, 'other-skills', 'demo', 'SKILL.md'), '---\nname: demo\n---\n# demo\n');
+    git(skills, 'init', '-q');
+    git(skills, 'add', '-A');
+    git(skills, 'commit', '-q', '-m', 'init');
+    git(join(alone, 'other-skills'), 'init', '-q');
+    mine = [];
+    app = createApp(
+      {
+        ...config,
+        targets: [
+          { name: 'user', skills, feedback, writable: true },
+          { name: 'plugin', skills: join(alone, 'other-skills'), feedback: other, writable: true },
+          { name: 'ro', skills: join(alone, 'other-skills'), feedback: other, writable: false },
+        ],
+      },
+      {
+        spawn: (runner, id) => {
+          const child = new EventEmitter();
+          child.pid = 9400 + mine.length;
+          child.runner = runner;
+          child.fencedTo = id;
+          mine.push(child);
+          process.nextTick(() => child.emit('spawn'));
+          return child;
+        },
+      },
+    );
+    await new Promise((r) => app.listen(0, '127.0.0.1', r));
+  });
+
+  afterAll(async () => {
+    await new Promise((r) => app.close(r));
+    rmSync(alone, { recursive: true, force: true });
+  });
+
+  it('parks a card whose patch cannot land, with the reason, and keeps a not-ready tree transient', async () => {
+    card('2026-04-10-stale.md', 'approved');
+    writeFileSync(
+      join(feedback, 'demo', '2026-04-10-stale.patch'),
+      '--- a/demo/SKILL.md\n+++ b/demo/SKILL.md\n@@ -1,3 +1,4 @@\n not\n the\n file\n+x\n',
+    );
+    const stale = await call('POST', '/api/apply', { id: 'user/demo/2026-04-10-stale.md' });
+    expect(stale.status).toBe(422);
+    expect(stale.body.parked).toBe(true);
+    expect(stale.body.error).toMatch(/^apply: /);
+    expect(front('2026-04-10-stale.md')).toMatch(/blocked_on: apply: .*patch does not apply/);
+    expect(front('2026-04-10-stale.md')).toMatch(/status: approved/);
+
+    // No patch at all is the card's problem too.
+    card('2026-04-10-bare.md', 'approved');
+    const bare = await call('POST', '/api/apply', { id: 'user/demo/2026-04-10-bare.md' });
+    expect(bare.body.parked).toBe(true);
+    expect(front('2026-04-10-bare.md')).toMatch(/blocked_on: apply: no proposal patch/);
+
+    // The tree, not the card: a dirty path refuses without parking.
+    card('2026-04-10-fine.md', 'approved');
+    writeFileSync(
+      join(feedback, 'demo', '2026-04-10-fine.patch'),
+      '--- a/demo/SKILL.md\n+++ b/demo/SKILL.md\n@@ -1,4 +1,5 @@\n ---\n name: demo\n ---\n # demo\n+fine\n',
+    );
+    writeFileSync(join(skills, 'demo', 'SKILL.md'), '---\nname: demo\n---\n# demo edited\n');
+    const dirty = await call('POST', '/api/apply', { id: 'user/demo/2026-04-10-fine.md' });
+    expect(dirty.status).toBe(409);
+    expect(dirty.body.parked).toBeUndefined();
+    expect(front('2026-04-10-fine.md')).not.toMatch(/blocked_on/);
+    git(skills, 'checkout', '--', '.');
+  });
+
+  it('sends a parked card back for a new plan, with why under Answer, and hands it to opencode', async () => {
+    const id = 'user/demo/2026-04-10-stale.md';
+    const res = await call('POST', '/api/unblock', { id, choice: 'replan' });
+    expect(res.status).toBe(200);
+    expect(res.body.did).toMatch(/sent back/);
+    const text = front('2026-04-10-stale.md');
+    expect(text).toMatch(/status: triaged/);
+    expect(text).toMatch(/blocked_on: $/m);
+    expect(text).toMatch(/## Answer\n\n\d{4}-\d{2}-\d{2} — sent back: apply: /);
+    expect(mine.at(-1)).toMatchObject({ runner: 'opencode', fencedTo: id });
+    mine.at(-1).emit('exit', 0, null);
+  });
+
+  it('answers, clears, supersedes and rejects, each gated like a key press', async () => {
+    card('2026-04-10-asked.md', 'triaged', 'blocked_on: where should this live?\n');
+    const asked = 'user/demo/2026-04-10-asked.md';
+    expect((await call('POST', '/api/unblock', { id: asked, choice: 'answer', text: '  ' })).status).toBe(
+      400,
+    );
+    const answered = await call('POST', '/api/unblock', { id: asked, choice: 'answer', text: 'in _lib' });
+    expect(answered.status).toBe(200);
+    expect(front('2026-04-10-asked.md')).toMatch(/## Answer\n\n\d{4}-\d{2}-\d{2} — in _lib/);
+    expect(front('2026-04-10-asked.md')).toMatch(/blocked_on: $/m);
+    // Answered and triaged: a run has it now.
+    expect(mine.at(-1)).toMatchObject({ runner: 'opencode', fencedTo: asked });
+    mine.at(-1).emit('exit', 0, null);
+
+    card('2026-04-10-done.md', 'planned', 'blocked_on: review: the plan is wrong\n');
+    const done = 'user/demo/2026-04-10-done.md';
+    const sup = await call('POST', '/api/unblock', {
+      id: done,
+      choice: 'supersede',
+      text: 'landed by hand in abc',
+    });
+    expect(sup.status).toBe(200);
+    expect(front('2026-04-10-done.md')).toMatch(/status: superseded/);
+    expect(front('2026-04-10-done.md')).toMatch(/superseded by hand: landed by hand in abc/);
+
+    card('2026-04-10-no.md', 'planned', 'blocked_on: review: nope\n');
+    expect(
+      (await call('POST', '/api/unblock', { id: 'user/demo/2026-04-10-no.md', choice: 'reject' })).status,
+    ).toBe(200);
+    expect(front('2026-04-10-no.md')).toMatch(/status: rejected/);
+
+    card('2026-04-10-stuck.md', 'planned', 'blocked_on: review: nope\n');
+    const cleared = await call('POST', '/api/unblock', {
+      id: 'user/demo/2026-04-10-stuck.md',
+      choice: 'clear',
+    });
+    expect(cleared.body.did).toBe('cleared');
+    expect(front('2026-04-10-stuck.md')).toMatch(/blocked_on: $/m);
+    expect(front('2026-04-10-stuck.md')).toMatch(/status: planned/);
+
+    // The gates hold: a flagged plan cannot be sent anywhere but out.
+    card('2026-04-10-flagged.md', 'planned', 'needs_review: claude\nblocked_on: review: x\n');
+    const gated = await call('POST', '/api/unblock', {
+      id: 'user/demo/2026-04-10-flagged.md',
+      choice: 'replan',
+    });
+    expect(gated.status).toBe(409);
+    expect(
+      (await call('POST', '/api/unblock', { id: 'user/demo/2026-04-10-flagged.md', choice: 'nonsense' }))
+        .status,
+    ).toBe(400);
+  });
+
+  it('moves a card filed under the wrong target, patch and all, and plans it there', async () => {
+    card('2026-04-10-elsewhere.md', 'approved', 'blocked_on: apply: plugins/x: No such file or directory\n');
+    writeFileSync(join(feedback, 'demo', '2026-04-10-elsewhere.patch'), 'diff --git a/x b/x\n');
+    const id = 'user/demo/2026-04-10-elsewhere.md';
+    expect((await call('POST', '/api/unblock', { id, choice: 'retarget', target: 'user' })).status).toBe(409);
+    expect((await call('POST', '/api/unblock', { id, choice: 'retarget', target: 'ro' })).status).toBe(403);
+    expect((await call('POST', '/api/unblock', { id, choice: 'retarget', target: 'nope' })).status).toBe(404);
+    const moved = await call('POST', '/api/unblock', { id, choice: 'retarget', target: 'plugin' });
+    expect(moved.status).toBe(200);
+    expect(moved.body.id).toBe('plugin/demo/2026-04-10-elsewhere.md');
+    expect(existsSync(join(feedback, 'demo', '2026-04-10-elsewhere.md'))).toBe(false);
+    const there = readFileSync(join(other, 'demo', '2026-04-10-elsewhere.md'), 'utf8');
+    expect(there).toMatch(/status: triaged/);
+    expect(there).toMatch(/moved from target "user" to "plugin"/);
+    expect(existsSync(join(other, 'demo', '2026-04-10-elsewhere.patch'))).toBe(true);
+    expect(mine.at(-1)).toMatchObject({ runner: 'opencode', fencedTo: moved.body.id });
+    mine.at(-1).emit('exit', 0, null);
   });
 });
 

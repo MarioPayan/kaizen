@@ -70,6 +70,8 @@ pub struct Suggestion {
     /// each check — the reason behind a block, readable without the file.
     pub review: String,
     pub verdict: String,
+    /// What you said the last time this card was parked on you.
+    pub answer: String,
     pub missing: Vec<String>,
     pub triaged: bool,
     pub surfaced: bool,
@@ -105,6 +107,24 @@ pub struct Skill {
     pub per100: f64,
     pub health: String,
     pub worktrees: u64,
+}
+
+/// How a landing refused. `Parked` means the server wrote the reason on the
+/// card — the patch itself cannot land — and a lane walk should keep going;
+/// `Stopped` means the tree is not ready, which is the reason the rest of the
+/// lane would refuse too.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ApplyRefusal {
+    Parked(String),
+    Stopped(String),
+}
+
+impl std::fmt::Display for ApplyRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ApplyRefusal::Parked(why) | ApplyRefusal::Stopped(why) => f.write_str(why),
+        }
+    }
 }
 
 /// One run, as the server reports it — still going, or how it ended.
@@ -377,13 +397,33 @@ impl Client {
     }
 
     fn post(&self, path: &str, body: serde_json::Value) -> Result<serde_json::Value, String> {
+        self.post_raw(path, body).map_err(|(msg, _)| msg)
+    }
+
+    /// `post`, keeping the refusal's body beside its sentence: one route says
+    /// more than `error` when it refuses — `apply` says whether it parked the
+    /// card — and the sentence alone cannot carry that.
+    fn post_raw(
+        &self,
+        path: &str,
+        body: serde_json::Value,
+    ) -> Result<serde_json::Value, (String, Option<serde_json::Value>)> {
         let url = format!("{}{}", self.base, path);
-        self.agent
-            .post(&url)
-            .send_json(body)
-            .map_err(|e| self.explain(e, &format!("POST {path}")))?
-            .into_json::<serde_json::Value>()
-            .map_err(|e| format!("POST {path}: bad JSON: {e}"))
+        match self.agent.post(&url).send_json(body) {
+            Ok(res) => res
+                .into_json::<serde_json::Value>()
+                .map_err(|e| (format!("POST {path}: bad JSON: {e}"), None)),
+            Err(ureq::Error::Status(code, res)) => {
+                let body = res.into_json::<serde_json::Value>().ok();
+                let msg = body
+                    .as_ref()
+                    .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from))
+                    .filter(|m| !m.is_empty())
+                    .unwrap_or_else(|| format!("POST {path} -> {code}"));
+                Err((msg, body))
+            }
+            Err(e) => Err((self.explain(e, &format!("POST {path}")), None)),
+        }
     }
 
     pub fn set_status(&self, id: &str, status: &str) -> Result<(), String> {
@@ -425,15 +465,42 @@ impl Client {
         Ok((n("pending"), n("queued")))
     }
 
-    /// Returns the commit sha and how many same-scope siblings the landing
-    /// closed. Can refuse three ways — dirty tree, read-only target, no patch —
-    /// and every one of them is worth showing as written.
-    pub fn apply(&self, id: &str) -> Result<(String, u64), String> {
-        let res = self.post("/api/apply", serde_json::json!({ "id": id }))?;
+    /// Returns the commit sha and how many carried siblings the landing
+    /// closed. Can refuse two ways: a patch that cannot land, which the server
+    /// answers by parking the card with the reason (`Err(Parked)`), and a tree
+    /// that is not ready, which is transient and stops a lane walk.
+    pub fn apply(&self, id: &str) -> Result<(String, u64), ApplyRefusal> {
+        let res = self
+            .post_raw("/api/apply", serde_json::json!({ "id": id }))
+            .map_err(|(msg, body)| {
+                let parked = body.and_then(|b| b.get("parked").and_then(|v| v.as_bool())).unwrap_or(false);
+                if parked { ApplyRefusal::Parked(msg) } else { ApplyRefusal::Stopped(msg) }
+            })?;
         Ok((
             res.get("sha").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
             res.get("closed").and_then(|v| v.as_u64()).unwrap_or(0),
         ))
+    }
+
+    /// One of the ways out of a parked card, chosen from the board's menu. The
+    /// server composes the writes; this only names the choice and carries what
+    /// the choice asked for — a line of text, or a target.
+    pub fn unblock(
+        &self,
+        id: &str,
+        choice: &str,
+        text: Option<&str>,
+        target: Option<&str>,
+    ) -> Result<String, String> {
+        let mut body = serde_json::json!({ "id": id, "choice": choice });
+        if let Some(t) = text {
+            body["text"] = serde_json::Value::String(t.to_string());
+        }
+        if let Some(t) = target {
+            body["target"] = serde_json::Value::String(t.to_string());
+        }
+        let res = self.post("/api/unblock", body)?;
+        Ok(res.get("did").and_then(|v| v.as_str()).unwrap_or("done").to_string())
     }
 
     /// The live config, as both a typed view and the raw JSON.

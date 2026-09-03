@@ -22,10 +22,11 @@ use ratatui::Frame;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use crate::api::{Client, Config, State, Suggestion};
+use crate::api::{ApplyRefusal, Client, Config, State, Suggestion, Target};
 use crate::theme::{self, severity_colour, status_colour, tone_colour};
 use crate::ui::{fit_parts, short, title_of, titled, truncate, wrapped};
 use crate::keys::{self, Action, Tab};
+use crate::unblock::{other_targets, ways_out, Needs};
 use crate::views::{agent, board, settings, skills};
 use crate::lifecycle::{
     actor_of, awaits_pass, decision_status, exit, forward, is_terminal, landed_status, lifecycle,
@@ -55,6 +56,9 @@ enum Req {
     Config,
     SaveConfig(serde_json::Value),
     SkillFile { path: String },
+    /// One of the ways out of a parked card, as the menu named it, with what
+    /// the choice asked for.
+    Unblock { id: String, choice: &'static str, text: Option<String>, target: Option<String> },
 }
 
 enum Res {
@@ -98,32 +102,56 @@ fn spawn_worker(client: Client, rx: mpsc::Receiver<Req>, tx: mpsc::Sender<Res>) 
                         (None, at) => format!("the backlog is {at} in line — the next seat takes it"),
                     }
                 })),
-                Req::Apply { id } => Res::Acted(client.apply(&id).map(|(sha, closed)| {
-                    let sha = &sha[..7.min(sha.len())];
-                    if closed == 0 {
-                        format!("applied {} — {sha}", short(&id))
-                    } else {
-                        format!("applied {} — {sha} · closed {closed} sibling(s)", short(&id))
-                    }
-                })),
+                Req::Apply { id } => Res::Acted(
+                    client
+                        .apply(&id)
+                        .map(|(sha, closed)| {
+                            let sha = &sha[..7.min(sha.len())];
+                            if closed == 0 {
+                                format!("applied {} — {sha}", short(&id))
+                            } else {
+                                format!("applied {} — {sha} · closed {closed} sibling(s)", short(&id))
+                            }
+                        })
+                        .map_err(|e| match e {
+                            // The card now stands with the reason on it; the
+                            // menu is one `a` away.
+                            ApplyRefusal::Parked(why) => format!("parked {} — {why} (a for the ways out)", short(&id)),
+                            ApplyRefusal::Stopped(why) => why,
+                        }),
+                ),
                 Req::ApplyAll { ids } => {
+                    // A patch that cannot land parks its card and the walk goes
+                    // on; a tree that is not ready stops it, since the reason
+                    // the first one refused is the reason the rest would.
                     let mut landed = 0;
+                    let mut parked = 0;
                     let mut stopped = None;
                     for id in &ids {
                         match client.apply(id) {
                             Ok(_) => landed += 1,
-                            Err(e) => {
+                            Err(ApplyRefusal::Parked(_)) => parked += 1,
+                            Err(ApplyRefusal::Stopped(e)) => {
                                 stopped = Some(format!("{}: {e}", short(id)));
                                 break;
                             }
                         }
                     }
+                    let tally = match parked {
+                        0 => format!("applied {landed}"),
+                        n => format!("applied {landed}, parked {n} with their reasons"),
+                    };
                     Res::Acted(match stopped {
-                        None => Ok(format!("applied {landed} — the lane is landed")),
-                        Some(why) if landed == 0 => Err(why),
-                        Some(why) => Err(format!("applied {landed}, then stopped at {why}")),
+                        None => Ok(format!("{tally} — the lane is walked")),
+                        Some(why) if landed == 0 && parked == 0 => Err(why),
+                        Some(why) => Err(format!("{tally}, then stopped at {why}")),
                     })
                 }
+                Req::Unblock { id, choice, text, target } => Res::Acted(
+                    client
+                        .unblock(&id, choice, text.as_deref(), target.as_deref())
+                        .map(|did| format!("{}: {did}", short(&id))),
+                ),
                 Req::Diff { id } => {
                     let out = client.diff(&id);
                     Res::Diff(id, out)
@@ -160,6 +188,20 @@ enum Overlay {
     Diff { id: String, body: String, scroll: u16 },
     File { path: String, body: String, scroll: u16 },
     Detail { id: String, scroll: u16 },
+    /// The ways out of a parked card: the reason in full, the moves as a
+    /// list, and — when the move asks for something — the field for it.
+    Unblock { id: String, cursor: usize, ask: Ask },
+}
+
+/// What the ways-out menu is asking for right now.
+#[derive(Debug, Clone, PartialEq)]
+enum Ask {
+    /// Pick a move.
+    Menu,
+    /// Type a line for this move; the footer is the field.
+    Text { choice: &'static str, text: String },
+    /// Pick a target for the move.
+    Target { cursor: usize },
 }
 
 /// Where you were, precisely enough to put you back.
@@ -412,8 +454,9 @@ fn advance(s: &Suggestion) -> Result<Req, String> {
     } else if !s.needs_review.is_empty() || awaits_pass(from) {
         if !s.blocked_on.is_empty() {
             // The block is on you, and a pass cannot do what you have to do.
-            // `b` is how you answer it; this key would only buy a re-stamp.
-            return Err(format!("needs you — {} (b to answer)", s.blocked_on));
+            // The key handler opens the ways out before it gets here; this is
+            // the sentence for the one caller that does not.
+            return Err(format!("needs you — {} (a for the ways out, b to answer)", s.blocked_on));
         }
         Ok(Req::Dispatch { id: Some(s.id.clone()) })
     } else if to == decision_status() {
@@ -684,7 +727,9 @@ fn help_keys(tab: Tab) -> Vec<Line<'static>> {
             "advance does what the lane waits for:",
             "a run, your yes, or the server",
             "landing the patch — which needs a",
-            "clean tree and a patch on disk",
+            "clean tree and a patch on disk.",
+            "on a card parked on you it opens",
+            "the ways out: pick one, enter",
         ] {
             out.push(Line::styled(line, Style::new().fg(theme::dim())));
         }
@@ -860,7 +905,92 @@ fn docs_lines(width: usize) -> Vec<Line<'static>> {
     out
 }
 
-fn draw_overlay(frame: &mut Frame, area: Rect, overlay: &Overlay, tab: Tab, state: Option<&State>) {
+/// The targets out of the raw config the settings tab holds. Typed here, once,
+/// because the ways-out menu is the only other reader and it wants the names.
+fn targets_of(config: Option<&serde_json::Value>) -> Vec<Target> {
+    config
+        .and_then(|c| c.get("targets"))
+        .and_then(|t| serde_json::from_value::<Vec<Target>>(t.clone()).ok())
+        .unwrap_or_default()
+}
+
+/// The ways-out window: the reason in full — the footer truncated it, which
+/// is half of why the menu exists — then the moves, the chosen one marked, and
+/// what the move is asking for, if anything.
+fn unblock_lines(
+    s: &Suggestion,
+    targets: &[Target],
+    cursor: usize,
+    ask: &Ask,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = wrapped(&format!("⚑ {}", s.blocked_on), "", width)
+        .into_iter()
+        .map(|l| Line::styled(l, Style::new().fg(theme::warn())))
+        .collect();
+    lines.push(Line::raw(""));
+    match ask {
+        Ask::Target { cursor } => {
+            lines.push(Line::styled(
+                "move to which target?".to_string(),
+                Style::new().fg(theme::accent()).add_modifier(Modifier::BOLD),
+            ));
+            for (i, t) in other_targets(s, targets).iter().enumerate() {
+                let mark = if i == *cursor { "▸ " } else { "  " };
+                lines.push(Line::from(vec![
+                    Span::styled(mark.to_string(), Style::new().fg(theme::accent())),
+                    Span::styled(t.name.clone(), Style::new().add_modifier(Modifier::BOLD)),
+                    Span::styled(format!("   {}", t.skills), Style::new().fg(theme::dim())),
+                ]));
+            }
+            lines.push(Line::raw(""));
+            lines.push(Line::styled(
+                "j/k move · enter move it · esc back".to_string(),
+                Style::new().fg(theme::dim()),
+            ));
+        }
+        _ => {
+            for (i, w) in ways_out(s, targets).iter().enumerate() {
+                let picked = i == cursor;
+                let mark = if picked { "▸ " } else { "  " };
+                lines.push(Line::from(vec![
+                    Span::styled(mark.to_string(), Style::new().fg(theme::accent())),
+                    Span::styled(
+                        w.label.to_string(),
+                        if picked {
+                            Style::new().fg(theme::accent()).add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::new().add_modifier(Modifier::BOLD)
+                        },
+                    ),
+                ]));
+                lines.extend(
+                    wrapped(w.help, "    ", width)
+                        .into_iter()
+                        .map(|l| Line::styled(l, Style::new().fg(theme::dim()))),
+                );
+            }
+            lines.push(Line::raw(""));
+            lines.push(Line::styled(
+                match ask {
+                    Ask::Text { .. } => "type below · enter sends · esc back to the list".to_string(),
+                    _ => "j/k move · enter pick · esc back".to_string(),
+                },
+                Style::new().fg(theme::dim()),
+            ));
+        }
+    }
+    lines
+}
+
+fn draw_overlay(
+    frame: &mut Frame,
+    area: Rect,
+    overlay: &Overlay,
+    tab: Tab,
+    state: Option<&State>,
+    targets: &[Target],
+) {
     // Size first: the docs and the columns both wrap their own prose and need to
     // know how wide the box will be. `min` after the clamp — on a terminal
     // narrower than the floor the box would be wider than the screen and the
@@ -888,6 +1018,7 @@ fn draw_overlay(frame: &mut Frame, area: Rect, overlay: &Overlay, tab: Tab, stat
         }
         Overlay::Diff { id, scroll, .. } => (format!("patch — {}", short(id)), *scroll),
         Overlay::Detail { id, scroll } => (format!("detail — {}", short(id)), *scroll),
+        Overlay::Unblock { id, .. } => (format!("ways out — {}", short(id)), 0),
     };
 
     frame.render_widget(Clear, box_area);
@@ -942,6 +1073,16 @@ fn draw_overlay(frame: &mut Frame, area: Rect, overlay: &Overlay, tab: Tab, stat
                 Some(s) => detail_lines(s, inner_w),
                 // A refresh can close the file under the window; a calm line
                 // beats a popup that silently shows someone else's card.
+                None => vec![Line::styled(
+                    "gone — the state refreshed it away (esc)".to_string(),
+                    Style::new().fg(theme::dim()),
+                )],
+            };
+            frame.render_widget(paragraph(lines), inner);
+        }
+        Overlay::Unblock { id, cursor, ask } => {
+            let lines = match state.and_then(|st| st.suggestions.iter().find(|s| s.id == *id)) {
+                Some(s) => unblock_lines(s, targets, *cursor, ask, inner_w),
                 None => vec![Line::styled(
                     "gone — the state refreshed it away (esc)".to_string(),
                     Style::new().fg(theme::dim()),
@@ -1065,7 +1206,14 @@ fn draw(frame: &mut Frame, app: &App) {
     draw_footer(frame, footer, app);
 
     if let Some(overlay) = &app.overlay {
-        draw_overlay(frame, frame.area(), overlay, app.tab, app.state.as_ref());
+        draw_overlay(
+            frame,
+            frame.area(),
+            overlay,
+            app.tab,
+            app.state.as_ref(),
+            &targets_of(app.config.as_ref()),
+        );
     }
 }
 
@@ -1077,6 +1225,9 @@ fn draw_footer(frame: &mut Frame, footer: Rect, app: &App) {
     let (text, colour) = if let Some((_, b)) = &app.block {
         // The card is still on screen behind this; the footer is the field.
         (format!(" ⚑ {b}▏  enter saves · empty clears · esc back"), theme::warn())
+    } else if let Some(Overlay::Unblock { ask: Ask::Text { choice, text }, .. }) = &app.overlay {
+        // The menu's move wants a line: same field, in the move's name.
+        (format!(" {choice}: {text}▏  enter sends · esc back"), theme::warn())
     } else if let Some(q) = &app.find {
         // The prompt takes the footer while it is open: the cursor is already
         // on the first match, so this line is the query and how to leave it.
@@ -1277,14 +1428,115 @@ fn run(
             continue;
         }
 
-        // An overlay captures every key: esc/q closes it, the rest scrolls.
+        // The ways-out menu captures every key: the list moves, enter picks,
+        // a move that wants a line takes the keys as text, esc steps back one
+        // level. The card and the targets are read before the overlay is
+        // borrowed, and the request is sent after it is released.
+        if matches!(app.overlay, Some(Overlay::Unblock { .. })) {
+            let card = app
+                .state
+                .as_ref()
+                .zip(match &app.overlay {
+                    Some(Overlay::Unblock { id, .. }) => Some(id.clone()),
+                    _ => None,
+                })
+                .and_then(|(st, id)| st.suggestions.iter().find(|s| s.id == id).cloned());
+            let targets = targets_of(app.config.as_ref());
+            let mut send: Option<Req> = None;
+            let mut close = false;
+            if let (Some(card), Some(Overlay::Unblock { cursor, ask, .. })) = (card, app.overlay.as_mut()) {
+                let ways = ways_out(&card, &targets);
+                match ask {
+                    Ask::Menu => match key.code {
+                        KeyCode::Esc | KeyCode::Char('q') => close = true,
+                        KeyCode::Char('j') | KeyCode::Down => {
+                            *cursor = (*cursor + 1).min(ways.len().saturating_sub(1));
+                        }
+                        KeyCode::Char('k') | KeyCode::Up => *cursor = cursor.saturating_sub(1),
+                        KeyCode::Enter => {
+                            if let Some(w) = ways.get(*cursor) {
+                                match w.needs {
+                                    Needs::Nothing => {
+                                        send = Some(Req::Unblock {
+                                            id: card.id.clone(),
+                                            choice: w.choice,
+                                            text: None,
+                                            target: None,
+                                        });
+                                    }
+                                    Needs::Text => *ask = Ask::Text { choice: w.choice, text: String::new() },
+                                    Needs::Target => *ask = Ask::Target { cursor: 0 },
+                                }
+                            }
+                        }
+                        _ => {}
+                    },
+                    Ask::Text { choice, text } => match key.code {
+                        KeyCode::Esc => *ask = Ask::Menu,
+                        KeyCode::Enter if !text.trim().is_empty() => {
+                            send = Some(Req::Unblock {
+                                id: card.id.clone(),
+                                choice,
+                                text: Some(text.trim().to_string()),
+                                target: None,
+                            });
+                        }
+                        KeyCode::Backspace => {
+                            text.pop();
+                        }
+                        KeyCode::Char(c) => text.push(c),
+                        _ => {}
+                    },
+                    Ask::Target { cursor: at } => {
+                        let others = other_targets(&card, &targets);
+                        match key.code {
+                            KeyCode::Esc => *ask = Ask::Menu,
+                            KeyCode::Char('j') | KeyCode::Down => {
+                                *at = (*at + 1).min(others.len().saturating_sub(1));
+                            }
+                            KeyCode::Char('k') | KeyCode::Up => *at = at.saturating_sub(1),
+                            KeyCode::Enter => {
+                                if let Some(t) = others.get(*at) {
+                                    send = Some(Req::Unblock {
+                                        id: card.id.clone(),
+                                        choice: "retarget",
+                                        text: None,
+                                        target: Some(t.name.clone()),
+                                    });
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            } else {
+                // The card left the state under the menu: nothing to act on.
+                close = true;
+            }
+            if let Some(request) = send {
+                if let Req::Unblock { id, .. } = &request {
+                    app.busy_on = Some(id.clone());
+                }
+                app.busy = true;
+                let _ = req.send(request);
+                close = true;
+            }
+            if close {
+                app.overlay = None;
+            }
+            continue;
+        }
+
+        // Every other overlay captures every key: esc/q closes it, the rest
+        // scrolls.
         if let Some(overlay) = app.overlay.as_mut() {
-            fn scroll_of(o: &mut Overlay) -> &mut u16 {
+            fn scroll_of(o: &mut Overlay) -> Option<&mut u16> {
                 match o {
                     Overlay::Help { scroll, .. }
                     | Overlay::File { scroll, .. }
                     | Overlay::Diff { scroll, .. }
-                    | Overlay::Detail { scroll, .. } => scroll,
+                    | Overlay::Detail { scroll, .. } => Some(scroll),
+                    Overlay::Unblock { .. } => None,
                 }
             }
             match key.code {
@@ -1298,20 +1550,24 @@ fn run(
                     }
                 }
                 KeyCode::Char('j') | KeyCode::Down => {
-                    let s = scroll_of(overlay);
-                    *s = s.saturating_add(1);
+                    if let Some(s) = scroll_of(overlay) {
+                        *s = s.saturating_add(1);
+                    }
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
-                    let s = scroll_of(overlay);
-                    *s = s.saturating_sub(1);
+                    if let Some(s) = scroll_of(overlay) {
+                        *s = s.saturating_sub(1);
+                    }
                 }
                 KeyCode::PageDown => {
-                    let s = scroll_of(overlay);
-                    *s = s.saturating_add(10);
+                    if let Some(s) = scroll_of(overlay) {
+                        *s = s.saturating_add(10);
+                    }
                 }
                 KeyCode::PageUp => {
-                    let s = scroll_of(overlay);
-                    *s = s.saturating_sub(10);
+                    if let Some(s) = scroll_of(overlay) {
+                        *s = s.saturating_sub(10);
+                    }
                 }
                 _ => app.overlay = None,
             }
@@ -1362,6 +1618,22 @@ fn run(
                 if app.tab == Tab::Settings {
                     let _ = req.send(Req::Config);
                 }
+            }
+            // `a` on a card parked on you opens its ways out. On a card carried
+            // by another card it still refuses — nothing there is your move.
+            Action::Advance
+                if app
+                    .board_selected()
+                    .map(|c| !c.blocked_on.is_empty() && c.blocked_by.is_empty())
+                    .unwrap_or(false) =>
+            {
+                let id = app.board_selected().map(|c| c.id.clone()).unwrap_or_default();
+                // The move-to-another-target option needs the targets; fetch
+                // them once, and the menu grows the option when they land.
+                if app.config.is_none() {
+                    let _ = req.send(Req::Config);
+                }
+                app.overlay = Some(Overlay::Unblock { id, cursor: 0, ask: Ask::Menu });
             }
             Action::Advance | Action::Discard => {
                 // Cloned rather than borrowed: the card is read out of the state
@@ -1692,6 +1964,56 @@ mod tests {
             "→ check (claude)",
         ] {
             assert!(text.contains(caption), "missing {caption:?}: {text}");
+        }
+    }
+
+    /// A card parked on you opens its ways out on `a`: the reason in full
+    /// (the footer truncated it), then the moves, best first, and the field
+    /// when a move wants a line. The carried card next to it still refuses.
+    #[test]
+    fn a_parked_card_opens_its_ways_out_with_the_reason_in_full() {
+        let mut app = app_with_state();
+        {
+            let st = app.state.as_mut().unwrap();
+            // A landing that could not happen: parked by the server, on you.
+            st.suggestions[0].status = "approved".into();
+            st.suggestions[0].blocked_on =
+                "apply: error: plugins/ts-dev-tools/skills/pr-review/scripts/fetch-pr.sh: No such file or directory".into();
+        }
+        let id = "user/kaizen/2026-08-08-approval-is-a-dead-end.md".to_string();
+        app.overlay = Some(Overlay::Unblock { id: id.clone(), cursor: 0, ask: Ask::Menu });
+        let text = render(&app, 100, 30);
+        assert!(text.contains("ways out — Approval is a dead end"), "{text}");
+        assert!(text.contains("▸ send back for a new plan"), "an apply: reason leads with a new plan: {text}");
+        // The window wraps the reason rather than cutting it: read its lines
+        // squashed, since a path this long spans two of them on purpose.
+        let card = app.state.as_ref().unwrap().suggestions[0].clone();
+        let squashed = unblock_lines(&card, &[], 0, &Ask::Menu, 60)
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(squashed.contains("scripts/fetch-pr.sh: No such file or directory"), "the whole reason: {squashed}");
+        assert!(squashed.contains("supersede") && !squashed.contains("reject"), "a yes given can only be overtaken: {squashed}");
+
+        // A move that wants a line takes the footer as its field.
+        app.overlay = Some(Overlay::Unblock {
+            id: id.clone(),
+            cursor: 0,
+            ask: Ask::Text { choice: "supersede", text: "landed by hand".into() },
+        });
+        let text = render(&app, 100, 30);
+        assert!(text.contains("supersede: landed by hand▏"), "{text}");
+
+        // Carried by another card: `a` is not yours, whatever the menu offers.
+        let carried = app.state.as_ref().unwrap().suggestions[1].clone();
+        assert!(!carried.blocked_by.is_empty());
+        match advance(&carried) {
+            Err(why) => assert!(why.contains("waiting on"), "{why}"),
+            Ok(_) => panic!("a carried card is not yours to advance"),
         }
     }
 

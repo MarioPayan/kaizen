@@ -197,6 +197,9 @@ export function parseSuggestion({ id, file, skill, target, text }) {
     // card's reason without opening the file — the block line is one sentence.
     review: section(body, 'Review'),
     verdict: section(body, 'Verdict'),
+    // What the user said when a run parked the card on them — the other half
+    // of the brief a card carries when it comes round again.
+    answer: section(body, 'Answer'),
     missing,
     triaged: missing.length === 0,
     score: score({ severity, effort, recurrences }),
