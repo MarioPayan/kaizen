@@ -23,15 +23,15 @@ const scan = (...args) => {
   return JSON.parse(
     execFileSync('node', [cli, 'scan', ...args], {
       encoding: 'utf8',
-      env: { ...process.env, KAIZEN_CONFIG: cfg },
+      env: { ...process.env, HOME: root, KAIZEN_CONFIG: cfg },
     }),
   );
 };
 
-const card = (skill, slug) =>
+const card = (skill, slug, scope = '') =>
   writeFileSync(
     join(root, 'feedback', skill, `2026-01-01-${slug}.md`),
-    `---\nskill: ${skill}\ndate: 2026-01-01\nseverity: low\n---\n\n## Suggestion\n\ns\n`,
+    `---\nskill: ${skill}\ndate: 2026-01-01\nseverity: low\n${scope ? `scope: ${scope}\n` : ''}---\n\n## Suggestion\n\ns\n`,
   );
 
 beforeAll(() => {
@@ -66,5 +66,16 @@ describe('kaizen scan', () => {
     const none = scan('--id', 'user/alpha/2026-01-01-nope.md');
     expect(none.suggestions).toEqual([]);
     expect(none.skills).toEqual([]);
+  });
+
+  it('collapses relative, tilde, and absolute target-local scopes', () => {
+    const relativeScope = 'shared/check.mjs';
+    card('alpha', 'relative-scope', relativeScope);
+    card('alpha', 'tilde-scope', `~/skills/${relativeScope}`);
+    card('alpha', 'absolute-scope', join(root, 'skills', relativeScope));
+
+    const state = scan('--scope', join(root, 'skills', relativeScope));
+    expect(state.suggestions).toHaveLength(3);
+    expect(state.suggestions.map((s) => s.scope)).toEqual(Array(3).fill(relativeScope));
   });
 });

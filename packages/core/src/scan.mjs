@@ -6,12 +6,12 @@
  * copy to drift.
  */
 import { readdirSync, readFileSync, statSync, existsSync } from 'node:fs';
-import { join, relative, dirname, resolve } from 'node:path';
+import { join, relative, dirname, resolve, isAbsolute, normalize, sep } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { ageOf, assignUids, localToday, parseSuggestion } from './suggestion.mjs';
 import { resolveTargets, expandPath } from './config.mjs';
 import { surfaceOf, passesSurface } from './taxonomy.mjs';
-import { suggestionId } from './paths.mjs';
+import { isInside, suggestionId } from './paths.mjs';
 import { isTerminal } from './lifecycle.mjs';
 
 const SCRIPT_EXT = /\.(sh|py|mjs|js|ts|bash|zsh)$/i;
@@ -187,8 +187,18 @@ export function discoverProjectSkills({ roots = [], depth = 3 } = {}) {
   return out.map((s) => ({ ...s, worktrees: worktreeCount.get(s.project) ?? 0 }));
 }
 
+/** One target-local file has one scope regardless of how its path was captured. */
+export function normalizeScope(scope, skillsDir = '') {
+  if (!scope) return scope;
+  if (!isAbsolute(scope) && scope !== '~' && !scope.startsWith(`~${sep}`)) return normalize(scope);
+
+  const absolute = expandPath(scope);
+  const root = skillsDir && expandPath(skillsDir);
+  return root && isInside(root, absolute) ? relative(root, absolute) || '.' : absolute;
+}
+
 /** Read every suggestion filed under a feedback directory. */
-export function discoverSuggestions(feedbackDir, targetName) {
+export function discoverSuggestions(feedbackDir, targetName, skillsDir = '') {
   const out = [];
   if (!existsSync(feedbackDir)) return out;
 
@@ -208,15 +218,15 @@ export function discoverSuggestions(feedbackDir, targetName) {
       } catch {
         continue;
       }
-      out.push(
-        parseSuggestion({
-          id: suggestionId(targetName, entry.name, file),
-          file: full,
-          skill: entry.name,
-          target: targetName,
-          text,
-        }),
-      );
+      const suggestion = parseSuggestion({
+        id: suggestionId(targetName, entry.name, file),
+        file: full,
+        skill: entry.name,
+        target: targetName,
+        text,
+      });
+      suggestion.scope = normalizeScope(suggestion.scope, skillsDir);
+      out.push(suggestion);
     }
   }
   return out;
@@ -282,7 +292,7 @@ export function buildState(config) {
       continue;
     }
     seenFeedback.add(t.feedback);
-    suggestions.push(...discoverSuggestions(t.feedback, t.name));
+    suggestions.push(...discoverSuggestions(t.feedback, t.name, t.skills));
   }
 
   if (config.scan?.enabled) {

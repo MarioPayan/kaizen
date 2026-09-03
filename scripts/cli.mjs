@@ -61,6 +61,7 @@ import {
   statusLine,
   pileGlyph,
   assignBlockedBy,
+  normalizeScope,
   nextStatuses,
   missingRequirements,
   section,
@@ -241,8 +242,12 @@ function cmdScan() {
   const skill = flag('skill');
   const scope = flag('scope');
   if (id || skill || scope) {
+    const skillsByTarget = new Map(state.targets.map((target) => [target.name, target.skills]));
     state.suggestions = state.suggestions.filter(
-      (s) => (!id || s.id === id) && (!skill || s.skill === skill) && (!scope || s.scope === scope),
+      (s) =>
+        (!id || s.id === id) &&
+        (!skill || s.skill === skill) &&
+        (!scope || s.scope === normalizeScope(scope, skillsByTarget.get(s.target))),
     );
     // A fenced read is fenced on both halves. `--id` used to trim the
     // suggestions and hand back every skill on the machine anyway — the
