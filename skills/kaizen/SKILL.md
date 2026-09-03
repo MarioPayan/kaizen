@@ -170,7 +170,11 @@ long way since, confirm again rather than trusting an old stamp.
 
 ## Step 4 — Repeated scopes
 
-When several suggestions share one `scope`, that repetition is evidence prose already failed there. For a scope with 3+ members or 5+ incidents:
+When several suggestions share one `scope`, first confirm they describe the same
+recurring mechanism or remediation. A shared file alone — especially a large
+`SKILL.md` — is not evidence of one fix: cards about independent behaviour keep
+separate proposals and their individually lowest workable rungs. For a scope
+with 3+ such members or 5+ such incidents:
 
 - The fix **must** land at rung 0 or rung 1. Patching one skill's prose is not an acceptable outcome — the recurrence is proof that prose already failed there repeatedly.
 - Add one line to the shared authoring conventions of the target tree so future skills inherit the rule.
