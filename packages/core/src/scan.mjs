@@ -112,6 +112,30 @@ export function discoverSkills(skillsDir, { target = '', kind = 'user' } = {}) {
  * entirely duplicates.
  */
 const repoCache = new Map();
+const gitRootCache = new Map();
+
+function gitRoot(path) {
+  let dir = resolve(path);
+  while (!existsSync(dir) && dirname(dir) !== dir) dir = dirname(dir);
+  try {
+    if (!statSync(dir).isDirectory()) dir = dirname(dir);
+  } catch {
+    return '';
+  }
+
+  if (gitRootCache.has(dir)) return gitRootCache.get(dir);
+  let root = '';
+  try {
+    root = execFileSync('git', ['-C', dir, 'rev-parse', '--show-toplevel'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    /* outside a Git repository */
+  }
+  gitRootCache.set(dir, root);
+  return root;
+}
 
 function repoIdentity(dir) {
   if (repoCache.has(dir)) return repoCache.get(dir);
@@ -276,6 +300,12 @@ export function buildState(config) {
     if (t.feedback && !existsSync(t.feedback)) {
       warnings.push(`target "${t.name}": feedback path not found — ${t.feedback}`);
     }
+    const targetRoot = existsSync(t.skills) ? gitRoot(t.skills) : '';
+    if (t.writable && existsSync(t.skills) && !targetRoot) {
+      warnings.push(
+        `target "${t.name}": writable skills path is not inside a Git repository — Runner mode cannot advance suggestions past recorded until it points at a Git-tracked tree: ${t.skills}`,
+      );
+    }
 
     for (const skill of discoverSkills(t.skills, { target: t.name })) {
       if (seenSkillFiles.has(skill.path)) continue;
@@ -292,7 +322,19 @@ export function buildState(config) {
       continue;
     }
     seenFeedback.add(t.feedback);
-    suggestions.push(...discoverSuggestions(t.feedback, t.name, t.skills));
+    const found = discoverSuggestions(t.feedback, t.name, t.skills);
+    for (const suggestion of found) {
+      if (!suggestion.scope) continue;
+      const scope = isAbsolute(suggestion.scope)
+        ? suggestion.scope
+        : resolve(targetRoot || t.skills, suggestion.scope);
+      if (!gitRoot(scope)) {
+        warnings.push(
+          `suggestion "${suggestion.id}": scope is not inside a Git repository — Runner mode cannot advance it past recorded until it points at a Git-tracked tree: ${scope}`,
+        );
+      }
+    }
+    suggestions.push(...found);
   }
 
   if (config.scan?.enabled) {
