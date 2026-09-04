@@ -716,10 +716,8 @@ const routes = {
         return { id, did: 'rejected' };
       }
       case 'retarget': {
-        // The patch was written against the wrong repo root — filed under one
-        // target, fixing another. Move the card and its patch to the target
-        // whose repo the fix lands in, and send it back for a plan against
-        // that root; the old patch is kept beside it as the brief's draft.
+        // The card was filed under the wrong repo root. Retargeting changes
+        // where it lives, not how far it has advanced through the lifecycle.
         const to = resolveTargets(ctx.config).find((t) => t.name === targetName);
         if (!to) throw new HttpError(404, `unknown target "${targetName}"`);
         if (!to.writable || !to.feedback) throw new HttpError(403, `target "${to.name}" cannot take a card`);
@@ -733,10 +731,9 @@ const routes = {
         writeSection(
           path,
           'Answer',
-          `${stamp} — moved from target "${target.name}" to "${to.name}": plan against that repo`,
+          `${stamp} — moved from target "${target.name}" to "${to.name}": scope belongs there`,
         );
-        if (canTransition(from, 'triaged')) move('triaged');
-        else writeFrontmatter(path, { blocked_on: '' });
+        writeFrontmatter(path, { blocked_on: '' });
         renameSync(path, dest);
         const patch = path.replace(/\.md$/, '.patch');
         if (existsSync(patch)) renameSync(patch, dest.replace(/\.md$/, '.patch'));

@@ -1000,10 +1000,10 @@ describe('parking and the ways out', () => {
     return { status: res.status, body: await res.json() };
   };
   const front = (file) => readFileSync(join(feedback, 'demo', file), 'utf8');
-  const card = (name, status, extra = '') =>
+  const card = (name, status, extra = '', confirmed = 'confirmed_at: 2026-04-10 @ abc1234\n') =>
     writeFileSync(
       join(feedback, 'demo', name),
-      `---\nskill: demo\ndate: 2026-04-10\nseverity: low\ntype: hygiene\nobjective: debt\neffort: S\nrung: 1\nscope: demo/SKILL.md\nconfirmed_at: 2026-04-10 @ abc1234\nstatus: ${status}\n${extra}---\n\n## Context\n\nc\n\n## Suggestion\n\ns\n\n## Plan\n\np\n\n## Validation\n\nv\n`,
+      `---\nskill: demo\ndate: 2026-04-10\nseverity: low\ntype: hygiene\nobjective: debt\neffort: S\nrung: 1\nscope: demo/SKILL.md\n${confirmed}status: ${status}\n${extra}---\n\n## Context\n\nc\n\n## Suggestion\n\ns\n\n## Plan\n\np\n\n## Validation\n\nv\n`,
     );
 
   beforeAll(async () => {
@@ -1166,7 +1166,7 @@ describe('parking and the ways out', () => {
     ).toBe(400);
   });
 
-  it('moves a card filed under the wrong target, patch and all, and plans it there', async () => {
+  it('moves a card filed under the wrong target, patch and all, without changing its phase', async () => {
     card('2026-04-10-elsewhere.md', 'approved', 'blocked_on: apply: plugins/x: No such file or directory\n');
     writeFileSync(join(feedback, 'demo', '2026-04-10-elsewhere.patch'), 'diff --git a/x b/x\n');
     const id = 'user/demo/2026-04-10-elsewhere.md';
@@ -1178,10 +1178,42 @@ describe('parking and the ways out', () => {
     expect(moved.body.id).toBe('plugin/demo/2026-04-10-elsewhere.md');
     expect(existsSync(join(feedback, 'demo', '2026-04-10-elsewhere.md'))).toBe(false);
     const there = readFileSync(join(other, 'demo', '2026-04-10-elsewhere.md'), 'utf8');
-    expect(there).toMatch(/status: triaged/);
+    expect(there).toMatch(/status: approved/);
     expect(there).toMatch(/moved from target "user" to "plugin"/);
     expect(existsSync(join(other, 'demo', '2026-04-10-elsewhere.patch'))).toBe(true);
-    expect(mine.at(-1)).toMatchObject({ runner: 'opencode', fencedTo: moved.body.id });
+  });
+
+  it('retargets recorded and unchecked triaged cards without requiring a phase transition', async () => {
+    card('2026-04-10-recorded.md', 'recorded', 'blocked_on: scope is outside a Git repository\n', '');
+    const recorded = await call('POST', '/api/unblock', {
+      id: 'user/demo/2026-04-10-recorded.md',
+      choice: 'retarget',
+      target: 'plugin',
+    });
+    expect(recorded.status).toBe(200);
+    const recordedThere = readFileSync(join(other, 'demo', '2026-04-10-recorded.md'), 'utf8');
+    expect(recordedThere).toMatch(/status: recorded/);
+    expect(recordedThere).not.toMatch(/confirmed_at:/);
+    expect(recordedThere).toMatch(/blocked_on: $/m);
+    expect(mine.at(-1)).toMatchObject({ runner: 'opencode', fencedTo: recorded.body.id });
+    mine.at(-1).emit('exit', 0, null);
+
+    card(
+      '2026-04-10-unchecked.md',
+      'triaged',
+      'needs_review: claude\nblocked_on: scope is outside a Git repository\n',
+    );
+    const unchecked = await call('POST', '/api/unblock', {
+      id: 'user/demo/2026-04-10-unchecked.md',
+      choice: 'retarget',
+      target: 'plugin',
+    });
+    expect(unchecked.status).toBe(200);
+    const uncheckedThere = readFileSync(join(other, 'demo', '2026-04-10-unchecked.md'), 'utf8');
+    expect(uncheckedThere).toMatch(/status: triaged/);
+    expect(uncheckedThere).toMatch(/needs_review: claude/);
+    expect(uncheckedThere).toMatch(/blocked_on: $/m);
+    expect(mine.at(-1)).toMatchObject({ runner: 'claude', fencedTo: unchecked.body.id });
     mine.at(-1).emit('exit', 0, null);
   });
 });
