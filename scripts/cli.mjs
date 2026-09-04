@@ -539,11 +539,12 @@ const TRIAGE_FIELDS = {
  * `cat >>` by reading source. Free text; the section is replaced if the heading
  * exists and appended otherwise.
  */
+const LIFECYCLE = spec();
 const BODY_FIELDS = Object.fromEntries(
-  spec()
-    .fields.filter((f) => f.where === 'body')
-    .map((f) => [f.id, f.heading]),
+  LIFECYCLE.fields.filter((f) => f.where === 'body').map((f) => [f.id, f]),
 );
+const PHASES = new Map(LIFECYCLE.phases.map((p) => [p.id, p]));
+const STATUS_PHASES = new Map(LIFECYCLE.statuses.map((s) => [s.id, PHASES.get(s.phase)]));
 
 /** Turn a decision list into writes, or into every reason it cannot be one. */
 function validateDecisions(decisions, byId) {
@@ -566,7 +567,7 @@ function validateDecisions(decisions, byId) {
           errors.push(`${where}.${key}: must not be empty`);
           continue;
         }
-        sections[BODY_FIELDS[key]] = String(value);
+        sections[BODY_FIELDS[key].heading] = String(value);
         continue;
       }
       if (!(key in TRIAGE_FIELDS)) {
@@ -598,7 +599,17 @@ function validateDecisions(decisions, byId) {
 
 /** One decision's writes, frontmatter then body, on one file. */
 function applyWrite(w) {
-  if (Object.keys(w.patch).length) writeFrontmatter(w.file, w.patch);
+  const statusPhase = STATUS_PHASES.get(canonicalStatus(w.patch.status));
+  const refreshedBody = Object.keys(w.sections ?? {}).some((heading) => {
+    const field = Object.values(BODY_FIELDS).find((f) => f.heading === heading);
+    return field.id !== 'verdict' && PHASES.get(field.phase)?.reviewer;
+  });
+  const invalidatesVerdict = statusPhase?.reviewer || refreshedBody;
+  if (Object.keys(w.patch).length || invalidatesVerdict) {
+    writeFrontmatter(w.file, w.patch, {
+      removeSections: invalidatesVerdict ? [BODY_FIELDS.verdict.heading] : [],
+    });
+  }
   for (const [heading, text] of Object.entries(w.sections ?? {})) writeSection(w.file, heading, text);
 }
 
@@ -854,7 +865,8 @@ function cmdTriage() {
 function triageSelfCheck() {
   const root = mkdtempSync(join(tmpdir(), 'kaizen-triage-check-'));
   const file = join(root, 'a.md');
-  const original = '---\nskill: demo\ndate: 2026-01-01\nseverity: low\n---\n\n## Suggestion\n\nx\n';
+  const original =
+    '---\nskill: demo\ndate: 2026-01-01\nseverity: low\n---\n\n## Suggestion\n\nx\n\n## Verdict\n\npass — old plan\n';
   writeFileSync(file, original);
 
   let failed = 0;
@@ -922,6 +934,7 @@ function triageSelfCheck() {
       section(parsed.body, 'Validation') === 'run Y\n\nexit 0 passes',
     'absent sections are appended with their content',
   );
+  assert(section(parsed.body, 'Verdict') === '', 'planning clears a verdict about the previous state');
   assert(section(parsed.body, 'Suggestion') === 'x', 'existing sections survive the append');
   for (const w of validateDecisions([{ id: 'a', plan: 'edit Z' }], byId).writes) applyWrite(w);
   parsed = parseFrontmatter(readFileSync(file, 'utf8'));

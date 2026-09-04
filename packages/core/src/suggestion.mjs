@@ -236,10 +236,10 @@ export function score({ severity, effort, recurrences = 0 }) {
  * module that parses argv and dispatches on import would run the CLI as a side
  * effect of asking for one function.
  */
-export function writeFrontmatter(file, patch) {
+export function writeFrontmatter(file, patch, { removeSections = [] } = {}) {
   const text = readFileSync(file, 'utf8');
   const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(text);
-  const body = m ? text.slice(m[0].length) : text;
+  let body = m ? text.slice(m[0].length) : text;
   const lines = m ? m[1].split(/\r?\n/) : [];
   const seen = new Set();
 
@@ -252,6 +252,16 @@ export function writeFrontmatter(file, patch) {
     return `${key}: ${patch[key]}`;
   });
   for (const [k, v] of Object.entries(patch)) if (!seen.has(k)) out.push(`${k}: ${v}`);
+
+  for (const heading of removeSections) {
+    const lines = body.split(/\r?\n/);
+    const wanted = String(heading).toLowerCase();
+    const start = lines.findIndex((line) => /^##\s+(.*?)\s*$/.exec(line)?.[1].toLowerCase() === wanted);
+    if (start === -1) continue;
+    let end = start + 1;
+    while (end < lines.length && !/^##\s/.test(lines[end])) end++;
+    body = [...lines.slice(0, start), ...lines.slice(end)].join('\n').replace(/^\n+/, '');
+  }
 
   writeFileSync(file, `---\n${out.join('\n')}\n---\n${body.startsWith('\n') ? '' : '\n'}${body}`);
   return file;
