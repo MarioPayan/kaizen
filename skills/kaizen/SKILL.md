@@ -200,7 +200,7 @@ that counts as passing:
 |---|---|
 | a rung-1 script | `bash <script> --self-check` exits 0 |
 | a code change | the test that fails before and passes after, by name |
-| prose in a skill | the observable behaviour to look for on the next run |
+| prose in a skill | a command that checks the required instruction is present and runs the repository's normal checks; name the next real run to observe separately |
 
 Write the command as one fenced `bash` block. `kaizen verify --dry` extracts
 that block verbatim and runs it from a throwaway worktree with the sidecar patch
@@ -210,6 +210,13 @@ to the live tree validates the unpatched file instead.
 "Read it and see if it looks right" is not a validation plan. If you cannot say
 what would prove the fix worked, that is a sign the fix is not understood yet —
 leave it at `triaged` and say so.
+
+A future model run is evidence to watch for, not lifecycle validation: a prose
+plan must include an immediate deterministic proxy, and may name the next real
+run as a non-gating follow-up. `reviewed` and `verified` then claim only that the
+instruction landed and the proxy passed, never that unobserved future behaviour
+was validated. File a recurrence through `skill-reflect` if that later run shows
+the instruction did not hold; do not invent a synthetic task during review.
 
 Both sections are written through the same call as the frontmatter, so a plan
 pass is one write like triage and verify: `kaizen triage --apply` with
