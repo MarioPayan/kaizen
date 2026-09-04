@@ -21,6 +21,7 @@ edit the JSON, then `npm run docs`.
 - No user-specific paths in the repo. Config lives in `~/.claude/kaizen/`;
   tests isolate via the `KAIZEN_CONFIG` env var.
 - The engine decides, the TUI draws: derived facts belong in core, not views.
+- Repeated suggestions sharing a scope use one carrier patch; compare every member's dated recurrences before finalizing it.
 - Comment style: comments explain _why_, at the density the codebase already
   has. Tests are named as sentences about behaviour.
 - When a skill sequences CLI commands, document the CLI's accepted state and

@@ -279,6 +279,7 @@ describe('kaizen doctor', () => {
         status: 'planned',
         scope: 'y/SKILL.md',
         file: here,
+        latestRecurrence: '## Recurrence — 2026-08-01\n\nAgain.',
       }),
       // capture-quality: enough scopeless rows to cross the threshold
       ...[1, 2, 3].map((n) => suggestion({ id: `user/demo/2026-08-01-s${n}.md`, slug: `s${n}`, scope: '' })),
@@ -291,6 +292,7 @@ describe('kaizen doctor', () => {
       'scope-fix-orphans-siblings',
       'harness-scope-rung-mismatch',
       'scope-has-several-live-patches',
+      'scope-patch-misses-member-recurrence',
       'capture-quality',
     ]) {
       expect(fired, `fixture fires ${id}`).toContain(id);
@@ -355,6 +357,64 @@ describe('kaizen doctor', () => {
     expect(findings([{ name: 'demo', project }])).toEqual([]);
     // Known but missing project: unknowable, not rotten.
     expect(findings([{ name: 'demo', project: join(root, 'gone') }])).toEqual([]);
+  });
+
+  describe('live-patches-conflict', () => {
+    const fixture = ({ conflict }) => {
+      const root = mkdtempSync(join(tmpdir(), 'kaizen-doctor-sequence-'));
+      const repo = join(root, 'repo');
+      const feedback = join(root, 'feedback');
+      mkdirSync(repo);
+      mkdirSync(feedback);
+      const git = (...args) => execFileSync('git', args, { cwd: repo, stdio: 'pipe' });
+      git('init', '-q');
+      git('config', 'user.email', 'k@example.com');
+      git('config', 'user.name', 'k');
+      writeFileSync(join(repo, 'one.txt'), 'one\ntwo\nthree\n');
+      writeFileSync(join(repo, 'two.txt'), 'alpha\nbeta\n');
+      git('add', '-A');
+      git('commit', '-q', '-m', 'init');
+
+      const patch = (slug, file, text) => {
+        writeFileSync(join(repo, file), text);
+        writeFileSync(join(feedback, `${slug}.patch`), git('diff'));
+        git('checkout', '--', file);
+        writeFileSync(join(feedback, `${slug}.md`), '');
+        return suggestion({
+          id: `user/demo/${slug}.md`,
+          file: join(feedback, `${slug}.md`),
+          slug,
+          target: 'user',
+          status: 'planned',
+        });
+      };
+
+      const first = patch('first', 'one.txt', 'one\nTWO\nthree\n');
+      const second = conflict
+        ? patch('second', 'one.txt', 'one\ntwo\nTHREE\n')
+        : patch('second', 'two.txt', 'alpha\nBETA\n');
+      first.score = 2;
+      second.score = 1;
+      const cfg = {
+        ...defaultConfig(),
+        targets: [{ name: 'user', skills: repo, feedback, writable: true }],
+      };
+      return runDoctor({ config: cfg, state: stateWith([second, first]), today: TODAY }).filter(
+        (f) => f.check === 'live-patches-conflict',
+      );
+    };
+
+    it('flags adjacent edits that only conflict when applied in score order', () => {
+      const found = fixture({ conflict: true });
+      expect(found).toHaveLength(1);
+      expect(found[0].severity).toBe('medium');
+      expect(found[0].evidence).toContain('`second` does not apply after `first`');
+      expect(found[0].evidence).toContain('patch failed');
+    });
+
+    it('is silent when live patches touch different files', () => {
+      expect(fixture({ conflict: false })).toEqual([]);
+    });
   });
 
   /**
@@ -424,10 +484,67 @@ describe('kaizen doctor', () => {
     });
   });
 
+  describe('scope-patch-misses-member-recurrence', () => {
+    const here = new URL(import.meta.url).pathname;
+
+    it('flags a latest member recurrence dated on or after the live carrier was filed', () => {
+      const found = only(
+        stateWith([
+          suggestion({
+            id: 'user/demo/2026-08-23-carrier.md',
+            slug: 'carrier',
+            status: 'planned',
+            date: '2026-08-23',
+            file: here,
+          }),
+          suggestion({
+            id: 'user/demo/2026-08-22-member.md',
+            slug: 'member',
+            latestRecurrence: '## Recurrence — 2026-08-24\n\nIt happened again.',
+          }),
+        ]),
+        'scope-patch-misses-member-recurrence',
+      );
+      expect(found).toHaveLength(1);
+      expect(found[0].severity).toBe('medium');
+      expect(found[0].evidence).toContain('2026-08-23-carrier.md@planned');
+      expect(found[0].evidence).toContain('2026-08-22-member.md — Recurrence 2026-08-24');
+    });
+
+    it('ignores older or undated evidence, other targets and carriers without a live patch', () => {
+      const quiet = stateWith([
+        suggestion({
+          id: 'user/demo/2026-08-23-carrier.md',
+          slug: 'carrier',
+          status: 'planned',
+          date: '2026-08-23',
+        }),
+        suggestion({
+          id: 'user/demo/2026-08-22-member.md',
+          slug: 'member',
+          latestRecurrence: '## Recurrence — 2026-08-22\n\nOlder.',
+        }),
+        suggestion({
+          id: 'user/demo/2026-08-21-legacy.md',
+          slug: 'legacy',
+          latestRecurrence: '## Recurrence\n\nUndated legacy heading.',
+        }),
+        suggestion({
+          id: 'other/demo/2026-08-22-other.md',
+          slug: 'other',
+          target: 'other',
+          latestRecurrence: '## Recurrence — 2026-08-24\n\nOther target.',
+        }),
+      ]);
+      expect(only(quiet, 'scope-patch-misses-member-recurrence')).toEqual([]);
+    });
+  });
+
   it('every check has a stable id', () => {
     const ids = CHECKS.map((c) => c.id);
     expect(new Set(ids).size).toBe(ids.length);
     // The id goes into the filed slug, so renaming one re-files everything.
     expect(ids).toContain('capture-quality');
+    expect(ids).toContain('scope-patch-misses-member-recurrence');
   });
 });

@@ -16,9 +16,10 @@
  * A finding is shaped exactly like a suggestion, so `--file` can drop it into
  * the same queue as everything else and it competes on the same score.
  */
-import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync, statSync, mkdtempSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join, dirname, relative } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { defaultConfig } from './config.mjs';
 import { resolveTargets } from './config.mjs';
@@ -262,6 +263,100 @@ function patchesThatNoLongerApply(state, config) {
 }
 
 /**
+ * Individually valid patches can still conflict when the drain lands them in
+ * score order. Check that sequence in a disposable worktree before the first
+ * commit turns the next proposal into a drain-time failure.
+ */
+function livePatchesConflict(state, config) {
+  const writable = new Map(
+    resolveTargets(config)
+      .filter((t) => t.writable)
+      .map((t) => [t.name, t]),
+  );
+  const byTarget = new Map();
+  for (const s of state.suggestions) {
+    if (isTerminal(s.status) || hasLanded(s.status) || !writable.has(s.target)) continue;
+    const patch = s.file.replace(/\.md$/, '.patch');
+    if (!existsSync(patch)) continue;
+    if (!byTarget.has(s.target)) byTarget.set(s.target, []);
+    byTarget.get(s.target).push({ ...s, patch });
+  }
+
+  const findings = [];
+  for (const [targetName, patches] of byTarget) {
+    if (patches.length < 2) continue;
+    patches.sort((a, b) => (b.score ?? 0) - (a.score ?? 0) || a.id.localeCompare(b.id));
+
+    const target = writable.get(targetName);
+    let repo;
+    let scratch;
+    let worktree;
+    const conflicts = [];
+    try {
+      repo = String(
+        execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: target.skills, stdio: 'pipe' }),
+      ).trim();
+      scratch = mkdtempSync(join(tmpdir(), 'kaizen-doctor-patches-'));
+      worktree = join(scratch, 'worktree');
+      execFileSync('git', ['worktree', 'add', '--detach', worktree, 'HEAD'], { cwd: repo, stdio: 'pipe' });
+
+      let previous = '';
+      for (const current of patches) {
+        try {
+          execFileSync('git', ['apply', current.patch], { cwd: worktree, stdio: 'pipe' });
+          previous = current.slug;
+        } catch (e) {
+          const stderr = String(e.stderr ?? e.message).trim();
+
+          // Start the next comparison from the failed patch, not from a tree
+          // still carrying the earlier side of the conflict.
+          execFileSync('git', ['reset', '--hard', 'HEAD'], { cwd: worktree, stdio: 'pipe' });
+          execFileSync('git', ['clean', '-fdq'], { cwd: worktree, stdio: 'pipe' });
+          try {
+            execFileSync('git', ['apply', current.patch], { cwd: worktree, stdio: 'pipe' });
+            if (previous) conflicts.push({ before: previous, after: current, stderr });
+            previous = current.slug;
+          } catch {
+            // patch-no-longer-applies reports a patch that also fails at HEAD.
+            previous = '';
+          }
+        }
+      }
+    } catch {
+      // A missing or unreadable target is already surfaced by scan warnings.
+      continue;
+    } finally {
+      if (repo && worktree) {
+        try {
+          execFileSync('git', ['worktree', 'remove', '--force', worktree], { cwd: repo, stdio: 'pipe' });
+        } catch {
+          // The scratch directory cleanup below is still safe and best-effort.
+        }
+      }
+      if (scratch) rmSync(scratch, { recursive: true, force: true });
+    }
+
+    if (conflicts.length === 0) continue;
+    findings.push({
+      slug: `live-patches-conflict-${targetName}`.replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 80),
+      severity: 'medium',
+      scope: conflicts[0].after.scope || 'skills/kaizen/SKILL.md',
+      context: `${conflicts.length} live patch conflict(s) in writable target \`${targetName}\` when applied in score order. The later proposal(s) apply at HEAD but not after the proposal immediately before them.`,
+      evidence: bullets(
+        conflicts.flatMap(({ before, after, stderr }) => [
+          `\`${after.slug}\` does not apply after \`${before}\``,
+          ...stderr.split('\n').slice(0, 5),
+        ]),
+        Infinity,
+      ),
+      suggestion:
+        'Re-generate or reorder the named patches so they apply in sequence before either is drained. Each patch is valid against HEAD by itself; the conflict only appears after an earlier live proposal is applied.',
+    });
+  }
+  return findings;
+}
+
+/**
  * A shared-scope fix closes one member and orphans the rest.
  *
  * Found by hand, expensively. One artefact fixes every suggestion that names
@@ -446,12 +541,60 @@ function scopeWithSeveralLivePatches(state) {
   return findings;
 }
 
+/**
+ * A scope carrier can become stale while it waits: a member records another
+ * incident, but a fenced pass on the carrier never reads that member's body.
+ * Dates make the reread requirement mechanical even though deciding whether
+ * the patch already covers the evidence remains a review judgement.
+ */
+function scopePatchMissesMemberRecurrence(state) {
+  const findings = [];
+  for (const carrier of state.suggestions) {
+    if (!carrier.scope || !inPatchWindow(carrier.status)) continue;
+    const patch = carrier.file.replace(/\.md$/, '.patch');
+    if (!existsSync(patch)) continue;
+    const carrierDate = String(carrier.date ?? '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(carrierDate)) continue;
+
+    const recent = state.suggestions.flatMap((member) => {
+      if (member.id === carrier.id || member.target !== carrier.target || member.scope !== carrier.scope) {
+        return [];
+      }
+      const recurrenceDate = /^##\s+Recurrence\s+(?:—|-)\s*(\d{4}-\d{2}-\d{2})\b/im.exec(
+        member.latestRecurrence ?? '',
+      )?.[1];
+      return recurrenceDate && recurrenceDate >= carrierDate
+        ? [`${member.id} — Recurrence ${recurrenceDate}`]
+        : [];
+    });
+    if (recent.length === 0) continue;
+
+    findings.push({
+      slug: `scope-patch-misses-member-recurrence-${carrier.slug}`
+        .replace(/[^A-Za-z0-9._-]+/g, '-')
+        .slice(0, 80),
+      severity: 'medium',
+      scope: carrier.scope,
+      context: `The live scope carrier \`${carrier.id}\`, filed ${carrierDate}, has ${recent.length} member(s) whose latest dated recurrence is at or after that date. Its patch may predate evidence that a fenced carrier pass never reads.`,
+      evidence: bullets([`carrier: ${carrier.id}@${carrier.status} → ${patch}`, ...recent]),
+      suggestion:
+        'Re-read the named recurrence sections against the carrier patch. Amend and revalidate the patch if it misses their evidence; otherwise record that the existing patch already covers them before draining it.',
+    });
+  }
+  return findings;
+}
+
 export const CHECKS = [
   { id: 'dead-config-key', run: () => deadConfigKeys() },
   { id: 'scope-fix-orphans-siblings', run: (ctx) => scopeFixOrphansSiblings(ctx.state, ctx.config) },
   { id: 'scope-has-several-live-patches', run: (ctx) => scopeWithSeveralLivePatches(ctx.state) },
+  {
+    id: 'scope-patch-misses-member-recurrence',
+    run: (ctx) => scopePatchMissesMemberRecurrence(ctx.state),
+  },
   { id: 'harness-scope-rung-mismatch', run: (ctx) => harnessScopeRungMismatch(ctx.state) },
   { id: 'patch-no-longer-applies', run: (ctx) => patchesThatNoLongerApply(ctx.state, ctx.config) },
+  { id: 'live-patches-conflict', run: (ctx) => livePatchesConflict(ctx.state, ctx.config) },
   { id: 'decided-without-a-patch', run: (ctx) => decidedWithoutAPatch(ctx.state) },
   { id: 'stale-decision', run: (ctx) => staleDecisions(ctx.state, ctx.today) },
   { id: 'capture-quality', run: (ctx) => captureQuality(ctx.state) },
