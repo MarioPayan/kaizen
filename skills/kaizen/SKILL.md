@@ -229,9 +229,11 @@ card comes round again; it is the call you asked for. A final report in prose
 is still welcome; it is just not the only place the reason lives.
 
 **3. The patch** — a real diff, not a description of one. Make it in a
-throwaway worktree at HEAD, never in the live tree: `git -C <repo> worktree add
-/tmp/kaizen-wt HEAD`, and for the kaizen repo also `npm ci --prefix
-/tmp/kaizen-wt --ignore-scripts` so it has its own `node_modules` and
+throwaway worktree at HEAD, never in the live tree. Allocate it with
+`wt="$("${CLAUDE_PLUGIN_ROOT}/skills/_lib/proposal-worktree.sh" <repo>)"`; the
+helper uses a fresh path so residue from an interrupted pass cannot collide with
+the next one. For the kaizen repo also run `npm ci --prefix "$wt"
+--ignore-scripts` so it has its own `node_modules` and
 `@kaizen/*` resolves inside the worktree instead of back to the live tree.
 Someone else's uncommitted work would otherwise ride into the diff, and the
 tests would exercise their WIP instead of the patch — 21 modified files of
@@ -247,7 +249,8 @@ user's skills repo that way.
 # in the throwaway worktree, not the target's live tree
 "${CLAUDE_PLUGIN_ROOT}/skills/_lib/proposal-patch.sh" \
   /tmp/kaizen-<scope-or-id>.patch [<new paths>...]     # captures, cleans, then checks at HEAD
-git -C <repo> worktree remove --force /tmp/kaizen-wt  # leave nothing behind
+git -C <repo> worktree remove --force "$wt"           # leave nothing behind
+rmdir "$(dirname "$wt")"
 ```
 
 Pass only intentional new files as `<new paths>`; the helper uses intent-to-add
@@ -293,7 +296,7 @@ pair of eyes:
 | Card is | Check |
 |---|---|
 | `triaged` | The labels fit the Context — type, objective, effort, and a rung with its one-sentence justification; `scope` names the file the fix lands in; `confirmed_at` names a commit, and the problem is still there at HEAD — or the card should have been `superseded`, with where the fix lives. |
-| `planned` | Everything in the `triaged` row first — the labels arrived in the same run, unchecked. Then: `## Plan` says which files and what stays out; `## Validation` names a command and a passing result, not "read it and see"; the sibling `.patch` passes `git apply --check` against the live tree and does what the plan says, nothing more; the rung is the lowest that works. |
+| `planned` | Everything in the `triaged` row first — the labels arrived in the same run, unchecked. Then: `## Plan` says which files and what stays out; `## Validation` names a command and a passing result, not "read it and see"; the sibling `.patch` passes `git apply --check` against the live tree and against an isolated worktree allocated by `proposal-worktree.sh`, and does what the plan says, nothing more; the rung is the lowest that works. |
 | `reviewed` | This is the verify phase. Run the command `## Validation` names against the tree the commit landed in (`applied_sha`), and read `## Review` against what you see. |
 
 Then write the verdict in one `triage --apply` call:
