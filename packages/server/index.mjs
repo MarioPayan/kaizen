@@ -57,6 +57,8 @@ import {
   requirementsFor,
   writeSection,
   suggestionId,
+  patchIdentity,
+  spec,
 } from '@kaizen/core';
 import { createEventStream } from './events.mjs';
 
@@ -180,11 +182,11 @@ function assertTransition(from, to, id) {
  * and no validation plan, which is precisely the state the whole spec exists to
  * prevent. A phase declares what it produces; you may not leave it until it has.
  */
-function assertRequirements(config, id, to) {
+function assertRequirements(config, id, to, overrides = {}) {
   const { path } = suggestionFile(config, id);
   const { data, body } = parseFrontmatter(readFileSync(path, 'utf8'));
   const missing = missingRequirements(to, {
-    data,
+    data: { ...data, ...overrides },
     body,
     hasPatch: existsSync(path.replace(/\.md$/, '.patch')),
   });
@@ -202,6 +204,16 @@ function assertRequirements(config, id, to) {
     409,
     `${id.split('/').at(-1)} cannot become "${to}" yet — that phase requires ${how.join(', ')}.`,
   );
+}
+
+/** The attended decision approves exact patch bytes, not a mutable filename. */
+function approval(config, id, to) {
+  const decision = spec().phases.find((p) => p.attended);
+  if (to !== decision?.produces) return {};
+  const { path } = suggestionFile(config, id);
+  const sidecar = path.replace(/\.md$/, '.patch');
+  if (!existsSync(sidecar)) throw new HttpError(409, 'cannot approve without a proposal patch');
+  return { approved_patch: patchIdentity(readFileSync(sidecar)) };
 }
 
 /**
@@ -406,7 +418,12 @@ const routes = {
       if (from !== to) {
         assertTransition(from, to, id);
         assertChecked(ctx.config, id, to);
-        assertRequirements(ctx.config, id, to);
+        const approved = approval(ctx.config, id, to);
+        assertRequirements(ctx.config, id, to, approved);
+        Object.assign(patch, approved);
+        const decision = spec().phases.find((p) => p.attended);
+        const prior = spec().statuses.find((s) => (s.next ?? []).includes(decision?.produces));
+        if (from === decision?.produces && to === prior?.id) patch.approved_patch = '';
       }
       patch.status = to;
       if (notes) patch.notes = notes;
@@ -440,12 +457,13 @@ const routes = {
     for (const s of candidates) {
       try {
         assertChecked(ctx.config, s.id, to);
-        assertRequirements(ctx.config, s.id, to);
+        const approved = approval(ctx.config, s.id, to);
+        assertRequirements(ctx.config, s.id, to, approved);
+        const { path } = suggestionFile(ctx.config, s.id);
+        writeFrontmatter(path, { status: to, ...approved });
       } catch {
         continue;
       }
-      const { path } = suggestionFile(ctx.config, s.id);
-      writeFrontmatter(path, { status: to });
       moved.push(s.id);
     }
     if (!moved.length) throw new HttpError(409, `nothing can become ${to}`);
@@ -558,6 +576,14 @@ const routes = {
       throw new HttpError(422, reason, undefined, { parked: true });
     };
     if (!existsSync(patch)) park('no proposal patch for this suggestion yet');
+    const { data } = parseFrontmatter(readFileSync(path, 'utf8'));
+    const currentIdentity = patchIdentity(readFileSync(patch));
+    if (!data.approved_patch || data.approved_patch !== currentIdentity) {
+      throw new HttpError(
+        409,
+        'the proposal patch changed after approval — return it to planning and approve it again',
+      );
+    }
 
     if (ctx.config.applyGuards?.requireCleanTree !== false) await assertApplyable(root, patch);
     if (ctx.config.applyGuards?.requireDiffApplies !== false) {

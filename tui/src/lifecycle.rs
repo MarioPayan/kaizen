@@ -275,12 +275,14 @@ mod tests {
     fn advance_and_discard_are_derived_per_lane() {
         assert_eq!(forward("recorded"), Some("triaged"));
         assert_eq!(forward("planned"), Some("approved"));
+        assert_eq!(forward("approved"), Some("applied"));
+        assert!(can_transition("approved", "planned"), "an invalidated approval returns to planning");
         assert_eq!(forward("failed"), Some("planned"), "failed goes back for a plan");
         assert_eq!(forward("applied"), Some("reviewed"), "a landed change is reviewed before it is verified");
         assert_eq!(forward("reviewed"), Some("verified"));
         assert_eq!(forward("verified"), None);
         assert_eq!(exit("recorded"), Some("rejected"), "you can still say no");
-        assert_eq!(exit("approved"), Some("superseded"), "a yes given can only be overtaken");
+        assert_eq!(exit("approved"), Some("superseded"), "a yes given can still be overtaken");
         assert_eq!(exit("failed"), None, "the pipeline owns a failed item");
         assert_eq!(landed_status(), Some("applied"));
     }

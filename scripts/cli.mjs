@@ -70,6 +70,7 @@ import {
   writeSection,
   renderMarkdown,
   spec,
+  patchIdentity,
 } from '@kaizen/core';
 
 // Bare `kaizen` is the board: the command you reach for is the one that needs no
@@ -590,6 +591,23 @@ function validateDecisions(decisions, byId) {
       }
       patch[key] = text;
     }
+    const lifecycle = spec();
+    const decision = lifecycle.phases.find((p) => p.attended);
+    const prior = lifecycle.statuses.find((s) => (s.next ?? []).includes(decision?.produces));
+    const reviewer = lifecycle.phases.find((p) => p.produces === prior?.id)?.reviewer;
+    if (found.status === decision?.produces) {
+      const sidecar = found.file.replace(/\.md$/, '.patch');
+      const identity = existsSync(sidecar) ? patchIdentity(readFileSync(sidecar)) : '';
+      if (found.approvedPatch !== identity) {
+        if (patch.status !== prior?.id || patch.needs_review !== reviewer) {
+          errors.push(
+            `${where}: the approved patch changed; return it to "${prior?.id}" with needs_review "${reviewer}"`,
+          );
+        } else {
+          patch.approved_patch = '';
+        }
+      }
+    }
     if (Object.keys(patch).length || Object.keys(sections).length) {
       writes.push({ file: found.file, id: found.id, patch, sections });
     }
@@ -697,6 +715,13 @@ function cmdDrain() {
     const { data, body } = parseFrontmatter(text);
     const merged = { ...data, applied_sha: e.sha, verified_at: e.verified_at };
     const hasPatch = existsSync(found.file.replace(/\.md$/, '.patch'));
+    const decisionStatus = spec().phases.find((p) => p.attended)?.produces;
+    if ((found.status === decisionStatus || path.includes(decisionStatus)) && hasPatch) {
+      const identity = patchIdentity(readFileSync(found.file.replace(/\.md$/, '.patch')));
+      if (merged.approved_patch !== identity) {
+        errors.push(`${where}: cannot pass "${decisionStatus}" — approved patch identity does not match`);
+      }
+    }
     for (const step of path) {
       for (const f of missingRequirements(step, { data: merged, body, hasPatch })) {
         errors.push(`${where}: cannot pass "${step}" — missing ${f}`);

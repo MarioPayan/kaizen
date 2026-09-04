@@ -8,6 +8,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { patchIdentity } from '../src/suggestion.mjs';
 
 const cli = resolve(fileURLToPath(import.meta.url), '..', '..', '..', '..', 'scripts', 'cli.mjs');
 let root;
@@ -30,7 +31,7 @@ const run = (stamps) => {
 const FILE = () => join(root, 'feedback', 'demo', '2026-01-01-walkable.md');
 const SHA = 'a'.repeat(40);
 
-const suggestion = (status, { plan = true, review = true } = {}) =>
+const suggestion = (status, { plan = true, review = true, approvedPatch = '' } = {}) =>
   [
     '---',
     'skill: demo',
@@ -42,6 +43,7 @@ const suggestion = (status, { plan = true, review = true } = {}) =>
     'rung: 2',
     'effort: S',
     `status: ${status}`,
+    ...(approvedPatch ? [`approved_patch: ${approvedPatch}`] : []),
     'confirmed_at: 2026-01-01 @ abc1234',
     '---',
     '',
@@ -77,9 +79,10 @@ beforeAll(() => {
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
 describe('kaizen drain', () => {
-  it('walks a planned suggestion to verified with both stamps', () => {
-    writeFileSync(FILE(), suggestion('planned'));
-    writeFileSync(FILE().replace(/\.md$/, '.patch'), 'diff --git a/x b/x\n');
+  it('walks an approved suggestion to verified with both stamps', () => {
+    const patch = 'diff --git a/x b/x\n';
+    writeFileSync(FILE(), suggestion('approved', { approvedPatch: patchIdentity(patch) }));
+    writeFileSync(FILE().replace(/\.md$/, '.patch'), patch);
     const out = run([
       { id: 'user/demo/2026-01-01-walkable.md', sha: SHA, verified_at: '2026-01-01 — grep 1' },
     ]);
@@ -88,6 +91,17 @@ describe('kaizen drain', () => {
     expect(text).toContain('status: verified');
     expect(text).toContain(`applied_sha: ${SHA}`);
     expect(text).toContain('verified_at: 2026-01-01 — grep 1');
+  });
+
+  it('refuses an approved suggestion whose sidecar no longer matches its approval', () => {
+    const approved = 'diff --git a/x b/x\n';
+    writeFileSync(FILE(), suggestion('approved', { approvedPatch: patchIdentity(approved) }));
+    writeFileSync(FILE().replace(/\.md$/, '.patch'), 'diff --git a/y b/y\n');
+
+    expect(() =>
+      run([{ id: 'user/demo/2026-01-01-walkable.md', sha: SHA, verified_at: '2026-01-01 — grep 1' }]),
+    ).toThrow(/approved patch identity does not match/);
+    expect(readFileSync(FILE(), 'utf8')).toContain('status: approved');
   });
 
   it('refuses a walk whose phases lack their requirements', () => {

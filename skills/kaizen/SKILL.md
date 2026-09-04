@@ -259,6 +259,13 @@ Omit the optional arguments when the proposal creates no files.
 
 Store it beside the suggestion as `<suggestion-basename>.patch`.
 
+If this replaces the sidecar of an `approved` card, the approval no longer
+names the patch on disk. In the same `triage --apply` call, return the card to
+`planned` with `needs_review: claude` (and update Plan or Validation when the
+change altered them). `approved_patch` is server-owned: the next attended
+approval stamps the new sidecar identity, and apply refuses a sidecar that no
+longer matches it.
+
 Once the sidecar patch exists, write the complete plan, validation, labels,
 `status: planned`, and `"needs_review": "claude"` in one `triage --apply` call.
 Only then run `kaizen verify --dry <id>`: the command accepts `planned` cards,

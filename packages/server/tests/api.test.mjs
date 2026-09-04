@@ -10,6 +10,7 @@ import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createApp } from '@kaizen/server';
+import { patchIdentity } from '@kaizen/core';
 
 let root;
 let server;
@@ -196,12 +197,21 @@ describe('api', () => {
 
   it('records an approval without acting on it', async () => {
     const id = 'user/demo/2026-01-01-a-thing.md';
+    const patch = join(root, 'skills-feedback', 'demo', '2026-01-01-a-thing.patch');
+    writeFileSync(patch, 'first proposal\n');
     const { status } = await api('POST', '/api/suggestion', { id, status: 'approved' });
     expect(status).toBe(200);
     const { body } = await api('GET', '/api/state');
     expect(body.suggestions[0].status).toBe('approved');
+    expect(body.suggestions[0].approvedPatch).toBe(patchIdentity(Buffer.from('first proposal\n')));
     // Approval is a record. Nothing should have been applied by saying yes.
     expect(body.suggestions[0].appliedSha).toBe('');
+
+    writeFileSync(patch, 'replacement proposal\n');
+    const changed = await api('POST', '/api/apply', { id });
+    expect(changed.status).toBe(409);
+    expect(changed.body.error).toMatch(/changed after approval/);
+    rmSync(patch);
   });
 
   it('refuses to apply into a read-only target', async () => {
@@ -220,6 +230,12 @@ describe('api', () => {
     const skills = config.targets[0].skills;
     const feedback = config.targets[0].feedback;
     writeFileSync(join(feedback, 'demo', '2026-01-01-a-thing.patch'), 'not-a-real-patch\n');
+    const card = join(feedback, 'demo', '2026-01-01-a-thing.md');
+    writeFileSync(card, readFileSync(card, 'utf8').replace('status: approved', 'status: planned'));
+    expect(
+      (await api('POST', '/api/suggestion', { id: 'user/demo/2026-01-01-a-thing.md', status: 'approved' }))
+        .status,
+    ).toBe(200);
     writeFileSync(join(skills, 'demo', 'SKILL.md'), '---\nname: demo\n---\n# demo edited\n');
     const { status, body } = await api('POST', '/api/apply', { id: 'user/demo/2026-01-01-a-thing.md' });
     expect(status).toBe(409);
@@ -243,7 +259,7 @@ describe('api', () => {
     const feedback = config.targets[0].feedback;
     writeFileSync(
       join(feedback, 'demo', '2026-06-06-narrow.md'),
-      '---\nskill: demo\ndate: 2026-06-06\nseverity: low\ntype: hygiene\nobjective: debt\neffort: S\nrung: 1\nscope: demo/SKILL.md\nstatus: approved\n---\n\n## Context\n\nc\n\n## Suggestion\n\ns\n\n## Plan\n\np\n\n## Validation\n\nv\n',
+      '---\nskill: demo\ndate: 2026-06-06\nseverity: low\ntype: hygiene\nobjective: debt\neffort: S\nrung: 1\nscope: demo/SKILL.md\nstatus: planned\n---\n\n## Context\n\nc\n\n## Suggestion\n\ns\n\n## Plan\n\np\n\n## Validation\n\nv\n',
     );
     const before = git(skills, 'rev-parse', 'HEAD').trim();
     const head = readFileSync(join(skills, 'demo', 'SKILL.md'), 'utf8');
@@ -261,6 +277,10 @@ describe('api', () => {
         '',
       ].join('\n'),
     );
+    expect(
+      (await api('POST', '/api/suggestion', { id: 'user/demo/2026-06-06-narrow.md', status: 'approved' }))
+        .status,
+    ).toBe(200);
     // The kind of thing that was blocking the queue: untracked, unrelated, and
     // none of the patch's business.
     writeFileSync(join(skills, 'stray-draft.py'), 'print("mine")\n');
@@ -353,7 +373,7 @@ describe('apply closes the siblings parked on it', () => {
         join(feedback, `2026-05-05-${slug}.md`),
         `---\nskill: demo\ndate: 2026-05-05\nseverity: low\ntype: hygiene\nobjective: debt\neffort: S\nrung: 1\nscope: ${scope}\nstatus: ${status}\n${extra}---\n\n## Context\n\nc\n\n## Suggestion\n\ns\n\n## Plan\n\np\n\n## Validation\n\nv\n`,
       );
-    suggestionFile('lead', 'approved', 'demo/SKILL.md');
+    suggestionFile('lead', 'planned', 'demo/SKILL.md');
     suggestionFile('sib', 'recorded', 'demo/SKILL.md', 'blocked_on: carried by the lead patch\n');
     suggestionFile('same', 'recorded', 'demo/SKILL.md');
     suggestionFile('far', 'recorded', 'other/file.md');
@@ -371,6 +391,10 @@ describe('apply closes the siblings parked on it', () => {
         '',
       ].join('\n'),
     );
+    expect(
+      (await api('POST', '/api/suggestion', { id: 'user/demo/2026-05-05-lead.md', status: 'approved' }))
+        .status,
+    ).toBe(200);
 
     const { status, body } = await api('POST', '/api/apply', { id: 'user/demo/2026-05-05-lead.md' });
     expect(status).toBe(200);
@@ -414,10 +438,13 @@ describe('POST /api/sweep', () => {
     // candidate and must not be counted as "skipped" noise.
     const { status, body } = await api('POST', '/api/sweep', { status: 'approved' });
     expect(status).toBe(200);
-    expect(body.moved).toBe(2);
-    expect(body.skipped).toBe(0);
+    expect(body.moved).toBe(1);
+    expect(body.skipped).toBe(1);
     expect(readFileSync(join(root, 'skills-feedback', 'demo', '2026-04-04-sweep-a.md'), 'utf8')).toMatch(
       /status: approved/,
+    );
+    expect(readFileSync(join(root, 'skills-feedback', 'demo', '2026-04-04-sweep-a.md'), 'utf8')).toMatch(
+      /approved_patch: sha256:[0-9a-f]{64}/,
     );
 
     // Everything approvable was just approved, so a second sweep has nothing.
@@ -1025,11 +1052,19 @@ describe('parking and the ways out', () => {
   });
 
   it('parks a card whose patch cannot land, with the reason, and keeps a not-ready tree transient', async () => {
-    card('2026-04-10-stale.md', 'approved');
+    card('2026-04-10-stale.md', 'planned');
     writeFileSync(
       join(feedback, 'demo', '2026-04-10-stale.patch'),
       '--- a/demo/SKILL.md\n+++ b/demo/SKILL.md\n@@ -1,3 +1,4 @@\n not\n the\n file\n+x\n',
     );
+    expect(
+      (
+        await call('POST', '/api/suggestion', {
+          id: 'user/demo/2026-04-10-stale.md',
+          status: 'approved',
+        })
+      ).status,
+    ).toBe(200);
     const stale = await call('POST', '/api/apply', { id: 'user/demo/2026-04-10-stale.md' });
     expect(stale.status).toBe(422);
     expect(stale.body.parked).toBe(true);
@@ -1044,11 +1079,19 @@ describe('parking and the ways out', () => {
     expect(front('2026-04-10-bare.md')).toMatch(/blocked_on: apply: no proposal patch/);
 
     // The tree, not the card: a dirty path refuses without parking.
-    card('2026-04-10-fine.md', 'approved');
+    card('2026-04-10-fine.md', 'planned');
     writeFileSync(
       join(feedback, 'demo', '2026-04-10-fine.patch'),
       '--- a/demo/SKILL.md\n+++ b/demo/SKILL.md\n@@ -1,4 +1,5 @@\n ---\n name: demo\n ---\n # demo\n+fine\n',
     );
+    expect(
+      (
+        await call('POST', '/api/suggestion', {
+          id: 'user/demo/2026-04-10-fine.md',
+          status: 'approved',
+        })
+      ).status,
+    ).toBe(200);
     writeFileSync(join(skills, 'demo', 'SKILL.md'), '---\nname: demo\n---\n# demo edited\n');
     const dirty = await call('POST', '/api/apply', { id: 'user/demo/2026-04-10-fine.md' });
     expect(dirty.status).toBe(409);
@@ -1164,14 +1207,13 @@ describe('project skill apply roots', () => {
       roots.push(project);
     }
 
+    const patch =
+      '--- a/.claude/skills/demo/SKILL.md\n+++ b/.claude/skills/demo/SKILL.md\n@@ -1,4 +1,5 @@\n ---\n name: demo\n ---\n # demo\n+project line\n';
     writeFileSync(
       join(feedback, 'demo', '2026-09-03-project.md'),
-      '---\nskill: demo\ndate: 2026-09-03\nseverity: medium\ntype: structural\nobjective: bug\neffort: S\nrung: 1\nscope: .claude/skills/demo/SKILL.md\nconfirmed_at: 2026-09-03 @ abc1234\nstatus: approved\n---\n\n## Context\n\nc\n\n## Suggestion\n\ns\n\n## Plan\n\np\n\n## Validation\n\nv\n',
+      `---\nskill: demo\ndate: 2026-09-03\nseverity: medium\ntype: structural\nobjective: bug\neffort: S\nrung: 1\nscope: .claude/skills/demo/SKILL.md\nconfirmed_at: 2026-09-03 @ abc1234\nstatus: approved\napproved_patch: ${patchIdentity(patch)}\n---\n\n## Context\n\nc\n\n## Suggestion\n\ns\n\n## Plan\n\np\n\n## Validation\n\nv\n`,
     );
-    writeFileSync(
-      join(feedback, 'demo', '2026-09-03-project.patch'),
-      '--- a/.claude/skills/demo/SKILL.md\n+++ b/.claude/skills/demo/SKILL.md\n@@ -1,4 +1,5 @@\n ---\n name: demo\n ---\n # demo\n+project line\n',
-    );
+    writeFileSync(join(feedback, 'demo', '2026-09-03-project.patch'), patch);
 
     const app = createApp(
       {

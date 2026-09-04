@@ -15,6 +15,11 @@ import { canonicalStatus, statusIds, section } from './lifecycle.mjs';
 /** Every status a file may name. There is one spelling per status. */
 export const STATUSES = statusIds();
 
+/** Exact identity of the sidecar bytes an approval covers. */
+export function patchIdentity(bytes) {
+  return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+}
+
 const IMPACT = { low: 1, medium: 3, high: 8 };
 const EFFORT_COST = { S: 1, M: 3, L: 8 };
 
@@ -194,6 +199,7 @@ export function parseSuggestion({ id, file, skill, target, text }) {
     // in the scan, a targeted pass had to open the file to learn the stamp,
     // which is the read Step 2 exists to avoid.
     confirmedAt: data.confirmed_at || '',
+    approvedPatch: data.approved_patch || '',
     appliedSha: data.applied_sha || '',
     outcome: data.outcome || '',
     recurrences,

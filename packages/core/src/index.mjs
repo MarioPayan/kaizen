@@ -29,6 +29,7 @@ export {
   assignUids,
   ageOf,
   localToday,
+  patchIdentity,
   STATUSES,
 } from './suggestion.mjs';
 export { SEVERITIES, defaultSurface, surfaceOf, passesSurface } from './taxonomy.mjs';

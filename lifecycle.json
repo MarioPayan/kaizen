@@ -42,7 +42,7 @@
       "produces": "approved",
       "attended": true,
       "summary": "The only attended phase. You are shown the change and the validation plan together and say yes or no. Nothing reaches this phase without both, which is the point: approving an idea nobody has written is how a queue fills with decisions that cannot be drained.",
-      "requires": []
+      "requires": ["approved_patch"]
     },
     {
       "id": "apply",
@@ -119,7 +119,7 @@
       "tone": "positive",
       "terminal": false,
       "help": "You said yes to a specific patch. It lands on the next drain — or, if that patch no longer lands, goes back for a new plan and a new yes.",
-      "next": ["applied", "triaged", "superseded"]
+      "next": ["applied", "planned", "triaged", "superseded"]
     },
     {
       "id": "applied",
@@ -279,6 +279,12 @@
       "where": "sibling",
       "suffix": ".patch",
       "help": "The real diff, stored beside the suggestion, passing `git apply --check`. A described patch is not a patch."
+    },
+    {
+      "id": "approved_patch",
+      "phase": "decide",
+      "where": "frontmatter",
+      "help": "The identity of the patch the user approved. Set by the server from the sidecar bytes and checked again before apply."
     },
     {
       "id": "applied_sha",

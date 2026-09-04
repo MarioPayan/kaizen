@@ -27,6 +27,7 @@ import {
   pendingPass,
   awaitingDecision,
 } from '../src/lifecycle.mjs';
+import { patchIdentity } from '../src/suggestion.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const spec = () => loadLifecycle();
@@ -109,6 +110,7 @@ describe('the shipped spec', () => {
     expect(nextPhase('recorded').id).toBe('triage');
     expect(nextPhase('triaged').id).toBe('plan');
     expect(nextPhase('planned').id).toBe('decide');
+    expect(nextPhase('approved').id).toBe('apply');
     expect(nextPhase('applied').id).toBe('review');
     expect(nextPhase('reviewed').id).toBe('verify');
     expect(nextPhase('failed').id).toBe('plan');
@@ -148,11 +150,16 @@ describe('the shipped spec', () => {
   /**
    * A yes is given to a specific patch. When that patch no longer lands the
    * plan is redone and the decision re-made — so approved can go back to
-   * triaged — while the way forward and the way out stay what they were.
+   * planned — while the way forward and the way out stay what they were.
    */
   it('lets an approval go back for a new plan without changing where it goes otherwise', () => {
     const { statuses } = spec();
-    expect(statuses.find((s) => s.id === 'approved').next).toEqual(['applied', 'triaged', 'superseded']);
+    expect(statuses.find((s) => s.id === 'approved').next).toEqual([
+      'applied',
+      'planned',
+      'triaged',
+      'superseded',
+    ]);
     expect(nextPhase('approved').id).toBe('apply');
     expect(spec().fields.find((f) => f.id === 'answer')).toMatchObject({ where: 'body', heading: 'Answer' });
   });
@@ -364,14 +371,23 @@ describe('missingRequirements', () => {
     expect(missing).not.toContain('type');
   });
 
-  it('asks nothing of a status whose phase requires nothing', () => {
-    expect(missingRequirements('approved', { data: {}, body: '' })).toEqual([]);
+  it('requires the identity of the patch that was approved', () => {
+    expect(missingRequirements('approved', { data: {}, body: '' })).toEqual(['approved_patch']);
+    expect(missingRequirements('approved', { data: { approved_patch: 'sha256:x' }, body: '' })).toEqual([]);
   });
 
   it('asks nothing of a status the spec does not know', () => {
     // There is one spelling per status now, so an unknown name is a typo rather
     // than an older word for the same thing.
     expect(missingRequirements('proposed', { data: {}, body: '', hasPatch: false })).toEqual([]);
+  });
+});
+
+describe('patchIdentity', () => {
+  it('is stable for identical bytes and changes with the patch', () => {
+    expect(patchIdentity(Buffer.from('a'))).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(patchIdentity(Buffer.from('a'))).toBe(patchIdentity(Buffer.from('a')));
+    expect(patchIdentity(Buffer.from('a'))).not.toBe(patchIdentity(Buffer.from('b')));
   });
 });
 

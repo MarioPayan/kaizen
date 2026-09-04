@@ -181,7 +181,9 @@ spec, the card must not be waiting on a check (`needs_review`) unless the move
 is the way out, and the destination phase's `requires` must already be present
 in the file (patch on disk, sections non-empty). `applied` is server-owned —
 only the code that saw the sha may write it. Apply additionally requires a
-writable target, a clean tree, and `git apply --check`.
+writable target, a clean tree, and `git apply --check`. Approval stamps the
+SHA-256 identity of the sidecar bytes; apply refuses if the sidecar no longer
+matches, and regenerating it returns the card to planning and review.
 
 `events.mjs` watches only the feedback directories (not skills trees — apply
 commits there would fire a storm; not scan roots — unbounded) and pushes
@@ -233,6 +235,6 @@ nothing to re-derive and nothing to disagree with.
   CI-equivalent; run it before calling anything done.
 - `@kaizen/core` has zero runtime dependencies. Keep it that way.
 - The server binds loopback only; `validateConfig` refuses anything else.
-- Nothing applies without an approval, and `git revert` must always be a clean
+- Nothing applies without an approval of those exact patch bytes, and `git revert` must always be a clean
   undo — that is what the clean-tree guard protects.
 - `kaizen doctor` is the self-review; its findings queue like any suggestion.
