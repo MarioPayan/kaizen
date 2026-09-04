@@ -202,13 +202,14 @@ that counts as passing:
 | a code change | the test that fails before and passes after, by name |
 | prose in a skill | the observable behaviour to look for on the next run |
 
+Write the command as one fenced `bash` block. `kaizen verify --dry` extracts
+that block verbatim and runs it from a throwaway worktree with the sidecar patch
+applied. Use worktree-relative paths or `$KAIZEN_TARGET_ROOT`; an absolute path
+to the live tree validates the unpatched file instead.
+
 "Read it and see if it looks right" is not a validation plan. If you cannot say
 what would prove the fix worked, that is a sign the fix is not understood yet —
 leave it at `triaged` and say so.
-
-Before offering the plan, run `kaizen verify --dry <id>`. It applies the sidecar
-patch and runs the fenced `bash` block above in a throwaway worktree; a validation
-that has not passed this command is not ready for review.
 
 Both sections are written through the same call as the frontmatter, so a plan
 pass is one write like triage and verify: `kaizen triage --apply` with
@@ -255,10 +256,20 @@ Omit the optional arguments when the proposal creates no files.
 
 Store it beside the suggestion as `<suggestion-basename>.patch`.
 
-Then set `status: planned` — with `"needs_review": "claude"` beside it, the
-hand-off for the labels and the plan together. For a rung-1 proposal the script
-it introduces ships with `--self-check` — which is usually also its validation
-plan, so the two fall out of the same work.
+Once the sidecar patch exists, write the complete plan, validation, labels,
+`status: planned`, and `"needs_review": "claude"` in one `triage --apply` call.
+Only then run `kaizen verify --dry <id>`: the command accepts `planned` cards,
+applies the sidecar patch, and runs the fenced `bash` block above in a throwaway
+worktree. A validation that has not passed is not ready for review.
+
+If verification fails, repair the patch or validation and rerun it. If it cannot
+be repaired in the current pass, use `triage --apply` to return the card to
+`triaged`, clear `needs_review`, and set `blocked_on` to
+`plan: dry verification failed — <one line>` with the command output in
+`## Verdict`; never leave a failing plan flagged as ready for review.
+
+For a rung-1 proposal the script it introduces ships with `--self-check` — which
+is usually also its validation plan, so the two fall out of the same work.
 
 If a plan cannot be written without judgement calls the user should make, leave
 `status: triaged` and explain what is undecided. Do not write a speculative

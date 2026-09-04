@@ -23,3 +23,5 @@ edit the JSON, then `npm run docs`.
 - The engine decides, the TUI draws: derived facts belong in core, not views.
 - Comment style: comments explain _why_, at the density the codebase already
   has. Tests are named as sentences about behaviour.
+- When a skill sequences CLI commands, document the CLI's accepted state and
+  machine-readable input shape before the command, including failure recovery.
