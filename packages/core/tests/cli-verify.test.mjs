@@ -24,7 +24,7 @@ function fixture(validation) {
   const root = mkdtempSync(join(tmpdir(), 'kaizen-cli-verify-'));
   roots.push(root);
   const repo = join(root, 'repo');
-  const feedback = join(root, 'feedback');
+  const feedback = `${repo}-feedback`;
   mkdirSync(join(repo, 'skills', 'demo'), { recursive: true });
   mkdirSync(join(feedback, 'demo'), { recursive: true });
   writeFileSync(join(repo, 'skills', 'demo', 'SKILL.md'), '---\nname: demo\n---\n# demo\n');
@@ -33,9 +33,10 @@ function fixture(validation) {
   git(repo, 'commit', '-q', '-m', 'init');
 
   const file = join(feedback, 'demo', '2026-01-01-dry.md');
+  const command = typeof validation === 'function' ? validation({ file, repo }) : validation;
   writeFileSync(
     file,
-    `---\nskill: demo\ndate: 2026-01-01\nseverity: low\ntype: tooling\nobjective: guardrail\nscope: added.txt\nrung: 1\neffort: S\nstatus: planned\nconfirmed_at: 2026-01-01 @ abc1234\n---\n\n## Plan\n\nAdd the file.\n\n## Validation\n\n\`\`\`bash\n${validation}\n\`\`\`\n`,
+    `---\nskill: demo\ndate: 2026-01-01\nseverity: low\ntype: tooling\nobjective: guardrail\nscope: added.txt\nrung: 1\neffort: S\nstatus: planned\nconfirmed_at: 2026-01-01 @ abc1234\n---\n\n## Plan\n\nAdd the file.\n\n## Validation\n\n\`\`\`bash\n${command}\n\`\`\`\n`,
   );
   writeFileSync(
     file.replace(/\.md$/, '.patch'),
@@ -74,5 +75,16 @@ describe('kaizen verify --dry', () => {
     expect(ran.stdout).toContain('validation-output');
     expect(ran.stderr).toContain(`fail ${f.id} (exit 7)`);
     expect(existsSync(join(f.repo, 'added.txt'))).toBe(false);
+  });
+
+  it('rewrites a repository argument without rewriting a sidecar path that shares its prefix', () => {
+    const f = fixture(
+      ({ file, repo }) => `git -C ${repo} apply --reverse --check ${file.replace(/\.md$/, '.patch')}`,
+    );
+    const out = execFileSync('node', [cli, 'verify', '--dry', f.id], {
+      encoding: 'utf8',
+      env: { ...process.env, KAIZEN_CONFIG: f.config },
+    });
+    expect(out).toContain(`pass ${f.id}`);
   });
 });

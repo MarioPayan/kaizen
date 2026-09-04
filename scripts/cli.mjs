@@ -796,7 +796,9 @@ function cmdVerify() {
     }
     execFileSync('git', ['-C', worktree, 'apply', patch]);
 
-    const command = fenced.split(repo).join(worktree);
+    const escapedRepo = repo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const repoPattern = new RegExp(`${escapedRepo}(?=$|/|[\\s"'\\x60;&|<>()])`, 'g');
+    const command = fenced.replace(repoPattern, worktree);
     const ran = spawnSync('bash', ['-lc', command], {
       cwd: worktree,
       encoding: 'utf8',
