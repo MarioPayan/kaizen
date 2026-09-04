@@ -1143,6 +1143,99 @@ describe('parking and the ways out', () => {
   });
 });
 
+describe('project skill apply roots', () => {
+  const fixture = async ({ projects = 1, writable = true } = {}) => {
+    const dir = mkdtempSync(join(tmpdir(), 'kaizen-project-apply-'));
+    const feedback = join(dir, 'feedback');
+    const userSkills = join(dir, 'user-skills');
+    mkdirSync(join(feedback, 'demo'), { recursive: true });
+    mkdirSync(userSkills);
+    git(userSkills, 'init', '-q');
+    git(userSkills, 'commit', '--allow-empty', '-q', '-m', 'init');
+
+    const roots = [];
+    for (let i = 0; i < projects; i++) {
+      const project = join(dir, `project-${i + 1}`);
+      mkdirSync(join(project, '.claude', 'skills', 'demo'), { recursive: true });
+      writeFileSync(join(project, '.claude', 'skills', 'demo', 'SKILL.md'), '---\nname: demo\n---\n# demo\n');
+      git(project, 'init', '-q');
+      git(project, 'add', '-A');
+      git(project, 'commit', '-q', '-m', 'init');
+      roots.push(project);
+    }
+
+    writeFileSync(
+      join(feedback, 'demo', '2026-09-03-project.md'),
+      '---\nskill: demo\ndate: 2026-09-03\nseverity: medium\ntype: structural\nobjective: bug\neffort: S\nrung: 1\nscope: .claude/skills/demo/SKILL.md\nconfirmed_at: 2026-09-03 @ abc1234\nstatus: approved\n---\n\n## Context\n\nc\n\n## Suggestion\n\ns\n\n## Plan\n\np\n\n## Validation\n\nv\n',
+    );
+    writeFileSync(
+      join(feedback, 'demo', '2026-09-03-project.patch'),
+      '--- a/.claude/skills/demo/SKILL.md\n+++ b/.claude/skills/demo/SKILL.md\n@@ -1,4 +1,5 @@\n ---\n name: demo\n ---\n # demo\n+project line\n',
+    );
+
+    const app = createApp(
+      {
+        ...config,
+        targets: [{ name: 'user', skills: userSkills, feedback, writable: false }],
+        scan: { enabled: true, roots, depth: 1, writable },
+      },
+      { spawn: fakeSpawn },
+    );
+    await new Promise((resolve) => app.listen(0, '127.0.0.1', resolve));
+    const call = async () => {
+      const res = await fetch(`http://127.0.0.1:${app.address().port}/api/apply`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: 'user/demo/2026-09-03-project.md' }),
+      });
+      return { status: res.status, body: await res.json() };
+    };
+    return { app, call, dir, roots };
+  };
+
+  const close = async ({ app, dir }) => {
+    await new Promise((resolve) => app.close(resolve));
+    rmSync(dir, { recursive: true, force: true });
+  };
+
+  it("lands a project skill's patch in its project when project writes are enabled", async () => {
+    const f = await fixture();
+    try {
+      const { status, body } = await f.call();
+      expect(status).toBe(200);
+      expect(git(f.roots[0], 'show', '--name-only', '--format=', body.sha).trim()).toBe(
+        '.claude/skills/demo/SKILL.md',
+      );
+    } finally {
+      await close(f);
+    }
+  });
+
+  it('refuses project writes when project discovery is read-only', async () => {
+    const f = await fixture({ writable: false });
+    try {
+      const { status, body } = await f.call();
+      expect(status).toBe(403);
+      expect(body.error).toContain(`project "${f.roots[0]}" is read-only`);
+    } finally {
+      await close(f);
+    }
+  });
+
+  it('refuses an ambiguous project skill and names every candidate', async () => {
+    const f = await fixture({ projects: 2 });
+    try {
+      const { status, body } = await f.call();
+      expect(status).toBe(409);
+      expect(body.error).toContain('project skill "demo" is ambiguous');
+      expect(body.error).toContain(f.roots[0]);
+      expect(body.error).toContain(f.roots[1]);
+    } finally {
+      await close(f);
+    }
+  });
+});
+
 /**
  * The pidfile is what turns "port in use" into a diagnosis. No auto-kill —
  * these assert the three sentences, not a replacement policy.

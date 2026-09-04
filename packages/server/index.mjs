@@ -510,11 +510,32 @@ const routes = {
   'POST /api/apply': async (req, _res, ctx) => {
     const { id } = await readBody(req);
     const { path, target } = suggestionFile(ctx.config, id);
-    if (!target.writable) throw new HttpError(403, `target "${target.name}" is read-only`);
+    const applyState = buildState(ctx.config);
+    const suggestion = applyState.suggestions.find((s) => s.id === id);
+    const projects = [
+      ...new Set(
+        applyState.skills
+          .filter((skill) => skill.name === suggestion?.skill && skill.project)
+          .map((skill) => skill.project),
+      ),
+    ];
+    if (projects.length > 1) {
+      throw new HttpError(
+        409,
+        `project skill "${suggestion.skill}" is ambiguous — found in: ${projects.join(', ')}`,
+      );
+    }
+    const project = projects[0];
+    if (project ? !ctx.config.scan?.writable : !target.writable) {
+      const owner = project ? `project "${project}"` : `target "${target.name}"`;
+      throw new HttpError(403, `${owner} is read-only`);
+    }
     // Apply and commit at the repo root that owns the skills dir, not the dir
     // itself — a target whose skills sit inside a larger repo (kaizen's own
-    // skills/ folder) carries patches rooted at that repo.
-    const root = (await git(target.skills, ['rev-parse', '--show-toplevel'])).trim();
+    // skills/ folder) carries patches rooted at that repo. Project skills file
+    // into another target's feedback directory, but their patches belong to the
+    // discovered project and use its independent writability gate.
+    const root = (await git(project ?? target.skills, ['rev-parse', '--show-toplevel'])).trim();
     // The same gate as any other move. Applying is the one transition the server
     // performs on its own, which is exactly why it should not be the one that
     // skips the check.
