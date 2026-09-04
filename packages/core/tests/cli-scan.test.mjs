@@ -78,4 +78,36 @@ describe('kaizen scan', () => {
     expect(state.suggestions).toHaveLength(3);
     expect(state.suggestions.map((s) => s.scope)).toEqual(Array(3).fill(relativeScope));
   });
+
+  it('exposes the latest recurrence when it withdraws the original suggestion', () => {
+    writeFileSync(
+      join(root, 'feedback', 'alpha', '2026-01-01-a-thing.md'),
+      [
+        '---',
+        'skill: alpha',
+        'date: 2026-01-01',
+        'severity: low',
+        '---',
+        '',
+        '## Suggestion',
+        '',
+        'Add the guardrail.',
+        '',
+        '## Recurrence — 2026-02-01',
+        '',
+        'Do not add the guardrail; the premise was wrong.',
+        '',
+        '## Verdict',
+        '',
+        'Pending triage.',
+        '',
+      ].join('\n'),
+    );
+
+    const state = scan('--id', 'user/alpha/2026-01-01-a-thing.md');
+    expect(state.suggestions[0].suggestion).toBe('Add the guardrail.');
+    expect(state.suggestions[0].latestRecurrence).toBe(
+      '## Recurrence — 2026-02-01\n\nDo not add the guardrail; the premise was wrong.',
+    );
+  });
 });

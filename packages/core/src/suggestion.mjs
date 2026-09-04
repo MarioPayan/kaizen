@@ -144,7 +144,15 @@ export function parseSuggestion({ id, file, skill, target, text }) {
   const fromName = splitFilename(file);
 
   // Each `## Recurrence — <date>` section is one more time this actually happened.
-  const recurrences = (body.match(/^##\s+Recurrence/gim) ?? []).length;
+  const recurrenceHeadings = [...body.matchAll(/^##\s+Recurrence\b[^\r\n]*$/gim)];
+  const recurrences = recurrenceHeadings.length;
+  const latestHeading = recurrenceHeadings.at(-1);
+  let latestRecurrence = '';
+  if (latestHeading) {
+    const nextHeading = /^##\s+/gim;
+    nextHeading.lastIndex = latestHeading.index + latestHeading[0].length;
+    latestRecurrence = body.slice(latestHeading.index, nextHeading.exec(body)?.index).trim();
+  }
 
   const severity = SEVERITIES.includes(data.severity) ? data.severity : '';
   const effort = EFFORTS.includes(data.effort) ? data.effort : '';
@@ -189,6 +197,7 @@ export function parseSuggestion({ id, file, skill, target, text }) {
     appliedSha: data.applied_sha || '',
     outcome: data.outcome || '',
     recurrences,
+    latestRecurrence,
     incidents: 1 + recurrences,
     context: captureSection(body, 'Context', 'What ran'),
     suggestion: captureSection(body, 'Suggestion', 'Proposal'),
