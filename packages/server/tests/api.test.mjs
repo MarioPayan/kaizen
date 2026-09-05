@@ -1256,11 +1256,11 @@ describe('project skill apply roots', () => {
       { spawn: fakeSpawn },
     );
     await new Promise((resolve) => app.listen(0, '127.0.0.1', resolve));
-    const call = async () => {
-      const res = await fetch(`http://127.0.0.1:${app.address().port}/api/apply`, {
+    const call = async (path = '/api/apply', body = { id: 'user/demo/2026-09-03-project.md' }) => {
+      const res = await fetch(`http://127.0.0.1:${app.address().port}${path}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id: 'user/demo/2026-09-03-project.md' }),
+        body: JSON.stringify(body),
       });
       return { status: res.status, body: await res.json() };
     };
@@ -1279,6 +1279,23 @@ describe('project skill apply roots', () => {
       expect(status).toBe(200);
       expect(git(f.roots[0], 'show', '--name-only', '--format=', body.sha).trim()).toBe(
         '.claude/skills/demo/SKILL.md',
+      );
+    } finally {
+      await close(f);
+    }
+  });
+
+  it("reverts a project skill's landing in its project", async () => {
+    const f = await fixture();
+    try {
+      const applied = await f.call();
+      const reverted = await f.call('/api/revert', {
+        id: 'user/demo/2026-09-03-project.md',
+        sha: applied.body.sha,
+      });
+      expect(reverted.status).toBe(200);
+      expect(readFileSync(join(f.roots[0], '.claude', 'skills', 'demo', 'SKILL.md'), 'utf8')).not.toContain(
+        'project line',
       );
     } finally {
       await close(f);

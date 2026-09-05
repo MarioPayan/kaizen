@@ -282,6 +282,21 @@ export function assignBlockedBy(suggestions) {
   return suggestions;
 }
 
+/** Resolve the discovered project that owns a suggestion's skill, if any. */
+export function suggestionProject(state, suggestion) {
+  const projects = [
+    ...new Set(
+      state.skills
+        .filter((skill) => skill.name === suggestion?.skill && skill.project)
+        .map((skill) => skill.project),
+    ),
+  ];
+  if (projects.length > 1) {
+    throw new Error(`project skill "${suggestion.skill}" is ambiguous — found in: ${projects.join(', ')}`);
+  }
+  return projects[0];
+}
+
 /** Build the complete state the app and the skill both read. */
 export function buildState(config) {
   const targets = resolveTargets(config);

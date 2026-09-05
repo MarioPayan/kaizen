@@ -19,6 +19,7 @@ export {
   discoverProjectSkills,
   discoverSuggestions,
   normalizeScope,
+  suggestionProject,
 } from './scan.mjs';
 export {
   parseSuggestion,

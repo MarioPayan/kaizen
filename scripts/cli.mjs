@@ -71,6 +71,7 @@ import {
   renderMarkdown,
   spec,
   patchIdentity,
+  suggestionProject,
 } from '@kaizen/core';
 
 // Bare `kaizen` is the board: the command you reach for is the one that needs no
@@ -753,7 +754,8 @@ function cmdVerify() {
   }
 
   const config = requireConfig();
-  const found = buildState(config).suggestions.find((s) => s.id === id);
+  const state = buildState(config);
+  const found = state.suggestions.find((s) => s.id === id);
   if (!found) {
     console.error(`no suggestion with id "${id}"`);
     exit(1);
@@ -784,7 +786,8 @@ function cmdVerify() {
   let added = false;
   let failure = '';
   try {
-    repo = execFileSync('git', ['-C', target.skills, 'rev-parse', '--show-toplevel'], {
+    const project = suggestionProject(state, found);
+    repo = execFileSync('git', ['-C', project ?? target.skills, 'rev-parse', '--show-toplevel'], {
       encoding: 'utf8',
     }).trim();
     execFileSync('git', ['-C', repo, 'worktree', 'add', '--detach', worktree, 'HEAD']);

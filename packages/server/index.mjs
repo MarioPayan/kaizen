@@ -59,6 +59,7 @@ import {
   suggestionId,
   patchIdentity,
   spec,
+  suggestionProject,
 } from '@kaizen/core';
 import { createEventStream } from './events.mjs';
 
@@ -530,20 +531,12 @@ const routes = {
     const { path, target } = suggestionFile(ctx.config, id);
     const applyState = buildState(ctx.config);
     const suggestion = applyState.suggestions.find((s) => s.id === id);
-    const projects = [
-      ...new Set(
-        applyState.skills
-          .filter((skill) => skill.name === suggestion?.skill && skill.project)
-          .map((skill) => skill.project),
-      ),
-    ];
-    if (projects.length > 1) {
-      throw new HttpError(
-        409,
-        `project skill "${suggestion.skill}" is ambiguous — found in: ${projects.join(', ')}`,
-      );
+    let project;
+    try {
+      project = suggestionProject(applyState, suggestion);
+    } catch (e) {
+      throw new HttpError(409, e.message);
     }
-    const project = projects[0];
     if (project ? !ctx.config.scan?.writable : !target.writable) {
       const owner = project ? `project "${project}"` : `target "${target.name}"`;
       throw new HttpError(403, `${owner} is read-only`);
@@ -755,12 +748,28 @@ const routes = {
   },
 
   'POST /api/revert': async (req, _res, ctx) => {
-    const { sha, target: targetName } = await readBody(req);
+    const { sha, target: targetName, id } = await readBody(req);
     if (!/^[0-9a-f]{7,40}$/i.test(String(sha))) throw new HttpError(400, 'sha is not a commit hash');
-    const t = resolveTargets(ctx.config).find((x) => x.name === targetName);
+    let t;
+    let project;
+    if (id) {
+      ({ target: t } = suggestionFile(ctx.config, id));
+      const state = buildState(ctx.config);
+      const suggestion = state.suggestions.find((s) => s.id === id);
+      try {
+        project = suggestionProject(state, suggestion);
+      } catch (e) {
+        throw new HttpError(409, e.message);
+      }
+    } else {
+      t = resolveTargets(ctx.config).find((x) => x.name === targetName);
+    }
     if (!t) throw new HttpError(404, `unknown target "${targetName}"`);
-    if (!t.writable) throw new HttpError(403, `target "${t.name}" is read-only`);
-    const root = (await git(t.skills, ['rev-parse', '--show-toplevel'])).trim();
+    if (project ? !ctx.config.scan?.writable : !t.writable) {
+      const owner = project ? `project "${project}"` : `target "${t.name}"`;
+      throw new HttpError(403, `${owner} is read-only`);
+    }
+    const root = (await git(project ?? t.skills, ['rev-parse', '--show-toplevel'])).trim();
     await assertCleanTree(root);
     await git(root, ['revert', '--no-edit', sha]);
     return { reverted: sha };

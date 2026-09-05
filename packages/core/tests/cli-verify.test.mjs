@@ -50,6 +50,34 @@ function fixture(validation) {
   return { root, repo, config, id: 'user/demo/2026-01-01-dry.md' };
 }
 
+function projectFixture(projects = 1) {
+  const f = fixture('test -f "$KAIZEN_TARGET_ROOT/.claude/skills/demo/PROJECT.txt"');
+  const projectRoots = [];
+  for (let i = 0; i < projects; i++) {
+    const project = join(f.root, `project-${i + 1}`);
+    mkdirSync(join(project, '.claude', 'skills', 'demo'), { recursive: true });
+    writeFileSync(join(project, '.claude', 'skills', 'demo', 'SKILL.md'), '---\nname: demo\n---\n# demo\n');
+    git(project, 'init', '-q', '-b', 'main');
+    git(project, 'add', '-A');
+    git(project, 'commit', '-q', '-m', 'init');
+    projectRoots.push(project);
+  }
+  writeFileSync(
+    join(f.root, 'repo-feedback', 'demo', '2026-01-01-dry.patch'),
+    'diff --git a/.claude/skills/demo/PROJECT.txt b/.claude/skills/demo/PROJECT.txt\nnew file mode 100644\nindex 0000000..ce01362\n--- /dev/null\n+++ b/.claude/skills/demo/PROJECT.txt\n@@ -0,0 +1 @@\n+hello\n',
+  );
+  writeFileSync(
+    f.config,
+    JSON.stringify({
+      targets: [
+        { name: 'user', skills: join(f.repo, 'skills'), feedback: `${f.repo}-feedback`, writable: true },
+      ],
+      scan: { enabled: true, roots: projectRoots, depth: 1, writable: true },
+    }),
+  );
+  return { ...f, projectRoots };
+}
+
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -91,5 +119,27 @@ describe('kaizen verify --dry', () => {
       env: { ...process.env, KAIZEN_CONFIG: f.config },
     });
     expect(out).toContain(`pass ${f.id}`);
+  });
+
+  it("verifies a project skill's patch in its discovered project", () => {
+    const f = projectFixture();
+    const out = execFileSync('node', [cli, 'verify', '--dry', f.id], {
+      encoding: 'utf8',
+      env: { ...process.env, KAIZEN_CONFIG: f.config },
+    });
+    expect(out).toContain(`pass ${f.id}`);
+    expect(existsSync(join(f.projectRoots[0], '.claude', 'skills', 'demo', 'PROJECT.txt'))).toBe(false);
+  });
+
+  it('refuses an ambiguous project skill and names every candidate', () => {
+    const f = projectFixture(2);
+    const ran = spawnSync('node', [cli, 'verify', '--dry', f.id], {
+      encoding: 'utf8',
+      env: { ...process.env, KAIZEN_CONFIG: f.config },
+    });
+    expect(ran.status).toBe(1);
+    expect(ran.stderr).toContain('project skill "demo" is ambiguous');
+    expect(ran.stderr).toContain(f.projectRoots[0]);
+    expect(ran.stderr).toContain(f.projectRoots[1]);
   });
 });
