@@ -30,6 +30,8 @@ self_check() {
   cleanup() {
     [[ -z "$SELF_CHECK_FIRST" ]] || git -C "$SELF_CHECK_REPO" worktree remove --force "$SELF_CHECK_FIRST" 2>/dev/null || true
     [[ -z "$SELF_CHECK_SECOND" ]] || git -C "$SELF_CHECK_REPO" worktree remove --force "$SELF_CHECK_SECOND" 2>/dev/null || true
+    [[ -z "$SELF_CHECK_FIRST" ]] || rm -rf "$(dirname "$SELF_CHECK_FIRST")"
+    [[ -z "$SELF_CHECK_SECOND" ]] || rm -rf "$(dirname "$SELF_CHECK_SECOND")"
     rm -rf "$SELF_CHECK_TMP"
   }
   trap cleanup EXIT
@@ -48,6 +50,10 @@ self_check() {
   test -d "$SELF_CHECK_SECOND"
   test "$(git -C "$SELF_CHECK_FIRST" rev-parse HEAD)" = "$(git -C "$SELF_CHECK_REPO" rev-parse HEAD)"
   test "$(git -C "$SELF_CHECK_SECOND" rev-parse HEAD)" = "$(git -C "$SELF_CHECK_REPO" rev-parse HEAD)"
+  trap - EXIT
+  cleanup
+  test ! -e "$(dirname "$SELF_CHECK_FIRST")"
+  test ! -e "$(dirname "$SELF_CHECK_SECOND")"
   echo PASS
 }
 
