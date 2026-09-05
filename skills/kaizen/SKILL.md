@@ -315,6 +315,7 @@ pair of eyes:
 
 | Card is | Check |
 |---|---|
+| `recorded` | Confirm that stopping before triage was justified and that the reason still holds. On a pass, clear the flag and write the verdict without advancing the status; the runner resumes with `## Verdict` and/or `## Answer` as its brief. There is no earlier status to send it back to. |
 | `triaged` | The labels fit the Context — type, objective, effort, and a rung with its one-sentence justification; `scope` names the file the fix lands in; `confirmed_at` names a commit, and the problem is still there at HEAD — or the card should have been `superseded`, with where the fix lives. |
 | `planned` | Everything in the `triaged` row first — the labels arrived in the same run, unchecked. Then: `## Plan` says which files and what stays out; `## Validation` names a command and a passing result, not "read it and see"; the sibling `.patch` passes `git apply --check` against the live tree and against an isolated worktree allocated by `proposal-worktree.sh`, and does what the plan says, nothing more; the rung is the lowest that works. |
 | `reviewed` | This is the verify phase. Run the command `## Validation` names against the tree the commit landed in (`applied_sha`), and read `## Review` against what you see. |
