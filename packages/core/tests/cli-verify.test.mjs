@@ -110,6 +110,18 @@ describe('kaizen verify --dry', () => {
     expect(existsSync(join(f.repo, 'added.txt'))).toBe(false);
   });
 
+  it('reports failure when a non-final validation command fails', () => {
+    const f = fixture('false\necho final-command-passed');
+    const ran = spawnSync('node', [cli, 'verify', '--dry', f.id], {
+      encoding: 'utf8',
+      env: { ...process.env, KAIZEN_CONFIG: f.config },
+    });
+    expect(ran.status).toBe(1);
+    expect(ran.stdout).not.toContain('final-command-passed');
+    expect(ran.stderr).toContain(`── verify verdict ──\nfail ${f.id} (exit 1)`);
+    expect(existsSync(join(f.repo, 'added.txt'))).toBe(false);
+  });
+
   it('rewrites a repository argument without rewriting a sidecar path that shares its prefix', () => {
     const f = fixture(
       ({ file, repo }) => `git -C ${repo} apply --reverse --check ${file.replace(/\.md$/, '.patch')}`,

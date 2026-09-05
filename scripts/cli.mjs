@@ -803,7 +803,7 @@ function cmdVerify() {
     const escapedRepo = repo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const repoPattern = new RegExp(`${escapedRepo}(?=$|/|[\\s"'\\x60;&|<>()])`, 'g');
     const command = fenced.replace(repoPattern, worktree);
-    const ran = spawnSync('bash', ['-lc', command], {
+    const ran = spawnSync('bash', ['-lec', command], {
       cwd: worktree,
       encoding: 'utf8',
       env: { ...process.env, CLAUDE_PLUGIN_ROOT: worktree, KAIZEN_TARGET_ROOT: worktree },
