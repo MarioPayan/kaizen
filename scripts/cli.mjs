@@ -8,6 +8,7 @@
  *   validate  check suggestion frontmatter against the schema (--fix normalises)
  *   triage    apply a batch of triage decisions to frontmatter (--self-check)
  *   verify    dry-run a planned patch and its validation in a throwaway worktree
+ *   review    gather an applied card's diff and validation result at its landed SHA
  *   asks      the asks you keep repeating (--json for the weekly pass)
  *   doctor    run kaizen's own rubric against kaizen (--file queues findings)
  *   docs      regenerate what lifecycle.json implies (--check fails on drift)
@@ -839,6 +840,105 @@ function cmdVerify() {
   console.log(`── verify verdict ──\npass ${id}`);
 }
 
+/* -------------------------------------------------------------- review ---- */
+
+/** Gather the fixed evidence for an applied-card review at the commit that landed. */
+function cmdReview() {
+  const id = args.find((a) => !a.startsWith('--'));
+  if (!has('--dry') || !id) {
+    console.error('usage: kaizen review --dry <suggestion id>');
+    exit(1);
+  }
+
+  const config = requireConfig();
+  const found = buildState(config).suggestions.find((s) => s.id === id);
+  if (!found) {
+    console.error(`no suggestion with id "${id}"`);
+    exit(1);
+  }
+  if (found.status !== 'applied') {
+    console.error(`refusing to review "${id}" at status "${found.status}"; expected applied`);
+    exit(1);
+  }
+
+  const target = resolveTargets(config).find((t) => t.name === found.target);
+  if (!target || !found.appliedSha) {
+    console.error(`refusing to review "${id}"; ${target ? 'applied SHA is missing' : 'target is missing'}`);
+    exit(1);
+  }
+
+  const parsed = parseFrontmatter(readFileSync(found.file, 'utf8'));
+  const validation = section(parsed.body, 'Validation');
+  const fenced = /```bash\s*\r?\n([\s\S]*?)\r?\n```/m.exec(validation)?.[1];
+  if (!fenced) {
+    console.error(`refusing to review "${id}"; Validation has no fenced bash block`);
+    exit(1);
+  }
+
+  const parent = mkdtempSync(join(tmpdir(), 'kaizen-review-'));
+  const worktree = join(parent, 'worktree');
+  let repo;
+  let added = false;
+  let result;
+  let failure = '';
+  try {
+    repo = execFileSync('git', ['-C', target.skills, 'rev-parse', '--show-toplevel'], {
+      encoding: 'utf8',
+    }).trim();
+    const sha = execFileSync('git', ['-C', repo, 'rev-parse', `${found.appliedSha}^{commit}`], {
+      encoding: 'utf8',
+    }).trim();
+    const diff = execFileSync('git', ['-C', repo, 'show', '--format=fuller', '--no-ext-diff', sha], {
+      encoding: 'utf8',
+    });
+    execFileSync('git', ['-C', repo, 'worktree', 'add', '--detach', worktree, sha]);
+    added = true;
+
+    const pkg = join(worktree, 'package.json');
+    if (existsSync(pkg) && JSON.parse(readFileSync(pkg, 'utf8')).name === 'kaizen') {
+      execFileSync('npm', ['ci', '--ignore-scripts'], { cwd: worktree, stdio: 'ignore' });
+    }
+
+    const escapedRepo = repo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const repoPattern = new RegExp(`${escapedRepo}(?=$|/|[\\s"'\\x60;&|<>()])`, 'g');
+    const validationCommand = fenced.replace(repoPattern, worktree);
+    const ran = spawnSync('bash', ['-lc', validationCommand], {
+      cwd: worktree,
+      encoding: 'utf8',
+      env: { ...process.env, CLAUDE_PLUGIN_ROOT: worktree, KAIZEN_TARGET_ROOT: worktree },
+    });
+    result = {
+      id,
+      sha,
+      diff,
+      validation: {
+        command: fenced,
+        exitCode: ran.status,
+        stdout: ran.stdout,
+        stderr: ran.stderr,
+      },
+    };
+  } catch (e) {
+    failure = `failed to gather review evidence for "${id}": ${e.message}`;
+  } finally {
+    if (added) {
+      try {
+        execFileSync('git', ['-C', repo, 'worktree', 'remove', '--force', worktree]);
+      } catch {
+        // The parent removal below is best-effort cleanup for a failed worktree command.
+      }
+    }
+    rmSync(parent, { recursive: true, force: true });
+  }
+
+  if (failure) {
+    console.error(failure);
+    exit(1);
+  }
+  console.log(JSON.stringify(result, null, 2));
+  if (result.validation.exitCode !== 0) exit(1);
+}
+
 /**
  * Apply a batch of triage decisions to suggestion frontmatter.
  *
@@ -1344,6 +1444,7 @@ const commands = {
   validate: cmdValidate,
   triage: cmdTriage,
   verify: cmdVerify,
+  review: cmdReview,
   drain: cmdDrain,
   asks: cmdAsks,
   doctor: cmdDoctor,
@@ -1355,13 +1456,14 @@ const commands = {
   help: () =>
     console.log(
       'usage: kaizen                                            # the board, in the terminal\n' +
-        '       kaizen <init|scan|status|validate|triage|verify|drain|asks|doctor|docs|prune|serve|dispatch|tui> [--fix] [--pretty]\n' +
+        '       kaizen <init|scan|status|validate|triage|verify|review|drain|asks|doctor|docs|prune|serve|dispatch|tui> [--fix] [--pretty]\n' +
         '       kaizen dispatch [<suggestion id>]                 # send a card, or the backlog, to the runners\n' +
         '       kaizen doctor [--file]\n' +
         '       kaizen asks [--json|--due|--stamp]                # asks you keep repeating\n' +
         '       kaizen triage --apply <file.json|-> [--dry-run]\n' +
         '       kaizen triage --self-check\n' +
         '       kaizen verify --dry <suggestion id>               # apply patch + run fenced bash validation\n' +
+        '       kaizen review --dry <suggestion id>               # landed diff + validation result as JSON\n' +
         '       kaizen drain --apply <file.json|-> [--dry-run]   # [{ id, sha, verified_at }]\n' +
         '       kaizen status --bar                              # 改 ○17 ●1 ◐22 ▲9, for the status line\n' +
         '       kaizen docs [--check] [--self-check]\n' +
