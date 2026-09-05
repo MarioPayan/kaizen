@@ -252,6 +252,12 @@ actually see. **Never `git stash` in the worktree**: the stash is shared with
 the live repo, and eight passes left eight `WIP on (no branch)` entries in the
 user's skills repo that way.
 
+Runner mode may write suggestion files and sidecar patches under configured
+feedback directories, but it must not edit any target-tree file directly. A
+lesson learned while running is a `recorded` suggestion, not an immediate edit
+to the skill or module it concerns; that target changes only when its reviewed,
+approved sidecar patch lands.
+
 ```bash
 # in the throwaway worktree, not the target's live tree
 "${CLAUDE_PLUGIN_ROOT}/skills/_lib/proposal-patch.sh" \
@@ -424,6 +430,8 @@ Triage itself reads the full state and is **not** filtered by `surface`. If it w
 ## Step 9 — Reflect
 
 Apply `${CLAUDE_PLUGIN_ROOT}/skills/_lib/skill-reflect.md` (inputs: `SKILL_NAME=kaizen`, `OUTCOME=<complete|partial|errored>`, `WHAT_RAN=<one or two sentences>`).
+Reflection writes only to the configured feedback directory. Never turn its
+lesson into a direct target-tree edit during the same runner pass.
 
 ---
 

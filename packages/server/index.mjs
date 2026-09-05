@@ -30,7 +30,7 @@ import {
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { homedir } from 'node:os';
-import { join, dirname, resolve } from 'node:path';
+import { join, dirname, resolve, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -277,7 +277,7 @@ async function assertCleanTree(cwd) {
  * for the first — it refuses rather than clobbers — so this check exists to say
  * which file, in words, before git says it in its own.
  */
-async function assertApplyable(cwd, patch) {
+async function assertApplyable(cwd, patch, liveTree = {}) {
   const staged = await git(cwd, ['diff', '--cached', '--name-only']);
   if (staged.trim()) {
     throw new HttpError(
@@ -306,12 +306,28 @@ async function assertApplyable(cwd, patch) {
     // with a two-column status, so an unstaged change starts with a space —
     // trimming first ate that space on the first line only, and slice(3) then
     // took a character off the filename. The one this refusal exists to name.
-    const files = status
+    const dirty = status
       .split('\n')
       .filter((l) => l.trim())
-      .map((l) => l.slice(3))
-      .join(', ');
-    throw new HttpError(409, `the patch's own files have uncommitted work — commit or stash first: ${files}`);
+      .map((l) => l.slice(3));
+    const skills = liveTree.skills && resolve(liveTree.skills);
+    const claims = new Set((liveTree.claimedScopes ?? []).map((scope) => resolve(cwd, scope)));
+    const unclaimed = skills
+      ? dirty.filter((file) => {
+          const absolute = resolve(cwd, file);
+          const fromSkills = relative(skills, absolute);
+          return (
+            fromSkills && !fromSkills.startsWith('..') && !isAbsolute(fromSkills) && !claims.has(absolute)
+          );
+        })
+      : [];
+    const diagnosis = unclaimed.length
+      ? ` Unclaimed live-tree edit with no open card for its scope: ${unclaimed.join(', ')}; a runner may have written outside its proposal worktree.`
+      : '';
+    throw new HttpError(
+      409,
+      `the patch's own files have uncommitted work — commit or stash first: ${dirty.join(', ')}.${diagnosis}`,
+    );
   }
 }
 
@@ -578,7 +594,14 @@ const routes = {
       );
     }
 
-    if (ctx.config.applyGuards?.requireCleanTree !== false) await assertApplyable(root, patch);
+    if (ctx.config.applyGuards?.requireCleanTree !== false) {
+      const claimedScopes = applyState.suggestions
+        .filter(
+          (candidate) => candidate.target === target.name && !isTerminal(candidate.status) && candidate.scope,
+        )
+        .map((candidate) => candidate.scope);
+      await assertApplyable(root, patch, { skills: target.skills, claimedScopes });
+    }
     if (ctx.config.applyGuards?.requireDiffApplies !== false) {
       try {
         await git(root, ['apply', '--check', patch]);

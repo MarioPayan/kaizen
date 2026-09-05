@@ -312,6 +312,19 @@ describe('api', () => {
     expect(clash.status).toBe(409);
     expect(clash.body.error).toMatch(/patch's own files have uncommitted work/);
     expect(clash.body.error).toContain('demo/SKILL.md');
+    expect(clash.body.error).not.toMatch(/Unclaimed live-tree edit/);
+
+    writeFileSync(
+      join(feedback, 'demo', '2026-06-06-narrow.md'),
+      readFileSync(join(feedback, 'demo', '2026-06-06-narrow.md'), 'utf8').replace(
+        'scope: demo/SKILL.md',
+        'scope: demo/other.md',
+      ),
+    );
+    const unclaimed = await api('POST', '/api/apply', { id: 'user/demo/2026-06-06-narrow.md' });
+    expect(unclaimed.status).toBe(409);
+    expect(unclaimed.body.error).toMatch(/Unclaimed live-tree edit with no open card for its scope/);
+    expect(unclaimed.body.error).toContain('demo/SKILL.md');
 
     git(skills, 'checkout', '--', '.');
     rmSync(join(skills, 'stray-draft.py'), { force: true });
