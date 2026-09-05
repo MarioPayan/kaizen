@@ -804,8 +804,16 @@ function cmdVerify() {
       encoding: 'utf8',
       env: { ...process.env, CLAUDE_PLUGIN_ROOT: worktree, KAIZEN_TARGET_ROOT: worktree },
     });
-    if (ran.stdout) process.stdout.write(ran.stdout);
-    if (ran.stderr) process.stderr.write(ran.stderr);
+    if (ran.stdout) {
+      for (const line of ran.stdout.trimEnd().split(/\r?\n/)) {
+        process.stdout.write(`[validation stdout] ${line}\n`);
+      }
+    }
+    if (ran.stderr) {
+      for (const line of ran.stderr.trimEnd().split(/\r?\n/)) {
+        process.stderr.write(`[validation stderr] ${line}\n`);
+      }
+    }
     if (ran.status !== 0) {
       failure = `fail ${id} (exit ${ran.status ?? 'unknown'})`;
     }
@@ -822,10 +830,10 @@ function cmdVerify() {
     rmSync(parent, { recursive: true, force: true });
   }
   if (failure) {
-    console.error(failure);
+    console.error(`── verify verdict ──\n${failure}`);
     exit(1);
   }
-  console.log(`pass ${id}`);
+  console.log(`── verify verdict ──\npass ${id}`);
 }
 
 /**

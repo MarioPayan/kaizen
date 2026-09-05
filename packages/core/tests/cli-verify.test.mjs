@@ -56,12 +56,17 @@ afterEach(() => {
 
 describe('kaizen verify --dry', () => {
   it('applies the patch and runs validation only in a throwaway worktree', () => {
-    const f = fixture('test -f "$KAIZEN_TARGET_ROOT/added.txt"');
-    const out = execFileSync('node', [cli, 'verify', '--dry', f.id], {
+    const f = fixture(
+      'test -f "$KAIZEN_TARGET_ROOT/added.txt"\necho "refusing to write — 3 problem(s)"\necho fixture-warning >&2',
+    );
+    const ran = spawnSync('node', [cli, 'verify', '--dry', f.id], {
       encoding: 'utf8',
       env: { ...process.env, KAIZEN_CONFIG: f.config },
     });
-    expect(out).toContain(`pass ${f.id}`);
+    expect(ran.status).toBe(0);
+    expect(ran.stdout).toContain('[validation stdout] refusing to write — 3 problem(s)');
+    expect(ran.stderr).toContain('[validation stderr] fixture-warning');
+    expect(ran.stdout).toContain(`── verify verdict ──\npass ${f.id}`);
     expect(existsSync(join(f.repo, 'added.txt'))).toBe(false);
   });
 
@@ -72,8 +77,8 @@ describe('kaizen verify --dry', () => {
       env: { ...process.env, KAIZEN_CONFIG: f.config },
     });
     expect(ran.status).toBe(1);
-    expect(ran.stdout).toContain('validation-output');
-    expect(ran.stderr).toContain(`fail ${f.id} (exit 7)`);
+    expect(ran.stdout).toContain('[validation stdout] validation-output');
+    expect(ran.stderr).toContain(`── verify verdict ──\nfail ${f.id} (exit 7)`);
     expect(existsSync(join(f.repo, 'added.txt'))).toBe(false);
   });
 
