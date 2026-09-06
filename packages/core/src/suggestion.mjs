@@ -208,6 +208,8 @@ export function parseSuggestion({ id, file, skill, target, text }) {
     context: captureSection(body, 'Context', 'What ran'),
     suggestion: captureSection(body, 'Suggestion', 'Proposal'),
     rationale: captureSection(body, 'Why it matters', 'Why', 'What cost time'),
+    plan: section(body, 'Plan'),
+    validation: section(body, 'Validation'),
     // What the two reviews wrote, so the detail window can show a rejected
     // card's reason without opening the file — the block line is one sentence.
     review: section(body, 'Review'),

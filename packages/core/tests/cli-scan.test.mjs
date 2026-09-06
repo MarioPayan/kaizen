@@ -110,4 +110,34 @@ describe('kaizen scan', () => {
       '## Recurrence — 2026-02-01\n\nDo not add the guardrail; the premise was wrong.',
     );
   });
+
+  it('exposes the plan and validation for a returned planning pass', () => {
+    writeFileSync(
+      join(root, 'feedback', 'alpha', '2026-01-01-a-thing.md'),
+      [
+        '---',
+        'skill: alpha',
+        'date: 2026-01-01',
+        'severity: low',
+        '---',
+        '',
+        '## Plan',
+        '',
+        'Change the parser and its focused test.',
+        '',
+        '## Validation',
+        '',
+        '```bash',
+        'npm test -- --run packages/core/tests/cli-scan.test.mjs',
+        '```',
+        '',
+      ].join('\n'),
+    );
+
+    const state = scan('--id', 'user/alpha/2026-01-01-a-thing.md');
+    expect(state.suggestions[0].plan).toBe('Change the parser and its focused test.');
+    expect(state.suggestions[0].validation).toContain(
+      'npm test -- --run packages/core/tests/cli-scan.test.mjs',
+    );
+  });
 });
