@@ -367,12 +367,24 @@ treating the two as the same thing is why a queue can fill with landed changes
 nobody ever checked. So a landed card is the runner's work again before it is
 the reviewer's.
 
-For each card at `applied`: `git -C <repo> show <applied_sha>` and read it
-against `## Plan`; run the command `## Validation` names against that tree;
-then write, in one call, `"review": "<what the commit does, whether it matches
-the plan, what the validation returned, anything you would not have shipped>"`,
-`"status": "reviewed"` and `"needs_review": "claude"`. The server hands the card
-to claude from there.
+For each card at `applied`, gather the mechanical evidence first. The command
+accepts only an `applied` card with `applied_sha` and a fenced validation
+command. It checks out that exact commit, installs target dependencies when
+needed, runs validation there, and returns JSON shaped as
+`{ id, sha, diff, validation: { command, exitCode, stdout, stderr } }`:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/cli.mjs" review --dry <id>
+```
+
+Read `diff` against `## Plan` and decide whether the landing is shippable; the
+helper supplies facts, not that judgement. If it exits nonzero, keep the card
+at `applied`, report its JSON or stderr, and fix a transient cause before
+rerunning. Do not reconstruct the evidence manually or advance a failed
+validation. Once it passes, write in one call `"review": "<what the commit
+does, whether it matches the plan, what the validation returned, anything you
+would not have shipped>"`, `"status": "reviewed"` and `"needs_review":
+"claude"`. The server hands the card to claude from there.
 
 ### Then verify — the drain is not finished at `reviewed`
 
