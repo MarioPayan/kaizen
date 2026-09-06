@@ -752,6 +752,33 @@ function cmdDrain() {
 
 /* -------------------------------------------------------------- verify ---- */
 
+const dependencyInstalls = [
+  {
+    lockfiles: ['bun.lock', 'bun.lockb'],
+    command: 'bun',
+    args: ['install', '--frozen-lockfile', '--ignore-scripts'],
+  },
+  {
+    lockfiles: ['pnpm-lock.yaml'],
+    command: 'pnpm',
+    args: ['install', '--frozen-lockfile', '--ignore-scripts'],
+  },
+  { lockfiles: ['yarn.lock'], command: 'yarn', args: ['install', '--immutable', '--mode=skip-build'] },
+  {
+    lockfiles: ['package-lock.json', 'npm-shrinkwrap.json'],
+    command: 'npm',
+    args: ['ci', '--ignore-scripts'],
+  },
+];
+
+/** Prepare a clean verification worktree without running dependency lifecycle scripts. */
+function installDependencies(worktree) {
+  const install = dependencyInstalls.find(({ lockfiles }) =>
+    lockfiles.some((file) => existsSync(join(worktree, file))),
+  );
+  if (install) execFileSync(install.command, install.args, { cwd: worktree, stdio: 'inherit' });
+}
+
 /** Run a planned patch and its validation without touching the target tree. */
 function cmdVerify() {
   const id = args.find((a) => !a.startsWith('--'));
@@ -802,11 +829,8 @@ function cmdVerify() {
     execFileSync('git', ['-C', repo, 'worktree', 'add', '--detach', worktree, 'HEAD']);
     added = true;
 
-    const pkg = join(worktree, 'package.json');
-    if (existsSync(pkg) && JSON.parse(readFileSync(pkg, 'utf8')).name === 'kaizen') {
-      execFileSync('npm', ['ci', '--ignore-scripts'], { cwd: worktree, stdio: 'inherit' });
-    }
     execFileSync('git', ['-C', worktree, 'apply', patch]);
+    installDependencies(worktree);
 
     const escapedRepo = repo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const repoPattern = new RegExp(`${escapedRepo}(?=$|/|[\\s"'\\x60;&|<>()])`, 'g');

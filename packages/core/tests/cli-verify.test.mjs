@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,7 +20,7 @@ const git = (cwd, ...args) =>
     },
   });
 
-function fixture(validation) {
+function fixture(validation, files = {}) {
   const root = mkdtempSync(join(tmpdir(), 'kaizen-cli-verify-'));
   roots.push(root);
   const repo = join(root, 'repo');
@@ -28,6 +28,7 @@ function fixture(validation) {
   mkdirSync(join(repo, 'skills', 'demo'), { recursive: true });
   mkdirSync(join(feedback, 'demo'), { recursive: true });
   writeFileSync(join(repo, 'skills', 'demo', 'SKILL.md'), '---\nname: demo\n---\n# demo\n');
+  for (const [path, contents] of Object.entries(files)) writeFileSync(join(repo, path), contents);
   git(repo, 'init', '-q', '-b', 'main');
   git(repo, 'add', '-A');
   git(repo, 'commit', '-q', '-m', 'init');
@@ -120,6 +121,30 @@ describe('kaizen verify --dry', () => {
     expect(ran.stdout).not.toContain('final-command-passed');
     expect(ran.stderr).toContain(`── verify verdict ──\nfail ${f.id} (exit 1)`);
     expect(existsSync(join(f.repo, 'added.txt'))).toBe(false);
+  });
+
+  it.each([
+    ['npm', 'package-lock.json', 'ci --ignore-scripts'],
+    ['bun', 'bun.lock', 'install --frozen-lockfile --ignore-scripts'],
+    ['pnpm', 'pnpm-lock.yaml', 'install --frozen-lockfile --ignore-scripts'],
+    ['yarn', 'yarn.lock', 'install --immutable --mode=skip-build'],
+  ])('installs %s dependencies from its lockfile before validation', (manager, lockfile, expected) => {
+    const f = fixture('test "$(cat .install-args)" = "' + expected + '"', {
+      'package.json': '{"name":"external-target"}\n',
+      [lockfile]: '\n',
+    });
+    const bin = join(f.root, 'bin');
+    mkdirSync(bin);
+    const executable = join(bin, manager);
+    writeFileSync(executable, '#!/usr/bin/env bash\nprintf "%s" "$*" > .install-args\n');
+    chmodSync(executable, 0o755);
+
+    const out = execFileSync('node', [cli, 'verify', '--dry', f.id], {
+      encoding: 'utf8',
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, KAIZEN_CONFIG: f.config },
+    });
+    expect(out).toContain(`pass ${f.id}`);
+    expect(existsSync(join(f.repo, '.install-args'))).toBe(false);
   });
 
   it('rewrites a repository argument without rewriting a sidecar path that shares its prefix', () => {
