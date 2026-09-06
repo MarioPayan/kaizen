@@ -26,3 +26,5 @@ edit the JSON, then `npm run docs`.
   has. Tests are named as sentences about behaviour.
 - When a skill sequences CLI commands, document the CLI's accepted state and
   machine-readable input shape before the command, including failure recovery.
+- Validation fences are executable shell source: use shell-safe quoting, and
+  single-quote `node -e` programs whose assertions contain Markdown backticks.

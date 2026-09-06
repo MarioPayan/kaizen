@@ -206,6 +206,10 @@ Write the command as one fenced `bash` block. `kaizen verify --dry` extracts
 that block verbatim and runs it from a throwaway worktree with the sidecar patch
 applied. Use worktree-relative paths or `$KAIZEN_TARGET_ROOT`; an absolute path
 to the live tree validates the unpatched file instead.
+Because the block is executable shell source, quote it for the shell that runs
+it. In particular, single-quote a `node -e` program whose assertions contain
+Markdown backticks; double quotes would execute those backticks as command
+substitutions before Node starts.
 
 "Read it and see if it looks right" is not a validation plan. If you cannot say
 what would prove the fix worked, that is a sign the fix is not understood yet —
