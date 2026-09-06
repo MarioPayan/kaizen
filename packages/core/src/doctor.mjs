@@ -121,16 +121,14 @@ function deadConfigKeys() {
  * yes to something nobody has written", and /api/apply refuses with a 422.
  */
 function decidedWithoutAPatch(state) {
-  const stuck = state.suggestions.filter(
-    (s) => inPatchWindow(s.status) && !existsSync(s.file.replace(/\.md$/, '.patch')),
-  );
+  const stuck = state.suggestions.filter((s) => inPatchWindow(s.status) && !s.patch);
   if (stuck.length === 0) return [];
   return [
     {
       slug: 'decisions-with-no-proposal-behind-them',
       severity: stuck.length > 10 ? 'medium' : 'low',
       scope: 'skills/kaizen/SKILL.md',
-      context: `${stuck.length} suggestion(s) sit at ${patchWindow().join(' or ')} with no .patch file beside them. /api/apply returns 422 for every one; the drain step has nothing to apply.`,
+      context: `${stuck.length} suggestion(s) sit at ${patchWindow().join(' or ')} with no .patch file beside them or their named carrier. The drain step has nothing to apply.`,
       evidence: bullets(stuck.map((s) => `${s.id}@${s.status} — no ${s.file.replace(/\.md$/, '.patch')}`)),
       suggestion: `Run a proposal pass (Step 5) for these, or split the status so the queue stops reporting them as ready. The count reads as progress and cannot move: ${stuck
         .slice(0, 5)

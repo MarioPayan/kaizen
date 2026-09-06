@@ -59,6 +59,7 @@ import {
   windowDays,
   stampPath,
   canonicalStatus,
+  canTransition,
   isTerminal,
   hasLanded,
   statusLine,
@@ -473,7 +474,7 @@ function cmdValidate() {
     for (const field of missingRequirements(s.status, {
       data,
       body: readFileSync(s.file, 'utf8'),
-      hasPatch: existsSync(s.file.replace(/\.md$/, '.patch')),
+      hasPatch: !!s.patch,
     })) {
       (gaps[`${s.status} is missing ${field}`] ??= []).push(s.slug);
     }
@@ -687,7 +688,8 @@ function cmdDrain() {
   }
 
   const config = requireConfig();
-  const byId = new Map(buildState(config).suggestions.map((s) => [s.id, s]));
+  const state = buildState(config);
+  const byId = new Map(state.suggestions.map((s) => [s.id, s]));
   const errors = [];
   const writes = [];
 
@@ -716,10 +718,10 @@ function cmdDrain() {
     const text = readFileSync(found.file, 'utf8');
     const { data, body } = parseFrontmatter(text);
     const merged = { ...data, applied_sha: e.sha, verified_at: e.verified_at };
-    const hasPatch = existsSync(found.file.replace(/\.md$/, '.patch'));
+    const hasPatch = !!found.patch;
     const decisionStatus = spec().phases.find((p) => p.attended)?.produces;
     if ((found.status === decisionStatus || path.includes(decisionStatus)) && hasPatch) {
-      const identity = patchIdentity(readFileSync(found.file.replace(/\.md$/, '.patch')));
+      const identity = patchIdentity(readFileSync(found.patch));
       if (merged.approved_patch !== identity) {
         errors.push(`${where}: cannot pass "${decisionStatus}" — approved patch identity does not match`);
       }
@@ -733,6 +735,10 @@ function cmdDrain() {
       file: found.file,
       patch: { status: 'verified', applied_sha: e.sha, verified_at: e.verified_at },
     });
+    for (const member of state.suggestions) {
+      if (member.blockedBy !== found.id || !canTransition(member.status, 'superseded')) continue;
+      writes.push({ file: member.file, patch: { status: 'superseded', superseded_by: e.sha } });
+    }
   }
 
   if (errors.length) {
@@ -767,9 +773,11 @@ function cmdVerify() {
   }
 
   const target = resolveTargets(config).find((t) => t.name === found.target);
-  const patch = found.file.replace(/\.md$/, '.patch');
-  if (!target || !existsSync(patch)) {
-    console.error(`refusing to verify "${id}"; ${target ? 'sidecar patch is missing' : 'target is missing'}`);
+  const patch = found.patch;
+  if (!target || !patch) {
+    console.error(
+      `refusing to verify "${id}"; ${target ? 'proposal patch is missing' : 'target is missing'}`,
+    );
     exit(1);
   }
 

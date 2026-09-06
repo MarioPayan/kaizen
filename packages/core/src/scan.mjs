@@ -6,13 +6,13 @@
  * copy to drift.
  */
 import { readdirSync, readFileSync, statSync, existsSync } from 'node:fs';
-import { join, relative, dirname, resolve, isAbsolute, normalize, sep } from 'node:path';
+import { basename, join, relative, dirname, resolve, isAbsolute, normalize, sep } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { ageOf, assignUids, localToday, parseSuggestion } from './suggestion.mjs';
 import { resolveTargets, expandPath } from './config.mjs';
 import { surfaceOf, passesSurface } from './taxonomy.mjs';
 import { isInside, suggestionId } from './paths.mjs';
-import { isTerminal } from './lifecycle.mjs';
+import { inPatchWindow, isTerminal } from './lifecycle.mjs';
 
 const SCRIPT_EXT = /\.(sh|py|mjs|js|ts|bash|zsh)$/i;
 
@@ -274,12 +274,29 @@ export function discoverSuggestions(feedbackDir, targetName, skillsDir = '') {
 export function assignBlockedBy(suggestions) {
   const open = suggestions.filter((s) => !isTerminal(s.status));
   for (const s of suggestions) {
-    s.blockedBy = s.blockedOn
-      ? (open.find((o) => o.id !== s.id && (s.blockedOn.includes(o.id) || s.blockedOn.includes(o.slug)))
-          ?.id ?? '')
-      : '';
+    if (!s.blockedOn) {
+      s.blockedBy = '';
+      continue;
+    }
+    const candidates = open.filter((o) => o.id !== s.id);
+    const exact = candidates.find((o) => s.blockedOn.includes(o.id));
+    const named = candidates.find((o) => s.blockedOn.includes(basename(o.file, '.md')));
+    const bySlug = candidates.filter((o) => o.slug && s.blockedOn.includes(o.slug));
+    s.blockedBy = exact?.id ?? named?.id ?? (bySlug.length === 1 ? bySlug[0].id : '');
   }
   return suggestions;
+}
+
+/** The proposal owned by this card, or by the live card it explicitly rides on. */
+export function patchFor(s, suggestions = []) {
+  const own = s.file.replace(/\.md$/, '.patch');
+  if (existsSync(own)) return own;
+  if (!s.blockedBy) return null;
+
+  const carrier = suggestions.find((candidate) => candidate.id === s.blockedBy);
+  if (!carrier || carrier.target !== s.target || !inPatchWindow(carrier.status)) return null;
+  const patch = carrier.file.replace(/\.md$/, '.patch');
+  return existsSync(patch) ? patch : null;
 }
 
 /** Resolve the discovered project that owns a suggestion's skill, if any. */
@@ -394,6 +411,7 @@ export function buildState(config) {
 
   // Derived here for the same reason uids are: it takes the whole corpus.
   assignBlockedBy(suggestions);
+  for (const s of suggestions) s.patch = patchFor(s, suggestions);
   const byName = new Map();
   for (const s of suggestions) byName.set(s.skill, (byName.get(s.skill) ?? 0) + 1);
 

@@ -278,7 +278,7 @@
       "phase": "plan",
       "where": "sibling",
       "suffix": ".patch",
-      "help": "The real diff, stored beside the suggestion, passing `git apply --check`. A described patch is not a patch."
+      "help": "The real diff, stored beside the suggestion or the live carrier named by its `blocked_on`, passing `git apply --check`. A described patch is not a patch."
     },
     {
       "id": "approved_patch",

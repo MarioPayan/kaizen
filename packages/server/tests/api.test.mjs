@@ -431,6 +431,38 @@ describe('apply closes the siblings parked on it', () => {
   });
 });
 
+describe('carrier patch planning', () => {
+  it('plans and renders a carried member but reserves approval for its lead', async () => {
+    const feedback = join(root, 'skills-feedback', 'demo');
+    const card = (slug, extra = '') =>
+      writeFileSync(
+        join(feedback, `2026-05-06-${slug}.md`),
+        `---\nskill: demo\ndate: 2026-05-06\nseverity: low\ntype: hygiene\nobjective: debt\neffort: S\nrung: 1\nscope: demo/SKILL.md\nstatus: ${slug === 'lead' ? 'planned' : 'triaged'}\nconfirmed_at: 2026-05-06 @ abc1234\n${extra}---\n\n## Context\n\nc\n\n## Suggestion\n\ns\n\n## Plan\n\np\n\n## Validation\n\nv\n`,
+      );
+    card('lead');
+    card('member', 'blocked_on: carried by 2026-05-06-lead\n');
+    card('stranger');
+    writeFileSync(join(feedback, '2026-05-06-lead.patch'), 'diff --git a/demo/SKILL.md b/demo/SKILL.md\n');
+
+    const member = 'user/demo/2026-05-06-member.md';
+    const planned = await api('POST', '/api/suggestion', { id: member, status: 'planned' });
+    expect(planned.status, planned.body.error).toBe(200);
+    expect((await api('GET', `/api/diff?id=${member}`)).body.patch).toContain('demo/SKILL.md');
+    expect((await api('POST', '/api/suggestion', { id: member, status: 'approved' })).body.error).toMatch(
+      /approve its carrier/,
+    );
+    expect(
+      (await api('POST', '/api/suggestion', { id: 'user/demo/2026-05-06-stranger.md', status: 'planned' }))
+        .status,
+    ).toBe(409);
+
+    for (const slug of ['lead', 'member', 'stranger']) {
+      rmSync(join(feedback, `2026-05-06-${slug}.md`), { force: true });
+    }
+    rmSync(join(feedback, '2026-05-06-lead.patch'), { force: true });
+  });
+});
+
 /**
  * The wide approve: one decision drains everything approvable — what can
  * legally move moves, an unready candidate is skipped and counted, and a

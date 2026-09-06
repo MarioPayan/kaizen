@@ -141,7 +141,7 @@ describe('the shipped spec', () => {
     for (const s of ['planned', 'approved', 'verified', 'rejected']) expect(awaitsPass(s), s).toBe(false);
     expect(pendingPass(card('planned', 'claude'))).toBe(true);
     expect(pendingPass(card('triaged', '', 'waiting on a call'))).toBe(false);
-    expect(pendingPass(card('planned', 'claude', 'waiting on a call'))).toBe(false);
+    expect(pendingPass(card('planned', 'claude', 'carried by a lead'))).toBe(true);
     // The pile at the door of the decision is still one status; what the
     // callers subtract from it is the flag.
     expect(awaitingDecision()).toEqual(['planned']);

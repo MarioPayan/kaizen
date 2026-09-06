@@ -15,6 +15,7 @@ export {
 export {
   buildState,
   assignBlockedBy,
+  patchFor,
   discoverSkills,
   discoverProjectSkills,
   discoverSuggestions,

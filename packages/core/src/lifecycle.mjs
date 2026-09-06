@@ -268,22 +268,20 @@ export function runnerOf(s, l = spec()) {
  * Is there anything an unattended run can do for this card *right now*?
  *
  * `awaitsPass` answers for the status alone, which is not the whole question:
- * a card carrying `blocked_on` is parked on something outside the pipeline —
- * a carrier patch that has to land first, a read-only target, a file only you
+ * A card carrying only `blocked_on` is parked on something outside the pipeline
+ * — a carrier patch that has to land first, a read-only target, a file only you
  * can move. A run fenced to one of those can do nothing but re-stamp
  * `confirmed_at`, and it costs a model run to find that out, again after every
- * reseat. The field that says so is already in frontmatter, so the gate reads
- * it instead of paying an agent to rediscover it. A card wearing `needs_review`
- * is the other way round: its status may be one that waits on you, and it is
- * still a model's move — the reviewer's.
+ * reseat. A card also wearing `needs_review` is the other way round: its status
+ * is provisional, so the reviewer still has a real move before it parks.
  *
  * Takes a built suggestion (`blockedOn`, `needsReview`), not raw frontmatter —
  * both callers hold one, and the server's dispatch gate and the TUI's `a` must
  * agree.
  */
 export function pendingPass(s, l = spec()) {
-  if (s.blockedOn) return false;
-  return !!s.needsReview || awaitsPass(s.status, l);
+  if (s.needsReview) return true;
+  return !s.blockedOn && awaitsPass(s.status, l);
 }
 
 /**

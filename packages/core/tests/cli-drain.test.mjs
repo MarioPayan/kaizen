@@ -93,6 +93,26 @@ describe('kaizen drain', () => {
     expect(text).toContain('verified_at: 2026-01-01 — grep 1');
   });
 
+  it('closes the members carried by the verified suggestion', () => {
+    const patch = 'diff --git a/x b/x\n';
+    writeFileSync(FILE(), suggestion('approved', { approvedPatch: patchIdentity(patch) }));
+    writeFileSync(FILE().replace(/\.md$/, '.patch'), patch);
+    const member = join(root, 'feedback', 'demo', '2026-01-02-member.md');
+    writeFileSync(
+      member,
+      suggestion('triaged').replace(
+        'confirmed_at: 2026-01-01 @ abc1234',
+        'confirmed_at: 2026-01-01 @ abc1234\nblocked_on: carried by 2026-01-01-walkable',
+      ),
+    );
+
+    run([{ id: 'user/demo/2026-01-01-walkable.md', sha: SHA, verified_at: '2026-01-01 — grep 1' }]);
+    const text = readFileSync(member, 'utf8');
+    expect(text).toContain('status: superseded');
+    expect(text).toContain(`superseded_by: ${SHA}`);
+    rmSync(member);
+  });
+
   it('refuses an approved suggestion whose sidecar no longer matches its approval', () => {
     const approved = 'diff --git a/x b/x\n';
     writeFileSync(FILE(), suggestion('approved', { approvedPatch: patchIdentity(approved) }));

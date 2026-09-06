@@ -179,7 +179,7 @@ with 3+ such members or 5+ such incidents:
 
 - The fix **must** land at rung 0 or rung 1. Patching one skill's prose is not an acceptable outcome — the recurrence is proof that prose already failed there repeatedly.
 - Add one line to the shared authoring conventions of the target tree so future skills inherit the rule.
-- Write **one** proposal for the scope, not one per member. Members reference it as data: `"blocked_on": "carried by <lead slug>"` on each. That line is what the landing reads to close them — a card that merely shares the file, with its own problem, is not carried and is not closed.
+- Write **one** proposal for the scope, not one per member. Members reference it as data: `"blocked_on": "carried by <lead slug>"` on each. The lead owns the `.patch`; each member still gets its own `## Plan` and `## Validation`, reaches `planned` on that carrier patch, receives its check, then stays parked until the lead lands. Only the lead is approved and applied. That explicit relation is what patch lookup and landing read — a card that merely shares the file, with its own problem, neither borrows the patch nor closes.
 
 Say plainly which scopes cross that line and what single artefact each collapses into.
 
@@ -270,7 +270,7 @@ Pass only intentional new files as `<new paths>`; the helper uses intent-to-add
 so they enter the diff, then resets those paths before cleaning the worktree.
 Omit the optional arguments when the proposal creates no files.
 
-Store it beside the suggestion as `<suggestion-basename>.patch`.
+Store it beside the suggestion as `<suggestion-basename>.patch`. For a repeated-scope proposal, store it beside the lead only; members borrow it through the `blocked_on` relation from Step 4, never merely because they share a scope.
 
 If this replaces the sidecar of an `approved` card, the approval no longer
 names the patch on disk. In the same `triage --apply` call, return the card to

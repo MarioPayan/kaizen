@@ -182,9 +182,14 @@ describe('kaizen doctor', () => {
   });
 
   it('does not flag a decision that has one', () => {
-    // The patch is looked for beside the .md; this file genuinely exists.
-    const withPatch = suggestion({ status: 'approved', file: new URL(import.meta.url).pathname });
+    const withPatch = suggestion({ status: 'approved', patch: new URL(import.meta.url).pathname });
     expect(only(stateWith([withPatch]), 'decided-without-a-patch')).toEqual([]);
+    expect(
+      only(
+        stateWith([suggestion({ status: 'planned', patch: '/tmp/carrier.patch' })]),
+        'decided-without-a-patch',
+      ),
+    ).toEqual([]);
   });
 
   it('flags decisions that have sat past the drain window', () => {

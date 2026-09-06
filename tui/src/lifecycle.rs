@@ -216,11 +216,10 @@ pub fn awaits_pass(status: &str) -> bool {
 
 /// Is there anything an unattended run can do for this card right now? The
 /// server's gate, mirrored: `awaits_pass` answers for the status, a card
-/// flagged for a check is the reviewer's whatever its status, and a card
-/// carrying `blocked_on` answers no whatever else is true — it is parked on
-/// something outside the pipeline, and a run fenced to it can only re-stamp.
+/// flagged for a check is the reviewer's whatever its status, while an
+/// otherwise blocked card is parked outside the pipeline and has no model move.
 pub fn pending_pass(status: &str, needs_review: &str, blocked_on: &str) -> bool {
-    blocked_on.is_empty() && (!needs_review.is_empty() || awaits_pass(status))
+    !needs_review.is_empty() || (blocked_on.is_empty() && awaits_pass(status))
 }
 
 #[cfg(test)]
@@ -244,11 +243,11 @@ mod tests {
         assert!(!awaits_pass("verified"));
         assert!(!awaits_pass("rejected"));
 
-        // The flag overrides the status: an unchecked plan is claude's, and a
-        // block overrides everything.
+        // The flag overrides both the status and a carrier block: the check can
+        // finish before the card parks behind the lead.
         assert!(pending_pass("planned", "claude", ""));
         assert!(!pending_pass("planned", "", ""));
-        assert!(!pending_pass("planned", "claude", "waiting on a call"));
+        assert!(pending_pass("planned", "claude", "carried by a lead"));
         assert!(!pending_pass("recorded", "", "waiting on a call"));
     }
 

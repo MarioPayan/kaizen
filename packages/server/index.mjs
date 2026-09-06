@@ -145,6 +145,15 @@ function currentStatus(config, id) {
   return canonicalStatus(data.status) ?? 'recorded';
 }
 
+/** The proposal visible from this card: its own, or its explicitly named carrier's. */
+function patchOf(config, id, suggestions = buildState(config).suggestions) {
+  const found = suggestions.find((s) => s.id === id);
+  if (found?.patch) return found.patch;
+  const { path } = suggestionFile(config, id);
+  const own = path.replace(/\.md$/, '.patch');
+  return existsSync(own) ? own : null;
+}
+
 /** A status a caller is allowed to name at all. Aliases resolve, so `new` works. */
 function assertSettable(status) {
   const to = canonicalStatus(status);
@@ -183,13 +192,13 @@ function assertTransition(from, to, id) {
  * and no validation plan, which is precisely the state the whole spec exists to
  * prevent. A phase declares what it produces; you may not leave it until it has.
  */
-function assertRequirements(config, id, to, overrides = {}) {
+function assertRequirements(config, id, to, overrides = {}, suggestions) {
   const { path } = suggestionFile(config, id);
   const { data, body } = parseFrontmatter(readFileSync(path, 'utf8'));
   const missing = missingRequirements(to, {
     data: { ...data, ...overrides },
     body,
-    hasPatch: existsSync(path.replace(/\.md$/, '.patch')),
+    hasPatch: !!patchOf(config, id, suggestions),
   });
   if (missing.length === 0) return;
   const how = requirementsFor(to)
@@ -213,7 +222,11 @@ function approval(config, id, to) {
   if (to !== decision?.produces) return {};
   const { path } = suggestionFile(config, id);
   const sidecar = path.replace(/\.md$/, '.patch');
-  if (!existsSync(sidecar)) throw new HttpError(409, 'cannot approve without a proposal patch');
+  if (!existsSync(sidecar)) {
+    const found = buildState(config).suggestions.find((s) => s.id === id);
+    if (found?.patch) throw new HttpError(409, 'cannot approve a carried proposal; approve its carrier');
+    throw new HttpError(409, 'cannot approve without a proposal patch');
+  }
   return { approved_patch: patchIdentity(readFileSync(sidecar)) };
 }
 
@@ -406,9 +419,8 @@ const routes = {
   'GET /api/diff': async (req, _res, ctx) => {
     const id = new URL(req.url, 'http://localhost').searchParams.get('id');
     if (!id) throw new HttpError(400, 'id is required');
-    const { path } = suggestionFile(ctx.config, id);
-    const patch = path.replace(/\.md$/, '.patch');
-    if (!existsSync(patch)) return { id, patch: null };
+    const patch = patchOf(ctx.config, id);
+    if (!patch) return { id, patch: null };
     return { id, patch: await readFile(patch, 'utf8') };
   },
 
@@ -475,7 +487,7 @@ const routes = {
       try {
         assertChecked(ctx.config, s.id, to);
         const approved = approval(ctx.config, s.id, to);
-        assertRequirements(ctx.config, s.id, to, approved);
+        assertRequirements(ctx.config, s.id, to, approved, state.suggestions);
         const { path } = suggestionFile(ctx.config, s.id);
         writeFrontmatter(path, { status: to, ...approved });
       } catch {
