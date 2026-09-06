@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 import prettier from 'prettier';
 import {
   writeSection,
+  duplicateBodySections,
   loadLifecycle,
   validateLifecycle,
   renderMarkdown,
@@ -341,6 +342,32 @@ describe('writeSection', () => {
     expect(section(text, 'Context')).toBe('c');
     expect(text.match(/^## Verdict/gm)).toHaveLength(1);
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('collapses every matching section into one replacement', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kaizen-section-'));
+    const file = join(dir, 'card.md');
+    writeFileSync(file, '## Plan\n\nold first\n\n## Context\n\nc\n\n## plan\n\nold second\n');
+    writeSection(file, 'Plan', 'new');
+    const text = readFileSync(file, 'utf8');
+    expect(section(text, 'Plan')).toBe('new');
+    expect(section(text, 'Context')).toBe('c');
+    expect(text.match(/^## Plan$/gim)).toHaveLength(1);
+    expect(text).not.toContain('old first');
+    expect(text).not.toContain('old second');
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe('duplicateBodySections', () => {
+  it('counts repeated spec body headings case-insensitively', () => {
+    const body = '## Plan\n\none\n\n## plan\n\ntwo\n\n## Validation\n\nrun\n';
+    expect(duplicateBodySections(body)).toEqual([{ heading: 'Plan', count: 2 }]);
+  });
+
+  it('ignores repeated headings outside the lifecycle field spec', () => {
+    const body = '## Recurrence — 2026-01-01\n\none\n\n## Recurrence — 2026-01-02\n\ntwo\n';
+    expect(duplicateBodySections(body)).toEqual([]);
   });
 });
 

@@ -23,7 +23,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { defaultConfig } from './config.mjs';
 import { resolveTargets } from './config.mjs';
-import { inPatchWindow, patchWindow, isTerminal, hasLanded } from './lifecycle.mjs';
+import { duplicateBodySections, inPatchWindow, patchWindow, isTerminal, hasLanded } from './lifecycle.mjs';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
@@ -185,6 +185,31 @@ function captureQuality(state, threshold = 0.1) {
       ]),
       suggestion:
         'The capture step is dropping the field, not the triage step. Asking harder in prose has already been tried; the fix belongs where the file is written — a template that does not produce a file without it, or a filing command that refuses one.',
+    },
+  ];
+}
+
+/** Repeated canonical sections make readers and rendered cards disagree. */
+function duplicateSuggestionBodySections(state) {
+  const damaged = state.suggestions.flatMap((s) => {
+    const duplicates = duplicateBodySections(read(s.file));
+    return duplicates.length ? [{ suggestion: s, duplicates }] : [];
+  });
+  if (damaged.length === 0) return [];
+  return [
+    {
+      slug: 'suggestions-with-duplicate-body-sections',
+      severity: 'low',
+      scope: 'packages/core/src/lifecycle.mjs',
+      context: `${damaged.length} suggestion(s) repeat a body heading declared by the lifecycle spec. Section readers use the first copy while renderers show every copy.`,
+      evidence: bullets(
+        damaged.map(
+          ({ suggestion: s, duplicates }) =>
+            `${s.id}: ${duplicates.map(({ heading, count }) => `## ${heading} x${count}`).join(', ')}`,
+        ),
+      ),
+      suggestion:
+        'Upsert each duplicated section so writeSection() collapses it to one canonical copy. A repeated section can diverge while validation silently continues to read only the first copy.',
     },
   ];
 }
@@ -596,6 +621,7 @@ export const CHECKS = [
   { id: 'decided-without-a-patch', run: (ctx) => decidedWithoutAPatch(ctx.state) },
   { id: 'stale-decision', run: (ctx) => staleDecisions(ctx.state, ctx.today) },
   { id: 'capture-quality', run: (ctx) => captureQuality(ctx.state) },
+  { id: 'duplicate-body-section', run: (ctx) => duplicateSuggestionBodySections(ctx.state) },
   { id: 'script-without-self-check', run: (ctx) => scriptsWithoutSelfCheck(ctx.config) },
 ];
 

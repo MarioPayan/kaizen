@@ -215,6 +215,28 @@ describe('kaizen doctor', () => {
     expect(only(mostlyGood, 'capture-quality')).toEqual([]);
   });
 
+  it('flags suggestions with duplicate spec-declared body sections', () => {
+    const root = mkdtempSync(join(tmpdir(), 'kaizen-doctor-sections-'));
+    const duplicated = join(root, 'duplicated.md');
+    const recurrence = join(root, 'recurrence.md');
+    writeFileSync(duplicated, '## Plan\n\none\n\n## plan\n\ntwo\n\n## Validation\n\nrun\n');
+    writeFileSync(
+      recurrence,
+      '## Context\n\nc\n\n## Recurrence — 2026-08-01\n\none\n\n## Recurrence — 2026-08-02\n\ntwo\n',
+    );
+
+    const found = only(
+      stateWith([
+        suggestion({ id: 'user/demo/duplicate.md', file: duplicated }),
+        suggestion({ id: 'user/demo/recurrence.md', file: recurrence, scope: 'other/SKILL.md' }),
+      ]),
+      'duplicate-body-section',
+    );
+    expect(found).toHaveLength(1);
+    expect(found[0].evidence).toContain('user/demo/duplicate.md: ## Plan x2');
+    expect(found[0].evidence).not.toContain('recurrence.md');
+  });
+
   it('produces findings shaped exactly like suggestions', () => {
     const [f] = only(stateWith([suggestion({ status: 'approved' })]), 'decided-without-a-patch');
     const md = findingToMarkdown(f, TODAY);

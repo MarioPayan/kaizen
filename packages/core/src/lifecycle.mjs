@@ -311,6 +311,21 @@ export function section(body, heading) {
   return out.join('\n').trim();
 }
 
+/** Spec-declared body headings that occur more than once, with their counts. */
+export function duplicateBodySections(body, l = spec()) {
+  const counts = new Map();
+  for (const line of String(body ?? '').split(/\r?\n/)) {
+    const match = /^##\s+(.*?)\s*$/.exec(line);
+    if (!match) continue;
+    const key = match[1].toLowerCase();
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return (l.fields ?? [])
+    .filter((f) => f.where === 'body' && f.heading)
+    .map((f) => ({ heading: f.heading, count: counts.get(f.heading.toLowerCase()) ?? 0 }))
+    .filter(({ count }) => count > 1);
+}
+
 /**
  * Upsert one `## Heading` section in a suggestion file: replaced in place when
  * the heading exists, appended otherwise. The frontmatter block is carried
@@ -325,20 +340,26 @@ export function writeSection(file, heading, text) {
   const lines = raw.slice(head.length).split(/\r?\n/);
   const isHeading = (l) => /^##\s/.test(l);
   const wanted = String(heading).toLowerCase();
-  const start = lines.findIndex((l) => {
+  const matches = (l) => {
     const m = /^##\s+(.*?)\s*$/.exec(l);
     return !!m && m[1].toLowerCase() === wanted;
-  });
+  };
   const block = [`## ${heading}`, '', String(text).trim(), ''];
-  let out;
-  if (start === -1) {
-    out = [...lines];
+  const out = [];
+  let found = false;
+  for (let i = 0; i < lines.length;) {
+    if (!matches(lines[i])) {
+      out.push(lines[i++]);
+      continue;
+    }
+    if (!found) out.push(...block);
+    found = true;
+    i++;
+    while (i < lines.length && !isHeading(lines[i])) i++;
+  }
+  if (!found) {
     while (out.length && out.at(-1) === '') out.pop();
     out.push('', ...block);
-  } else {
-    let end = start + 1;
-    while (end < lines.length && !isHeading(lines[end])) end++;
-    out = [...lines.slice(0, start), ...block, ...lines.slice(end)];
   }
   writeFileSync(file, head + out.join('\n').replace(/\n*$/, '\n'));
 }
