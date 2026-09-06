@@ -835,22 +835,33 @@ function cmdVerify() {
     const escapedRepo = repo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const repoPattern = new RegExp(`${escapedRepo}(?=$|/|[\\s"'\\x60;&|<>()])`, 'g');
     const command = fenced.replace(repoPattern, worktree);
+    const writeValidationOutput = (result) => {
+      if (result.stdout) {
+        for (const line of result.stdout.trimEnd().split(/\r?\n/)) {
+          process.stdout.write(`[validation stdout] ${line}\n`);
+        }
+      }
+      if (result.stderr) {
+        for (const line of result.stderr.trimEnd().split(/\r?\n/)) {
+          process.stderr.write(`[validation stderr] ${line}\n`);
+        }
+      }
+    };
     const ran = spawnSync('bash', ['-lec', command], {
       cwd: worktree,
       encoding: 'utf8',
       env: { ...process.env, CLAUDE_PLUGIN_ROOT: worktree, KAIZEN_TARGET_ROOT: worktree },
     });
-    if (ran.stdout) {
-      for (const line of ran.stdout.trimEnd().split(/\r?\n/)) {
-        process.stdout.write(`[validation stdout] ${line}\n`);
-      }
-    }
-    if (ran.stderr) {
-      for (const line of ran.stderr.trimEnd().split(/\r?\n/)) {
-        process.stderr.write(`[validation stderr] ${line}\n`);
-      }
-    }
+    writeValidationOutput(ran);
     if (ran.status !== 0) {
+      if (!ran.stdout && !ran.stderr) {
+        const traced = spawnSync('bash', ['-lec', `set -x\n${command}`], {
+          cwd: worktree,
+          encoding: 'utf8',
+          env: { ...process.env, CLAUDE_PLUGIN_ROOT: worktree, KAIZEN_TARGET_ROOT: worktree },
+        });
+        writeValidationOutput(traced);
+      }
       failure = `fail ${id} (exit ${ran.status ?? 'unknown'})`;
     }
   } catch (e) {

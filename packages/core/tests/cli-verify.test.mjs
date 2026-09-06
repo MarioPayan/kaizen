@@ -107,7 +107,20 @@ describe('kaizen verify --dry', () => {
     });
     expect(ran.status).toBe(1);
     expect(ran.stdout).toContain('[validation stdout] validation-output');
+    expect(ran.stdout.match(/validation-output/g)).toHaveLength(1);
     expect(ran.stderr).toContain(`── verify verdict ──\nfail ${f.id} (exit 7)`);
+    expect(existsSync(join(f.repo, 'added.txt'))).toBe(false);
+  });
+
+  it('traces a silent failing validation before reporting the failure', () => {
+    const f = fixture('test -f "$KAIZEN_TARGET_ROOT/missing.txt"');
+    const ran = spawnSync('node', [cli, 'verify', '--dry', f.id], {
+      encoding: 'utf8',
+      env: { ...process.env, KAIZEN_CONFIG: f.config },
+    });
+    expect(ran.status).toBe(1);
+    expect(ran.stderr).toMatch(/\[validation stderr\] \+ test -f .*\/missing\.txt/);
+    expect(ran.stderr).toContain(`── verify verdict ──\nfail ${f.id} (exit 1)`);
     expect(existsSync(join(f.repo, 'added.txt'))).toBe(false);
   });
 
