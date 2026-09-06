@@ -244,13 +244,14 @@ the next one. For the kaizen repo also run `npm ci --prefix "$wt"
 `@kaizen/*` resolves inside the worktree instead of back to the live tree.
 Someone else's uncommitted work would otherwise ride into the diff, and the
 tests would exercise their WIP instead of the patch — 21 modified files of
-foreign WIP sat in the kaizen repo during the 2026-08-15 pass. `git apply
---check` reads a working tree, so run it against one that does not already hold
-the change: discard the worktree's edits first — it is throwaway — then once
-more against the live tree with `git -C <repo>`, which is what the drain will
-actually see. **Never `git stash` in the worktree**: the stash is shared with
-the live repo, and eight passes left eight `WIP on (no branch)` entries in the
-user's skills repo that way.
+foreign WIP sat in the kaizen repo during the 2026-08-15 pass. The capture
+command below accepts the target repo, the exact path returned by
+`proposal-worktree.sh`, the output patch, and optional intentional new paths. It
+cleans and checks the throwaway tree, removes only that allocation and its empty
+parent, then checks the patch against the live tree. Run it from a stable
+directory, not from inside the worktree it removes. **Never `git stash` in the
+worktree**: the stash is shared with the live repo, and eight passes left eight
+`WIP on (no branch)` entries in the user's skills repo that way.
 
 Runner mode may write suggestion files and sidecar patches under configured
 feedback directories, but it must not edit any target-tree file directly. A
@@ -259,11 +260,9 @@ to the skill or module it concerns; that target changes only when its reviewed,
 approved sidecar patch lands.
 
 ```bash
-# in the throwaway worktree, not the target's live tree
 "${CLAUDE_PLUGIN_ROOT}/skills/_lib/proposal-patch.sh" \
-  /tmp/kaizen-<scope-or-id>.patch [<new paths>...]     # captures, cleans, then checks at HEAD
-git -C <repo> worktree remove --force "$wt"           # leave nothing behind
-rmdir "$(dirname "$wt")"
+  --worktree <repo> "$wt" \
+  /tmp/kaizen-<scope-or-id>.patch [<new paths>...]
 ```
 
 Pass only intentional new files as `<new paths>`; the helper uses intent-to-add
