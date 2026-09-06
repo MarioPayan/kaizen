@@ -826,6 +826,10 @@ function cmdVerify() {
     repo = execFileSync('git', ['-C', project ?? target.skills, 'rev-parse', '--show-toplevel'], {
       encoding: 'utf8',
     }).trim();
+    const head = execFileSync('git', ['-C', repo, 'rev-parse', '--short', 'HEAD'], {
+      encoding: 'utf8',
+    }).trim();
+    console.log(`verifying ${id} at ${head}`);
     execFileSync('git', ['-C', repo, 'worktree', 'add', '--detach', worktree, 'HEAD']);
     added = true;
 

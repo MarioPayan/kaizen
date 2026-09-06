@@ -93,6 +93,7 @@ describe('kaizen verify --dry', () => {
       env: { ...process.env, KAIZEN_CONFIG: f.config },
     });
     expect(ran.status).toBe(0);
+    expect(ran.stdout).toContain(`verifying ${f.id} at ${git(f.repo, 'rev-parse', '--short', 'HEAD').trim()}`);
     expect(ran.stdout).toContain('[validation stdout] refusing to write — 3 problem(s)');
     expect(ran.stderr).toContain('[validation stderr] fixture-warning');
     expect(ran.stdout).toContain(`── verify verdict ──\npass ${f.id}`);
