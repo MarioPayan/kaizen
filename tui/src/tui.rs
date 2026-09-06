@@ -2036,6 +2036,43 @@ mod tests {
         assert_eq!(closed.items.len(), 2);
     }
 
+    /// The closed lane keeps the past week and drops the rest: finished work is
+    /// history, and 194 of it buries the landing you just watched. Only a
+    /// positive old stamp hides a card — a state that stops carrying `age`
+    /// shows everything rather than quietly showing nothing.
+    #[test]
+    fn the_closed_lane_keeps_the_past_week_and_hides_older_history() {
+        let state: crate::api::State = serde_json::from_str(
+            r#"{"suggestions":[
+                {"id":"now.md","slug":"one","status":"verified","age":"today","score":1},
+                {"id":"week.md","slug":"two","status":"superseded","age":"this week","score":2},
+                {"id":"month.md","slug":"three","status":"verified","age":"this month","score":3},
+                {"id":"old.md","slug":"four","status":"rejected","age":"older","score":4},
+                {"id":"unstamped.md","slug":"five","status":"verified","score":5}
+            ]}"#,
+        )
+        .unwrap();
+        let closed = board::lanes(&state)
+            .into_iter()
+            .find(|l| l.title == "closed")
+            .expect("a closed lane while anything recent is closed");
+        let ids: Vec<&str> = closed.items.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["unstamped.md", "week.md", "now.md"], "past week, plus the unstamped");
+        assert!(closed.subtitle.contains("past week"), "the lane says it is filtered");
+
+        // Nothing recent closed: the lane collapses rather than standing empty.
+        let stale: crate::api::State = serde_json::from_str(
+            r#"{"suggestions":[
+                {"id":"old.md","slug":"one","status":"verified","age":"older","score":1}
+            ]}"#,
+        )
+        .unwrap();
+        assert!(
+            !board::lanes(&stale).iter().any(|l| l.title == "closed"),
+            "an all-history corpus draws no closed lane at all"
+        );
+    }
+
     /// Where a card is drawn is a fact already on the wire, never a status
     /// invented for the view: a check owed puts it in `review`, a carrier puts
     /// it in `blocked`, a terminal in `closed`. A run moves nothing — the card

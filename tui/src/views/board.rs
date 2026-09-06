@@ -155,10 +155,20 @@ pub fn lanes(state: &State) -> Vec<Lane<'_>> {
     for (title, subtitle, tone, always) in [
         (REVIEW, check.as_str(), "accent", true),
         (BLOCKED, "waiting on another card", "warning", false),
-        (CLOSED, "done or dismissed", "muted", false),
+        (CLOSED, "done or dismissed · past week", "muted", false),
     ] {
-        let items: Vec<&Suggestion> =
-            sorted.iter().filter(|s| home(s) == Some(title)).copied().collect();
+        let items: Vec<&Suggestion> = sorted
+            .iter()
+            .filter(|s| home(s) == Some(title))
+            // Closed work older than a week is history, and history that greets
+            // you every session is noise — one pass left 194 finished cards
+            // burying the three you had just watched land. Hidden on a positive
+            // old stamp only, never on a missing one: a state that stops
+            // carrying `age` should show too much, not silently show nothing.
+            // Hiding is not removing — `kaizen prune` is what deletes.
+            .filter(|s| title != CLOSED || !matches!(s.age.as_str(), "this month" | "older"))
+            .copied()
+            .collect();
         if always || !items.is_empty() {
             out.push(Lane {
                 title: title.into(),
