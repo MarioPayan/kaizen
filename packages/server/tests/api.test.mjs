@@ -876,6 +876,10 @@ describe('runners and the chain', () => {
     mkdirSync(join(skills, 'demo'), { recursive: true });
     mkdirSync(join(feedback, 'demo'), { recursive: true });
     writeFileSync(join(skills, 'demo', 'SKILL.md'), '---\nname: demo\n---\n# demo\n');
+    writeFileSync(join(skills, 'tracked.txt'), 'before\n');
+    git(skills, 'init', '-q');
+    git(skills, 'add', '-A');
+    git(skills, 'commit', '-q', '-m', 'init');
     for (const [name, text] of cards) writeFileSync(join(feedback, 'demo', name), text);
     const mine = [];
     const app = createApp(
@@ -907,7 +911,7 @@ describe('runners and the chain', () => {
       await new Promise((r) => app.close(r));
       rmSync(alone, { recursive: true, force: true });
     };
-    return { call, mine, settle, rewrite, close };
+    return { call, mine, settle, rewrite, close, skills, feedback };
   };
 
   it('starts the runner the card names — opencode to do, claude to check — and checks first on the backlog', async () => {
@@ -946,6 +950,35 @@ describe('runners and the chain', () => {
     t.mine.at(-1).emit('exit', 0, null);
     await t.settle();
     expect(t.mine).toHaveLength(4);
+    await t.close();
+  });
+
+  it('returns a stale plan for replanning without spending a reviewer run', async () => {
+    const name = '2026-04-02-stale.md';
+    const id = `user/demo/${name}`;
+    const t = await isolated([
+      card(name, 'status: planned\nneeds_review: claude', '\n## Plan\n\np\n\n## Validation\n\nv\n'),
+    ]);
+    t.rewrite(
+      name.replace(/\.md$/, '.patch'),
+      '--- a/tracked.txt\n+++ b/tracked.txt\n@@ -1 +1 @@\n-before\n+after\n',
+    );
+    writeFileSync(join(t.skills, 'tracked.txt'), 'concurrent\n');
+    git(t.skills, 'add', 'tracked.txt');
+    git(t.skills, 'commit', '-q', '-m', 'concurrent change');
+
+    const response = await t.call('POST', '/api/dispatch', { id });
+    expect(response.status).toBe(422);
+    expect(response.body.error).toBe('1 stale proposal patch returned for replanning');
+    expect(t.mine).toHaveLength(0);
+
+    const text = readFileSync(join(t.feedback, 'demo', name), 'utf8');
+    const head = git(t.skills, 'rev-parse', '--short', 'HEAD').trim();
+    expect(text).toContain('status: triaged');
+    expect(text).not.toContain('needs_review: claude');
+    expect(text).toContain(`blocked_on: review: patch stale — does not apply at HEAD ${head}`);
+    expect(text).toContain('## Verdict');
+    expect(text).toContain('error: patch failed: tracked.txt:1');
     await t.close();
   });
 

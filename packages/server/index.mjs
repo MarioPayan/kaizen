@@ -48,6 +48,7 @@ import {
   parseFrontmatter,
   canonicalStatus,
   canTransition,
+  awaitingDecision,
   isTerminal,
   pendingPass,
   runnerOf,
@@ -856,6 +857,61 @@ function pendingPairs(state, id) {
 }
 
 /**
+ * Reject stale proposal patches before spending a reviewer run to rediscover
+ * the same mechanical failure. The lifecycle tells us which status waits at
+ * the decision boundary and which prior phase receives a rejected plan.
+ */
+async function rejectStaleReviewPatches(ctx, id, state) {
+  const waiting = new Set(awaitingDecision());
+  const targets = new Map(resolveTargets(ctx.config).map((target) => [target.name, target]));
+  let rejected = 0;
+
+  for (const s of pendingCards(state, id)) {
+    if (!s.needsReview || !waiting.has(s.status)) continue;
+    const patch = s.file.replace(/\.md$/, '.patch');
+    if (!existsSync(patch)) continue;
+
+    let root;
+    try {
+      const project = suggestionProject(state, s);
+      root = (await git(project ?? targets.get(s.target)?.skills, ['rev-parse', '--show-toplevel'])).trim();
+    } catch {
+      // Root resolution is not evidence that the patch is stale. Leave that
+      // judgement to the reviewer rather than parking the card incorrectly.
+      continue;
+    }
+
+    let failure;
+    try {
+      await git(root, ['apply', '--check', patch]);
+      continue;
+    } catch (e) {
+      failure = e.message;
+    }
+
+    const head = (await git(root, ['rev-parse', '--short', 'HEAD'])).trim();
+    const phases = spec().phases;
+    const phase = phases.findIndex((candidate) => candidate.produces === s.status);
+    const previous = phases[phase - 1]?.produces;
+    if (!previous || !canTransition(s.status, previous)) continue;
+
+    writeSection(
+      s.file,
+      'Verdict',
+      `send back — proposal patch does not apply at HEAD ${head}; regenerate it against the current tree.\n\n\`\`\`\n${failure}\n\`\`\``,
+    );
+    writeFrontmatter(s.file, {
+      status: previous,
+      needs_review: '',
+      blocked_on: `review: patch stale — does not apply at HEAD ${head}`,
+    });
+    rejected++;
+  }
+
+  return { state: rejected ? buildState(ctx.config) : state, rejected };
+}
+
+/**
  * Who a run keyed on `id` is for. A fenced run is whoever its card names. The
  * backlog goes to a reviewer first while any card is waiting on one — a check
  * finishes work already done and drains toward you — and otherwise to whoever
@@ -887,6 +943,14 @@ function canSeat(ctx, id) {
 
 /** Take a seat with one run, and hand it on when the run ends. */
 async function launch(ctx, id, state = buildState(ctx.config)) {
+  const preflight = await rejectStaleReviewPatches(ctx, id, state);
+  state = preflight.state;
+  if (!pendingCards(state, id).length) {
+    const why = preflight.rejected
+      ? `${preflight.rejected} stale proposal patch${preflight.rejected === 1 ? '' : 'es'} returned for replanning`
+      : 'nothing for a pass to do';
+    throw new HttpError(422, why);
+  }
   const runner = runnerFor(state, id);
   let child;
   try {
