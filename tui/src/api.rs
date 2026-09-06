@@ -33,6 +33,12 @@ pub struct Suggestion {
     /// `today` / `this week` / `this month` / `older`, stamped by core as of the
     /// state's build — the board rules a line where it changes.
     pub age: String,
+    /// The same four words, but measured from when a finished card *finished*
+    /// rather than when it was filed. Equal to `age` for an open card. What the
+    /// closed lane hides history by, so a July finding verified this morning
+    /// reads as today's news.
+    #[serde(rename = "closedAge")]
+    pub closed_age: String,
     pub slug: String,
     pub severity: String,
     pub status: String,

@@ -63,3 +63,38 @@ describe('buildState Git warnings', () => {
     expect(buildState(config).warnings).toEqual([]);
   });
 });
+
+describe('closedAge', () => {
+  /**
+   * The board hides finished history by this, so measuring it from the filing
+   * date would hide exactly the wrong card: a July finding verified this
+   * morning is the freshest thing on the board.
+   */
+  it('measures a finished card from when it finished, not when it was filed', () => {
+    const root = mkdtempSync(join(tmpdir(), 'kaizen-closed-age-'));
+    roots.push(root);
+    mkdirSync(join(root, 'skills', 'demo'), { recursive: true });
+    mkdirSync(join(root, 'feedback', 'demo'), { recursive: true });
+    writeFileSync(join(root, 'skills', 'demo', 'SKILL.md'), '---\nname: demo\n---\n\n# Demo\n');
+    const card = (name, status) =>
+      writeFileSync(
+        join(root, 'feedback', 'demo', name),
+        `---\nskill: demo\ndate: 2026-01-01\nstatus: ${status}\n---\n\n## Suggestion\n\ndo it\n`,
+      );
+    // Both filed the same long-ago day. One is still open; one closed just now,
+    // which is what writing the file stamps.
+    card('2026-01-01-open.md', 'triaged');
+    card('2026-01-01-closed.md', 'verified');
+
+    const config = {
+      targets: [{ name: 'user', skills: join(root, 'skills'), feedback: join(root, 'feedback') }],
+    };
+    const byId = Object.fromEntries(buildState(config).suggestions.map((s) => [s.id.split('/').at(-1), s]));
+
+    expect(byId['2026-01-01-open.md'].age).toBe('older');
+    expect(byId['2026-01-01-closed.md'].age).toBe('older');
+    // An open card has not closed at all, so it keeps its filing age.
+    expect(byId['2026-01-01-open.md'].closedAge).toBe('older');
+    expect(byId['2026-01-01-closed.md'].closedAge).toBe('today');
+  });
+});

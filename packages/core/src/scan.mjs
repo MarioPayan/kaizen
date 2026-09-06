@@ -24,6 +24,20 @@ function safeReaddir(dir, opts) {
   }
 }
 
+/**
+ * The day a suggestion file was last written, as `YYYY-MM-DD` — every status
+ * change rewrites it, so for a finished card this is when it finished. `null`
+ * when it cannot be read, which the caller reads as "fall back to the filing
+ * date" rather than as a date of its own.
+ */
+function lastTouched(file) {
+  try {
+    return statSync(file).mtime.toLocaleDateString('sv');
+  } catch {
+    return null;
+  }
+}
+
 function countLines(file) {
   try {
     const text = readFileSync(file, 'utf8');
@@ -394,6 +408,15 @@ export function buildState(config) {
     // Stamped per build, so it is true as of this state and every view that
     // groups by recency draws the same line in the same place.
     s.age = ageOf(s.date, today);
+    // For a finished card, recency means when it *finished*, not when it was
+    // filed: a finding filed in July and verified this morning is the freshest
+    // thing on the board, and grouping it by its filing date buries it under
+    // the history a view is trying to hide. The file is rewritten on every
+    // status change, so its mtime is the last transition — good enough to sort
+    // history by, and it needs no new frontmatter on 194 existing files. Falls
+    // back to the filing date when the file cannot be stat'd, and an open card
+    // has not closed at all, so it keeps its filing age.
+    s.closedAge = isTerminal(s.status) ? ageOf(lastTouched(s.file) ?? s.date, today) : s.age;
   }
 
   // A feedback folder whose skill no longer exists still holds real findings —

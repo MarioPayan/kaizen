@@ -162,11 +162,16 @@ pub fn lanes(state: &State) -> Vec<Lane<'_>> {
             .filter(|s| home(s) == Some(title))
             // Closed work older than a week is history, and history that greets
             // you every session is noise — one pass left 194 finished cards
-            // burying the three you had just watched land. Hidden on a positive
-            // old stamp only, never on a missing one: a state that stops
-            // carrying `age` should show too much, not silently show nothing.
-            // Hiding is not removing — `kaizen prune` is what deletes.
-            .filter(|s| title != CLOSED || !matches!(s.age.as_str(), "this month" | "older"))
+            // burying the three you had just watched land. By `closed_age`, not
+            // `age`: a finding filed in July and verified this morning is the
+            // freshest thing here, and filing date would hide exactly it.
+            // Hidden on a positive old stamp only, never on a missing one — a
+            // state that stops carrying the field should show too much rather
+            // than silently show nothing. Hiding is not removing: `kaizen
+            // prune` is what deletes.
+            .filter(|s| {
+                title != CLOSED || !matches!(s.closed_age.as_str(), "this month" | "older")
+            })
             .copied()
             .collect();
         if always || !items.is_empty() {

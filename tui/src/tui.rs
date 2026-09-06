@@ -2044,11 +2044,13 @@ mod tests {
     fn the_closed_lane_keeps_the_past_week_and_hides_older_history() {
         let state: crate::api::State = serde_json::from_str(
             r#"{"suggestions":[
-                {"id":"now.md","slug":"one","status":"verified","age":"today","score":1},
-                {"id":"week.md","slug":"two","status":"superseded","age":"this week","score":2},
-                {"id":"month.md","slug":"three","status":"verified","age":"this month","score":3},
-                {"id":"old.md","slug":"four","status":"rejected","age":"older","score":4},
-                {"id":"unstamped.md","slug":"five","status":"verified","score":5}
+                {"id":"now.md","slug":"one","status":"verified","closedAge":"today","score":1},
+                {"id":"week.md","slug":"two","status":"superseded","closedAge":"this week","score":2},
+                {"id":"month.md","slug":"three","status":"verified","closedAge":"this month","score":3},
+                {"id":"old.md","slug":"four","status":"rejected","closedAge":"older","score":4},
+                {"id":"july.md","slug":"five","date":"2026-07-01","age":"older",
+                 "status":"verified","closedAge":"today","score":5},
+                {"id":"unstamped.md","slug":"six","status":"verified","score":6}
             ]}"#,
         )
         .unwrap();
@@ -2057,13 +2059,16 @@ mod tests {
             .find(|l| l.title == "closed")
             .expect("a closed lane while anything recent is closed");
         let ids: Vec<&str> = closed.items.iter().map(|s| s.id.as_str()).collect();
-        assert_eq!(ids, ["unstamped.md", "week.md", "now.md"], "past week, plus the unstamped");
+        // Newest filing first, as every lane sorts. `month.md` and `old.md` are
+        // gone; `july.md` stays because it closed today, which is the whole
+        // point of measuring a finished card by when it finished.
+        assert_eq!(ids, ["july.md", "unstamped.md", "week.md", "now.md"]);
         assert!(closed.subtitle.contains("past week"), "the lane says it is filtered");
 
         // Nothing recent closed: the lane collapses rather than standing empty.
         let stale: crate::api::State = serde_json::from_str(
             r#"{"suggestions":[
-                {"id":"old.md","slug":"one","status":"verified","age":"older","score":1}
+                {"id":"old.md","slug":"one","status":"verified","closedAge":"older","score":1}
             ]}"#,
         )
         .unwrap();
