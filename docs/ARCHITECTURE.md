@@ -181,7 +181,9 @@ spec, the card must not be waiting on a check (`needs_review`) unless the move
 is the way out, and the destination phase's `requires` must already be present
 in the file (patch on disk, sections non-empty). `applied` is server-owned —
 only the code that saw the sha may write it. Apply additionally requires a
-writable target, a clean tree, and `git apply --check`. Approval stamps the
+writable target, a clean tree, `git apply --check`, and the repository's
+configured check (or its `package.json` `check` script). A target with neither
+must explicitly opt out with `check: false`. Approval stamps the
 SHA-256 identity of the sidecar bytes; apply refuses if the sidecar no longer
 matches, and regenerating it returns the card to planning and review.
 

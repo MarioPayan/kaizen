@@ -83,8 +83,8 @@ beforeAll(async () => {
 
   config = {
     targets: [
-      { name: 'user', skills, feedback, writable: true },
-      { name: 'ro', skills: readonly, feedback, writable: false },
+      { name: 'user', skills, feedback, writable: true, check: false },
+      { name: 'ro', skills: readonly, feedback, writable: false, check: false },
     ],
     scan: { enabled: false, roots: [], depth: 3, writable: false },
     applyGuards: { requireCleanTree: true, requireDiffApplies: true },
@@ -224,6 +224,38 @@ describe('api', () => {
     const { status, body } = await api('POST', '/api/apply', { id: 'user/demo/2026-01-01-a-thing.md' });
     expect(status).toBe(422);
     expect(body.error).toMatch(/no proposal patch/);
+  });
+
+  it('parks a landing when the repository check fails and restores the patch', async () => {
+    const id = 'user/demo/2026-07-07-check.md';
+    const skills = config.targets[0].skills;
+    const feedback = config.targets[0].feedback;
+    const card = join(feedback, 'demo', '2026-07-07-check.md');
+    const patch = join(feedback, 'demo', '2026-07-07-check.patch');
+    writeFileSync(
+      card,
+      '---\nskill: demo\ndate: 2026-07-07\nseverity: high\ntype: determinism\nobjective: guardrail\neffort: S\nrung: 1\nscope: demo/SKILL.md\nstatus: planned\n---\n\n## Context\n\nc\n\n## Suggestion\n\ns\n\n## Plan\n\np\n\n## Validation\n\nv\n',
+    );
+    writeFileSync(
+      patch,
+      '--- a/demo/SKILL.md\n+++ b/demo/SKILL.md\n@@ -1,4 +1,5 @@\n ---\n name: demo\n ---\n # demo\n+unchecked line\n',
+    );
+    expect((await api('POST', '/api/suggestion', { id, status: 'approved' })).status).toBe(200);
+    config.targets[0].check = 'printf "repository gate failed\\n" >&2; exit 1';
+
+    const before = git(skills, 'rev-parse', 'HEAD').trim();
+    const { status, body } = await api('POST', '/api/apply', { id });
+    expect(status).toBe(422);
+    expect(body.parked).toBe(true);
+    expect(body.error).toContain('repository gate failed');
+    expect(readFileSync(card, 'utf8')).toMatch(/blocked_on: apply: repository check failed/);
+    expect(git(skills, 'rev-parse', 'HEAD').trim()).toBe(before);
+    expect(git(skills, 'status', '--porcelain')).toBe('');
+    expect(readFileSync(join(skills, 'demo', 'SKILL.md'), 'utf8')).not.toContain('unchecked line');
+
+    config.targets[0].check = false;
+    rmSync(card, { force: true });
+    rmSync(patch, { force: true });
   });
 
   it('refuses to apply into a dirty tree', async () => {
@@ -1104,9 +1136,15 @@ describe('parking and the ways out', () => {
       {
         ...config,
         targets: [
-          { name: 'user', skills, feedback, writable: true },
-          { name: 'plugin', skills: join(alone, 'other-skills'), feedback: other, writable: true },
-          { name: 'ro', skills: join(alone, 'other-skills'), feedback: other, writable: false },
+          { name: 'user', skills, feedback, writable: true, check: false },
+          {
+            name: 'plugin',
+            skills: join(alone, 'other-skills'),
+            feedback: other,
+            writable: true,
+            check: false,
+          },
+          { name: 'ro', skills: join(alone, 'other-skills'), feedback: other, writable: false, check: false },
         ],
       },
       {
@@ -1329,7 +1367,7 @@ describe('project skill apply roots', () => {
       {
         ...config,
         targets: [{ name: 'user', skills: userSkills, feedback, writable: false }],
-        scan: { enabled: true, roots, depth: 1, writable },
+        scan: { enabled: true, roots, depth: 1, writable, check: false },
       },
       { spawn: fakeSpawn },
     );

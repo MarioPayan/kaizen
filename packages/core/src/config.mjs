@@ -84,6 +84,9 @@ export function validateConfig(cfg) {
       if (t.writable !== undefined && typeof t.writable !== 'boolean') {
         errs.push(`targets[${i}].writable must be a boolean`);
       }
+      if (t.check !== undefined && t.check !== false && (typeof t.check !== 'string' || !t.check.trim())) {
+        errs.push(`targets[${i}].check must be a non-empty command or false`);
+      }
     });
     const names = cfg.targets.map((t) => t?.name).filter(Boolean);
     if (new Set(names).size !== names.length) errs.push('target names must be unique');
@@ -96,6 +99,13 @@ export function validateConfig(cfg) {
     }
     if (cfg.scan.enabled && cfg.scan.roots.length === 0) {
       errs.push('scan.enabled is true but scan.roots is empty');
+    }
+    if (
+      cfg.scan.check !== undefined &&
+      cfg.scan.check !== false &&
+      (typeof cfg.scan.check !== 'string' || !cfg.scan.check.trim())
+    ) {
+      errs.push('scan.check must be a non-empty command or false');
     }
   }
 
@@ -218,5 +228,6 @@ export function resolveTargets(config) {
     // Empty means discovery-only: skills are listed, no suggestions live here.
     feedback: t.feedback ? expandPath(t.feedback) : '',
     writable: t.writable === true,
+    check: t.check,
   }));
 }

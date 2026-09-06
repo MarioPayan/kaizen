@@ -110,4 +110,14 @@ describe('config validation', () => {
     cfg.targets = [{ name: 'a', skills: '/tmp/s', writable: true }];
     expect(validateConfig(cfg)).toContain('targets[0]: writable requires a feedback path');
   });
+
+  it('accepts repository check commands and explicit opt-outs only', () => {
+    const cfg = defaultConfig();
+    cfg.targets = [{ name: 'a', skills: '/tmp/s', feedback: '/tmp/f', writable: true, check: false }];
+    expect(validateConfig(cfg)).toEqual([]);
+    cfg.targets[0].check = 'npm test';
+    expect(validateConfig(cfg)).toEqual([]);
+    cfg.targets[0].check = '';
+    expect(validateConfig(cfg)).toContain('targets[0].check must be a non-empty command or false');
+  });
 });

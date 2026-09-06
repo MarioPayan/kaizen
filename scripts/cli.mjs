@@ -99,6 +99,7 @@ function candidateTargets() {
       skills: '~/.claude/skills',
       feedback: '~/.claude/skills-feedback',
       writable: true,
+      check: false,
       note: 'your personal skills',
     });
   }
@@ -109,6 +110,7 @@ function candidateTargets() {
       skills: join(process.cwd(), '.claude', 'skills'),
       feedback: join(process.cwd(), '.claude', 'skills-feedback'),
       writable: true,
+      check: false,
       note: 'skills in the current project',
     });
   }
@@ -156,7 +158,13 @@ async function cmdInit() {
   const targets = [];
   for (const c of found) {
     if (await yes(`Watch ${c.skills} (${c.note})?`)) {
-      targets.push({ name: c.name, skills: c.skills, feedback: c.feedback, writable: c.writable });
+      targets.push({
+        name: c.name,
+        skills: c.skills,
+        feedback: c.feedback,
+        writable: c.writable,
+        check: c.check,
+      });
     }
   }
 
@@ -165,7 +173,7 @@ async function cmdInit() {
     const dir = await ask('Path to your skills directory (blank to skip):');
     if (dir) {
       const fb = await ask('Path to store suggestions:', dir.replace(/skills\/?$/, 'skills-feedback'));
-      targets.push({ name: 'user', skills: dir, feedback: fb, writable: true });
+      targets.push({ name: 'user', skills: dir, feedback: fb, writable: true, check: false });
     }
   }
   config.targets = targets;

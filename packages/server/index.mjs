@@ -258,6 +258,40 @@ async function git(cwd, args) {
   }
 }
 
+/** Resolve the repository gate, requiring an explicit opt-out when none exists. */
+function repositoryCheck(cwd, configured) {
+  if (configured === false) return '';
+  if (typeof configured === 'string' && configured.trim()) return configured.trim();
+
+  const packageFile = join(cwd, 'package.json');
+  if (existsSync(packageFile)) {
+    try {
+      if (JSON.parse(readFileSync(packageFile, 'utf8')).scripts?.check) return 'npm run check';
+    } catch {
+      // The configured command remains available for repositories with unusual package metadata.
+    }
+  }
+  throw new HttpError(
+    409,
+    'the target has no repository check — configure target.check (or scan.check) as a command, or false to opt out',
+  );
+}
+
+async function runRepositoryCheck(cwd, command) {
+  if (!command) return;
+  try {
+    await run('/bin/sh', ['-c', command], { cwd, maxBuffer: 10 * 1024 * 1024 });
+  } catch (e) {
+    const output = [e.stdout, e.stderr]
+      .map((part) => part?.trim())
+      .filter(Boolean)
+      .join('\n');
+    const error = new Error(output || e.message);
+    error.cause = e;
+    throw error;
+  }
+}
+
 /**
  * `git revert` commits by itself and touches whatever the reverted commit did,
  * so it is the one operation that still wants the whole tree clean. Refuse, and
@@ -576,6 +610,7 @@ const routes = {
     // into another target's feedback directory, but their patches belong to the
     // discovered project and use its independent writability gate.
     const root = (await git(project ?? target.skills, ['rev-parse', '--show-toplevel'])).trim();
+    const check = repositoryCheck(root, project ? ctx.config.scan?.check : target.check);
     // The same gate as any other move. Applying is the one transition the server
     // performs on its own, which is exactly why it should not be the one that
     // skips the check.
@@ -592,10 +627,10 @@ const routes = {
     // to fail the same way tomorrow — fourteen cards did exactly that. A tree
     // that is not ready (dirty paths, something staged, read-only) is about
     // the tree, not the card, and stays a transient refusal.
-    const park = (why) => {
+    const park = (why, detail = '') => {
       const reason = `apply: ${String(why).trim().split('\n').at(-1)}`;
       writeFrontmatter(path, { blocked_on: reason });
-      throw new HttpError(422, reason, undefined, { parked: true });
+      throw new HttpError(422, detail ? `${reason}\n${detail}` : reason, undefined, { parked: true });
     };
     if (!existsSync(patch)) park('no proposal patch for this suggestion yet');
     const { data } = parseFrontmatter(readFileSync(path, 'utf8'));
@@ -628,6 +663,12 @@ const routes = {
     // the tree, and it refuses outright rather than clobbering a path someone
     // else has edited. That is what lets the guard above be narrow.
     await git(root, ['apply', '--index', patch]);
+    try {
+      await runRepositoryCheck(root, check);
+    } catch (e) {
+      await git(root, ['apply', '--reverse', '--index', patch]);
+      park('repository check failed', e.message);
+    }
     await git(root, [
       'commit',
       '-m',
