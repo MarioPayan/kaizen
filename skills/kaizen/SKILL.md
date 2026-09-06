@@ -246,6 +246,11 @@ helper uses a fresh path so residue from an interrupted pass cannot collide with
 the next one. For the kaizen repo also run `npm ci --prefix "$wt"
 --ignore-scripts` so it has its own `node_modules` and
 `@kaizen/*` resolves inside the worktree instead of back to the live tree.
+Retain that exact `wt` value as this run's allocation receipt and remove only
+that path during cleanup. Never treat `git worktree list` as a cleanup queue,
+and never remove an unfamiliar worktree: a clean tree, a familiar prefix or an
+old timestamp does not prove ownership. If the allocation receipt is lost, leave
+the worktree in place rather than guessing.
 Someone else's uncommitted work would otherwise ride into the diff, and the
 tests would exercise their WIP instead of the patch — 21 modified files of
 foreign WIP sat in the kaizen repo during the 2026-08-15 pass. The capture
@@ -446,6 +451,9 @@ Triage itself reads the full state and is **not** filtered by `surface`. If it w
 ## Step 9 — Reflect
 
 Apply `${CLAUDE_PLUGIN_ROOT}/skills/_lib/skill-reflect.md` (inputs: `SKILL_NAME=kaizen`, `OUTCOME=<complete|partial|errored>`, `WHAT_RAN=<one or two sentences>`).
+Reflection or a final residue audit must not become cleanup: remove a worktree
+only when its exact path matches the allocation receipt retained by this run.
+Report every other worktree as foreign and leave it untouched.
 Reflection writes only to the configured feedback directory. Never turn its
 lesson into a direct target-tree edit during the same runner pass.
 
