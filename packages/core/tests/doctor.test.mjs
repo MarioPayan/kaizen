@@ -7,7 +7,7 @@
  * or the report becomes noise nobody reads.
  */
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -496,6 +496,8 @@ describe('kaizen doctor', () => {
       expect(found[0].severity).toBe('medium');
       expect(found[0].context).toContain('a@approved');
       expect(found[0].context).toContain('b@planned');
+      expect(found[0].context).toContain('supersedes only cards whose `blocked_on` names it');
+      expect(found[0].context).toContain('parked when its patch stops applying');
     });
 
     it('is silent for one patch per scope, patch-less members, and other targets', () => {
@@ -509,6 +511,42 @@ describe('kaizen doctor', () => {
         withPatch({ id: 'user/demo/d.md', slug: 'd', status: 'applied' }),
       ]);
       expect(only(quiet, 'scope-has-several-live-patches')).toEqual([]);
+    });
+  });
+
+  describe('configured filesystem guardrails', () => {
+    it('reports an exceeded always-loaded byte budget with current and maximum bytes', () => {
+      const root = mkdtempSync(join(tmpdir(), 'kaizen-doctor-budget-'));
+      try {
+        mkdirSync(join(root, 'nested'));
+        writeFileSync(join(root, 'rules.md'), '12345');
+        writeFileSync(join(root, 'nested', 'more.md'), '6789');
+        const cfg = { ...defaultConfig(), budgets: [{ path: root, maxBytes: 8 }] };
+        const found = runDoctor({ config: cfg, state: stateWith([]), today: TODAY }).filter(
+          (f) => f.check === 'budget-exceeded',
+        );
+        expect(found).toHaveLength(1);
+        expect(found[0].severity).toBe('medium');
+        expect(found[0].context).toContain('9 bytes');
+        expect(found[0].context).toContain('8 bytes');
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it('reports every configured target whose skills root does not exist', () => {
+      const missing = join(tmpdir(), `kaizen-missing-target-${process.pid}`);
+      rmSync(missing, { recursive: true, force: true });
+      const cfg = {
+        ...defaultConfig(),
+        targets: [{ name: 'gone', skills: missing }],
+      };
+      const found = runDoctor({ config: cfg, state: stateWith([]), today: TODAY }).filter(
+        (f) => f.check === 'target-root-missing',
+      );
+      expect(found).toHaveLength(1);
+      expect(found[0]).toMatchObject({ severity: 'medium', scope: missing });
+      expect(found[0].context).toContain('gone');
     });
   });
 
@@ -597,5 +635,7 @@ describe('kaizen doctor', () => {
     // The id goes into the filed slug, so renaming one re-files everything.
     expect(ids).toContain('capture-quality');
     expect(ids).toContain('scope-patch-misses-member-recurrence');
+    expect(ids).toContain('budget-exceeded');
+    expect(ids).toContain('target-root-missing');
   });
 });

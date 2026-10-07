@@ -120,4 +120,18 @@ describe('config validation', () => {
     cfg.targets[0].check = '';
     expect(validateConfig(cfg)).toContain('targets[0].check must be a non-empty command or false');
   });
+
+  it('accepts only path and byte-ceiling budget entries', () => {
+    const cfg = defaultConfig();
+    cfg.budgets = [{ path: '/tmp/always-loaded', maxBytes: 4096 }];
+    expect(validateConfig(cfg)).toEqual([]);
+
+    cfg.budgets = 'unbounded';
+    expect(validateConfig(cfg)).toContain('budgets must be an array');
+    cfg.budgets = [{ path: '', maxBytes: -1 }];
+    expect(validateConfig(cfg)).toEqual([
+      'budgets[0].path must be a non-empty path',
+      'budgets[0].maxBytes must be a non-negative integer',
+    ]);
+  });
 });

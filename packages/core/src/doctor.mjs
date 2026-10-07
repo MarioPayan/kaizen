@@ -21,8 +21,7 @@ import { execFileSync } from 'node:child_process';
 import { join, dirname, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { defaultConfig } from './config.mjs';
-import { resolveTargets } from './config.mjs';
+import { defaultConfig, expandPath, resolveTargets } from './config.mjs';
 import { duplicateBodySections, inPatchWindow, patchWindow, isTerminal, hasLanded } from './lifecycle.mjs';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
@@ -241,6 +240,85 @@ function scriptsWithoutSelfCheck(config) {
     }
   }
   return findings;
+}
+
+/** Total regular-file bytes under one configured always-loaded path. */
+function bytesUnder(path) {
+  let stat;
+  try {
+    stat = statSync(path);
+  } catch {
+    return null;
+  }
+  if (stat.isFile()) return stat.size;
+  if (!stat.isDirectory()) return 0;
+
+  let total = 0;
+  let entries;
+  try {
+    entries = readdirSync(path, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const entry of entries) {
+    const child = join(path, entry.name);
+    if (entry.isFile()) {
+      try {
+        total += statSync(child).size;
+      } catch {
+        // A file can disappear between readdir and stat; the next run counts it.
+      }
+    } else if (entry.isDirectory()) {
+      const nested = bytesUnder(child);
+      if (nested !== null) total += nested;
+    }
+  }
+  return total;
+}
+
+/** Always-loaded rules need an explicit ceiling or their token cost only grows. */
+function exceededBudgets(config) {
+  const findings = [];
+  for (const budget of config.budgets ?? []) {
+    const path = expandPath(budget.path);
+    const current = bytesUnder(path);
+    if (current === null || current <= budget.maxBytes) continue;
+    const slugPath = String(budget.path)
+      .replace(/[^A-Za-z0-9._-]+/g, '-')
+      .replace(/^-|-$/g, '');
+    findings.push({
+      slug: `budget-exceeded-${slugPath || 'rules'}`.slice(0, 80),
+      severity: 'medium',
+      scope: budget.path,
+      context: `Always-loaded rules under \`${path}\` total ${current} bytes; the configured maximum is ${budget.maxBytes} bytes.`,
+      evidence: bullets([`current: ${current} bytes`, `maximum: ${budget.maxBytes} bytes`, `path: ${path}`]),
+      suggestion:
+        'Move conditional guidance behind a skill or a deterministic helper, or remove stale rules until this path is within its configured byte budget.',
+    });
+  }
+  return findings;
+}
+
+/** A configured target cannot be scanned or patched when its skills root is gone. */
+function missingTargetRoots(config) {
+  return resolveTargets(config).flatMap((target) => {
+    try {
+      if (statSync(target.skills).isDirectory()) return [];
+    } catch {
+      // The finding below is the actionable form of the failed lookup.
+    }
+    return [
+      {
+        slug: `target-root-missing-${target.name}`.replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 80),
+        severity: 'medium',
+        scope: target.skills,
+        context: `Configured target \`${target.name}\` has no skills directory at \`${target.skills}\`.`,
+        evidence: bullets([`target: ${target.name}`, `missing skills directory: ${target.skills}`]),
+        suggestion:
+          'Restore the skills directory or update the target path. Until then kaizen cannot discover, diagnose, or apply changes for this target.',
+      },
+    ];
+  });
 }
 
 /* ------------------------------------------------------------------- run -- */
@@ -523,14 +601,12 @@ function harnessScopeRungMismatch(state) {
 /**
  * One scope, one fix — so one live patch.
  *
- * Step 4 of the skill says one proposal per scope, and the apply cascade
- * assumes it: the commit that lands a scope's fix stamps every open sibling
- * `superseded_by: <sha>`. Two planned/approved siblings each carrying their own
- * `.patch` break that assumption — whichever lands first closes the other with
- * a diff that never landed, and a patch appended at end-of-file stops applying
- * the moment the first one lengthens the file. Seen on
- * `_lib/claude-md-guardrails.md`. Report it before either applies; the fix is
- * to fold the second diff into the lead's patch or re-scope one of them.
+ * Step 4 of the skill says one proposal per scope. The apply cascade closes
+ * only members whose `blocked_on` names the landed carrier; an independent
+ * same-file sibling stays open, then gets parked when its patch no longer
+ * applies. Two planned/approved siblings each carrying their own `.patch`
+ * create exactly that stale-patch detour. Seen on `_lib/claude-md-guardrails.md`.
+ * Report legacy cases; the planning gate prevents new ones.
  */
 function scopeWithSeveralLivePatches(state) {
   const findings = [];
@@ -555,10 +631,10 @@ function scopeWithSeveralLivePatches(state) {
         .map((s) => `${s.slug}@${s.status}`)
         .join(
           ', ',
-        )}. The apply cascade supersedes every open sibling when the first lands, so the other diff(s) would be stamped superseded without ever applying.`,
+        )}. Landing one supersedes only cards whose \`blocked_on\` names it; an independent same-file sibling stays open and is parked when its patch stops applying.`,
       evidence: bullets(live.map((s) => `${s.id}@${s.status} → ${s.file.replace(/\.md$/, '.patch')}`)),
       suggestion:
-        'Fold the other diff(s) into the lead patch (one patch per scope, per Step 4) or re-scope one of them, before either is drained. If both must land in sequence, say so in blocked_on and drain them via the CLI (Step 7), which does not cascade.',
+        "Fold the other diff(s) into the existing carrier patch and set each member's blocked_on to that carrier, or re-scope a genuinely separate fix. The planning gate now prevents new sibling patches; this finding catches older ones.",
     });
   }
   return findings;
@@ -612,6 +688,8 @@ function scopePatchMissesMemberRecurrence(state) {
 
 export const CHECKS = [
   { id: 'dead-config-key', run: () => deadConfigKeys() },
+  { id: 'budget-exceeded', run: (ctx) => exceededBudgets(ctx.config) },
+  { id: 'target-root-missing', run: (ctx) => missingTargetRoots(ctx.config) },
   { id: 'scope-fix-orphans-siblings', run: (ctx) => scopeFixOrphansSiblings(ctx.state, ctx.config) },
   { id: 'scope-has-several-live-patches', run: (ctx) => scopeWithSeveralLivePatches(ctx.state) },
   {

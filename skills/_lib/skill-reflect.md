@@ -132,14 +132,32 @@ is a suggestion nobody will fix.
 
 2. **Decide** whether to write. A vague "could be better" is not worth a file.
 
-3. **Dedup.** Scan the skill's feedback folder for a file whose topic overlaps — 3+ words in common, or the same point in different words. If one exists, append to it rather than creating a duplicate:
+3. **Dedup.** Once the required `scope` and candidate slug are known, check
+   before writing. The command reads non-terminal suggestions in
+   `<feedback-dir>/<SKILL_NAME>/` and always exits 0 with exactly one JSON object:
+   `{"match":"<absolute file>"|null,"reason":"<why>"}`. A match means the
+   normalized scope is the same or the slugs share at least three dash-separated
+   words.
+
+   ```bash
+   node "${CLAUDE_PLUGIN_ROOT}/scripts/cli.mjs" capture --check \
+     --skill "$SKILL_NAME" --scope '<scope>' --slug '<slug>'
+   ```
+
+   If `match` names a file, read it. Append to it only when it describes the same
+   failure (same cause, same fix); a shared scope alone is not enough, because one
+   file collects many unrelated rules. Otherwise write a new file:
 
    ```markdown
    ## Recurrence — <YYYY-MM-DD>
    <One sentence on this instance. Add anything the original does not capture.>
    ```
 
-   Recurrence count is how the queue knows what keeps happening. Appending is not a lesser outcome than a new file — it is often the more valuable one.
+   If `match` is null because the reason says the config or check is unavailable,
+   recover by scanning the skill's feedback folder for the same scope or three
+   shared slug words before writing. Otherwise null means write the new file.
+   Recurrence count is how the queue knows what keeps happening. Appending is not
+   a lesser outcome than a new file — it is often the more valuable one.
 
 4. **Write** the file, or append the recurrence section.
 

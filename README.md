@@ -29,13 +29,14 @@ A proposal at rung 2 or 3 has to say why the rung below it does not work. That c
 
 ## Use
 
-| Command                | Does                                                                             |
-| ---------------------- | -------------------------------------------------------------------------------- |
-| `/kaizen:triage`       | triage the backlog and propose fixes                                             |
-| `/kaizen:triage drain` | apply what you have already approved                                             |
-| `kaizen prune`         | delete closed suggestions older than a month — the corpus stays small on purpose |
-| `/kaizen:init`         | change what is watched                                                           |
-| `kaizen dispatch [id]` | send a card, or the backlog, to the runners — what `a` and `A` do on the board   |
+| Command                                                              | Does                                                                             |
+| -------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `/kaizen:triage`                                                     | triage the backlog and propose fixes                                             |
+| `/kaizen:triage drain`                                               | apply what you have already approved                                             |
+| `kaizen capture --check --skill <name> --scope <path> --slug <slug>` | find an open capture to recur on before filing a duplicate                       |
+| `kaizen prune`                                                       | delete closed suggestions older than a month — the corpus stays small on purpose |
+| `/kaizen:init`                                                       | change what is watched                                                           |
+| `kaizen dispatch [id]`                                               | send a card, or the backlog, to the runners — what `a` and `A` do on the board   |
 
 The spec says who each phase belongs to: **codex does the work** — triage, plan, and the review of a landed change — on the ChatGPT subscription, and checks its own triage and plans on a second pass there. **claude is the verify, and nothing else**: one run per suggestion, on the change that actually landed. A status a run wrote waits in the board's `review` lane until the name on its flag clears it; a check that fails sends the card back a step and parks it on you with the reason. One key press is the whole stretch — the server chains the check after the work. `dispatch.models` in the config is what each is started with.
 

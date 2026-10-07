@@ -5,6 +5,7 @@
  *   init      interactive setup; discovers or asks, never assumes
  *   scan      emit the full state as JSON
  *   status    one line, for the session hook
+ *   capture   check a prospective capture for an existing suggestion
  *   validate  check suggestion frontmatter against the schema (--fix normalises)
  *   triage    apply a batch of triage decisions to frontmatter (--self-check)
  *   verify    dry-run a planned patch and its validation in a throwaway worktree
@@ -272,6 +273,147 @@ function cmdScan() {
     state.skills = state.skills.filter((k) => kept.has(k.name));
   }
   stdout.write(JSON.stringify(state, null, has('--pretty') ? 2 : 0));
+}
+
+/* ------------------------------------------------------------- capture ---- */
+
+const slugWords = (slug) =>
+  new Set(
+    String(slug ?? '')
+      .toLowerCase()
+      .split('-')
+      .filter(Boolean),
+  );
+
+/** Find the open card a prospective capture should recur on instead of duplicating. */
+function captureMatch({ suggestions, skill, scope, slug, skillsByTarget = new Map() }) {
+  const open = suggestions.filter((candidate) => {
+    const folder = candidate.id?.split('/')[1] ?? candidate.skill;
+    return folder === skill && !isTerminal(candidate.status);
+  });
+
+  if (scope) {
+    const sameScope = open.find((candidate) => {
+      const normalized = normalizeScope(scope, skillsByTarget.get(candidate.target) ?? '');
+      return candidate.scope && candidate.scope === normalized;
+    });
+    if (sameScope) {
+      return {
+        match: sameScope.file,
+        reason: `same normalized scope: ${sameScope.scope}`,
+      };
+    }
+  }
+
+  const incoming = slugWords(slug);
+  for (const candidate of open) {
+    const shared = [...slugWords(candidate.slug)].filter((word) => incoming.has(word)).sort();
+    if (shared.length >= 3) {
+      return {
+        match: candidate.file,
+        reason: `slug shares ${shared.length} dash-separated words: ${shared.join(', ')}`,
+      };
+    }
+  }
+
+  return {
+    match: null,
+    reason: `no non-terminal suggestion in skill "${skill}" shares its normalized scope or three slug words`,
+  };
+}
+
+function captureSelfCheck() {
+  let failed = 0;
+  const assert = (ok, what) => {
+    console.log(`${ok ? 'ok  ' : 'FAIL'} ${what}`);
+    if (!ok) failed++;
+  };
+  const suggestions = [
+    {
+      skill: 'demo',
+      target: 'user',
+      status: 'recorded',
+      scope: 'demo/SKILL.md',
+      slug: 'keep-validation-errors-visible',
+      file: '/feedback/demo/open.md',
+    },
+    {
+      skill: 'demo',
+      target: 'user',
+      status: 'verified',
+      scope: 'closed.md',
+      slug: 'closed-card-does-not-match',
+      file: '/feedback/demo/closed.md',
+    },
+  ];
+  const base = { suggestions, skill: 'demo', skillsByTarget: new Map([['user', '/skills']]) };
+  assert(
+    captureMatch({ ...base, scope: '/skills/demo/SKILL.md', slug: 'unrelated' }).match ===
+      '/feedback/demo/open.md',
+    'normalized scope finds the open card',
+  );
+  assert(
+    captureMatch({ ...base, scope: 'other.md', slug: 'validation-errors-should-stay-visible' }).match ===
+      '/feedback/demo/open.md',
+    'three shared dash-separated words find the open card',
+  );
+  assert(
+    captureMatch({ ...base, scope: 'closed.md', slug: 'closed-card-does-not-match' }).match === null,
+    'terminal cards do not suppress a new capture',
+  );
+  if (failed) exit(1);
+}
+
+/**
+ * A capture check is advisory: a match changes where the incident is recorded,
+ * not whether the calling skill succeeds. Every result is JSON and exits zero.
+ *
+ *   kaizen capture --check --skill <name> --scope <path> --slug <slug>
+ *   kaizen capture --self-check
+ */
+function cmdCapture() {
+  if (has('--self-check')) return captureSelfCheck();
+
+  const skill = flag('skill');
+  const scope = flag('scope');
+  const slug = flag('slug');
+  if (!has('--check') || !skill || !scope || !slug) {
+    console.log(
+      JSON.stringify({
+        match: null,
+        reason: 'usage: kaizen capture --check --skill <name> --scope <path> --slug <slug>',
+      }),
+    );
+    return;
+  }
+
+  const loaded = loadConfig();
+  if (!loaded.exists || loaded.errors.length) {
+    console.log(
+      JSON.stringify({
+        match: null,
+        reason: loaded.exists
+          ? `config is invalid: ${loaded.errors.join('; ')}`
+          : `no config at ${loaded.path}`,
+      }),
+    );
+    return;
+  }
+
+  try {
+    const targets = resolveTargets(loaded.config);
+    const seenFeedback = new Set();
+    const suggestions = [];
+    for (const target of targets) {
+      if (!target.feedback || seenFeedback.has(target.feedback)) continue;
+      seenFeedback.add(target.feedback);
+      suggestions.push(...discoverSuggestions(target.feedback, target.name, target.skills));
+    }
+    const skillsByTarget = new Map(targets.map((target) => [target.name, target.skills]));
+    console.log(JSON.stringify(captureMatch({ suggestions, skill, scope, slug, skillsByTarget })));
+  } catch (error) {
+    console.log(JSON.stringify({ match: null, reason: `capture check unavailable: ${error.message}` }));
+  }
 }
 
 /**
@@ -559,7 +701,7 @@ const PHASES = new Map(LIFECYCLE.phases.map((p) => [p.id, p]));
 const STATUS_PHASES = new Map(LIFECYCLE.statuses.map((s) => [s.id, PHASES.get(s.phase)]));
 
 /** Turn a decision list into writes, or into every reason it cannot be one. */
-function validateDecisions(decisions, byId) {
+function validateDecisions(decisions, byId, skillsByTarget = new Map()) {
   const errors = [];
   const writes = [];
 
@@ -606,6 +748,23 @@ function validateDecisions(decisions, byId) {
     const decision = lifecycle.phases.find((p) => p.attended);
     const prior = lifecycle.statuses.find((s) => (s.next ?? []).includes(decision?.produces));
     const reviewer = lifecycle.phases.find((p) => p.produces === prior?.id)?.reviewer;
+    if (patch.status === prior?.id) {
+      const skills = skillsByTarget.get(found.target) ?? '';
+      const scope = normalizeScope(patch.scope ?? found.scope, skills);
+      const carrier = [...byId.values()].find(
+        (candidate) =>
+          candidate.id !== found.id &&
+          candidate.target === found.target &&
+          !isTerminal(candidate.status) &&
+          normalizeScope(candidate.scope, skills) === scope &&
+          existsSync(candidate.file.replace(/\.md$/, '.patch')),
+      );
+      if (carrier && patch.blocked_on !== carrier.id) {
+        errors.push(
+          `${where}: scope "${scope}" already has live patch carrier "${carrier.id}"; append to it and set blocked_on to "${carrier.id}"`,
+        );
+      }
+    }
     if (found.status === decision?.produces) {
       const sidecar = found.file.replace(/\.md$/, '.patch');
       const identity = existsSync(sidecar) ? patchIdentity(readFileSync(sidecar)) : '';
@@ -1031,9 +1190,11 @@ function cmdTriage() {
   }
 
   const config = requireConfig();
-  const byId = new Map(buildState(config).suggestions.map((s) => [s.id, s]));
+  const state = buildState(config);
+  const byId = new Map(state.suggestions.map((s) => [s.id, s]));
+  const skillsByTarget = new Map(state.targets.map((target) => [target.name, target.skills]));
   const dry = has('--dry-run');
-  const { errors, writes } = validateDecisions(decisions, byId);
+  const { errors, writes } = validateDecisions(decisions, byId, skillsByTarget);
 
   // All or nothing. A batch that half-applies leaves the queue in a state nobody
   // planned, and the whole point is that the next scan is trustworthy.
@@ -1137,6 +1298,48 @@ function triageSelfCheck() {
     'a present section is replaced in place, its neighbours untouched',
   );
   assert(validateDecisions([{ id: 'a', plan: '  ' }], byId).errors.length === 1, 'an empty plan is refused');
+
+  const carrierFile = join(root, 'carrier.md');
+  const memberFile = join(root, 'member.md');
+  writeFileSync(carrierFile, original);
+  writeFileSync(carrierFile.replace(/\.md$/, '.patch'), 'carrier patch\n');
+  writeFileSync(memberFile, original);
+  const carrierId = 'user/demo/carrier.md';
+  const memberId = 'user/demo/member.md';
+  const scoped = new Map([
+    [
+      carrierId,
+      {
+        id: carrierId,
+        file: carrierFile,
+        target: 'user',
+        scope: 'demo/SKILL.md',
+        status: 'planned',
+      },
+    ],
+    [
+      memberId,
+      {
+        id: memberId,
+        file: memberFile,
+        target: 'user',
+        scope: '/skills/demo/SKILL.md',
+        status: 'triaged',
+      },
+    ],
+  ]);
+  const planMember = { id: memberId, status: 'planned', plan: 'extend it', validation: 'run it' };
+  assert(
+    validateDecisions([planMember], scoped, new Map([['user', '/skills']])).errors.some((error) =>
+      error.includes('append to it'),
+    ),
+    'a normalized-scope sibling patch is refused',
+  );
+  assert(
+    validateDecisions([{ ...planMember, blocked_on: carrierId }], scoped, new Map([['user', '/skills']]))
+      .errors.length === 0,
+    'a member explicitly carried by the existing patch is accepted',
+  );
 
   rmSync(root, { recursive: true, force: true });
   if (failed) exit(1);
@@ -1496,6 +1699,7 @@ const commands = {
   init: cmdInit,
   scan: cmdScan,
   status: cmdStatus,
+  capture: cmdCapture,
   validate: cmdValidate,
   triage: cmdTriage,
   verify: cmdVerify,
@@ -1511,8 +1715,10 @@ const commands = {
   help: () =>
     console.log(
       'usage: kaizen                                            # the board, in the terminal\n' +
-        '       kaizen <init|scan|status|validate|triage|verify|review|drain|asks|doctor|docs|prune|serve|dispatch|tui> [--fix] [--pretty]\n' +
+        '       kaizen <init|scan|status|capture|validate|triage|verify|review|drain|asks|doctor|docs|prune|serve|dispatch|tui> [--fix] [--pretty]\n' +
         '       kaizen dispatch [<suggestion id>]                 # send a card, or the backlog, to the runners\n' +
+        '       kaizen capture --check --skill <name> --scope <path> --slug <slug>\n' +
+        '       kaizen capture --self-check\n' +
         '       kaizen doctor [--file]\n' +
         '       kaizen asks [--json|--due|--stamp]                # asks you keep repeating\n' +
         '       kaizen triage --apply <file.json|-> [--dry-run]\n' +

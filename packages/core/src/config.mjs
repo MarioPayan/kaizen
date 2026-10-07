@@ -44,6 +44,9 @@ export function defaultConfig() {
     // disk and stays one click away.
     surface: defaultSurface(),
     applyGuards: { requireCleanTree: true, requireDiffApplies: true },
+    // Optional ceilings for instruction trees that are loaded on every run.
+    // Empty by default: only the owner knows which paths are always in context.
+    budgets: [],
     // `auto` sends a run at new arrivals on its own, so the board you open is
     // already at the decision — off by default, every run is a model call.
     // `maxAgents` is how many fenced runs may go at once; the rest wait in
@@ -116,6 +119,25 @@ export function validateConfig(cfg) {
     // A pass with no ceiling is the one unattended thing here that both spends
     // tokens and creates work, so the ceiling is not optional.
     if (!Number.isInteger(max) || max < 1 || max > 50) errs.push('asks.max must be 1-50');
+  }
+
+  if (cfg.budgets !== undefined) {
+    if (!Array.isArray(cfg.budgets)) {
+      errs.push('budgets must be an array');
+    } else {
+      cfg.budgets.forEach((budget, i) => {
+        if (!budget || typeof budget !== 'object' || Array.isArray(budget)) {
+          errs.push(`budgets[${i}] is not an object`);
+          return;
+        }
+        if (typeof budget.path !== 'string' || !budget.path.trim()) {
+          errs.push(`budgets[${i}].path must be a non-empty path`);
+        }
+        if (!Number.isInteger(budget.maxBytes) || budget.maxBytes < 0) {
+          errs.push(`budgets[${i}].maxBytes must be a non-negative integer`);
+        }
+      });
+    }
   }
 
   if (cfg.surface) {

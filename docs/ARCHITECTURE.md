@@ -120,8 +120,9 @@ already says why; paying a model call to rediscover it is the cost this avoids.
 Each module owns one thing; `index.mjs` is the public surface.
 
 - **`config.mjs`** — load/validate/save. Defaults are computed, `targets` starts
-  empty (`kaizen init` fills it per machine). Validation refuses contradictions
-  (empty surface lists, non-loopback hosts) rather than interpreting them.
+  empty (`kaizen init` fills it per machine), and optional `budgets` put byte
+  ceilings on always-loaded paths. Validation refuses contradictions (empty
+  surface lists, non-loopback hosts) rather than interpreting them.
 - **`taxonomy.mjs`** — the closed vocabularies (`TYPES`, `OBJECTIVES`, `EFFORTS`,
   `SEVERITIES`) and the `surface` predicate. Import-free on purpose: it breaks
   what would otherwise be a config↔suggestion cycle.
@@ -156,7 +157,8 @@ Each module owns one thing; `index.mjs` is the public surface.
   what has happened since the last stamp plus a lookback, so a pass never spends
   tokens re-judging what is already on disk.
 - **`doctor.mjs`** — kaizen's rubric applied to kaizen itself. Each check
-  encodes a defect once found by hand; findings are suggestion-shaped so
+  encodes a defect once found by hand, including missing target roots and
+  exceeded always-loaded byte budgets; findings are suggestion-shaped so
   `--file` queues them with everything else.
 
 ## @kaizen/server — the API

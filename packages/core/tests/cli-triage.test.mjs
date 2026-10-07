@@ -11,6 +11,8 @@ let root;
 let config;
 let file;
 const id = 'user/demo/2026-01-01-changed.md';
+const carrierId = 'user/demo/2026-01-02-carrier.md';
+const memberId = 'user/demo/2026-01-03-member.md';
 
 beforeAll(() => {
   root = mkdtempSync(join(tmpdir(), 'kaizen-triage-approved-'));
@@ -27,6 +29,16 @@ beforeAll(() => {
     `---\nskill: demo\ndate: 2026-01-01\nseverity: low\ntype: structural\nobjective: guardrail\neffort: S\nrung: 0\nscope: lifecycle.json\nstatus: approved\napproved_patch: ${patchIdentity('old patch\n')}\n---\n\n## Context\n\nc\n\n## Suggestion\n\ns\n`,
   );
   writeFileSync(file.replace(/\.md$/, '.patch'), 'replacement patch\n');
+  const carrier = join(feedback, 'demo', '2026-01-02-carrier.md');
+  writeFileSync(
+    carrier,
+    `---\nskill: demo\ndate: 2026-01-02\nseverity: low\nscope: commands/triage.md\nstatus: planned\n---\n\n## Context\n\nc\n\n## Suggestion\n\ns\n`,
+  );
+  writeFileSync(carrier.replace(/\.md$/, '.patch'), 'carrier patch\n');
+  writeFileSync(
+    join(feedback, 'demo', '2026-01-03-member.md'),
+    `---\nskill: demo\ndate: 2026-01-03\nseverity: low\nscope: ${join(skills, 'commands', 'triage.md')}\nstatus: triaged\n---\n\n## Context\n\nc\n\n## Suggestion\n\ns\n`,
+  );
 });
 
 afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -50,5 +62,21 @@ describe('kaizen triage approval invalidation', () => {
     expect(readFileSync(file, 'utf8')).toMatch(/status: planned/);
     expect(readFileSync(file, 'utf8')).toMatch(/needs_review: codex/);
     expect(readFileSync(file, 'utf8')).toMatch(/approved_patch:\s*$/m);
+  });
+
+  it('requires a planned sibling to append to the existing normalized-scope carrier', () => {
+    const decision = {
+      id: memberId,
+      status: 'planned',
+      plan: 'extend the existing fix',
+      validation: 'run the carrier check',
+    };
+    const refused = run(decision, '--dry-run');
+    expect(refused.status).toBe(1);
+    expect(refused.stderr).toContain(carrierId);
+    expect(refused.stderr).toMatch(/append to it/);
+
+    const accepted = run({ ...decision, blocked_on: carrierId }, '--dry-run');
+    expect(accepted.status).toBe(0);
   });
 });

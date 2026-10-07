@@ -191,6 +191,13 @@ The plan phase produces three things, and the server will not let a suggestion
 reach `planned` without all three. That is deliberate: an approval with nothing
 behind it is the failure this whole model exists to prevent.
 
+Before creating a patch, check the normalized scope in the current scan. If any
+non-terminal suggestion for that scope already owns a sidecar patch, plan this
+change into that existing carrier: append the change to the carrier's patch and
+set this card's `blocked_on` to the carrier id. Never create a sibling patch for
+the same scope. `kaizen triage --apply` refuses to move the card to `planned`
+unless that carrier relation is present.
+
 **1. `## Plan`** — the change, concretely. Which files, which edits, and what
 deliberately stays out. Include the rung justification here: a rung 2 or 3 fix
 must say in one sentence why the rung below does not work.
@@ -432,6 +439,9 @@ is where failures come from. The checklist is now a check:
 | Check | Catches |
 |---|---|
 | `dead-config-key` | a setting the UI offers that no code reads — a promise the tool does not keep |
+| `budget-exceeded` | always-loaded rules whose files have grown past their configured byte ceiling |
+| `target-root-missing` | a configured skills directory that no longer exists |
+| `scope-has-several-live-patches` | legacy sibling patches for one scope that should share a carrier |
 | `decided-without-a-patch` | `approved` meaning "nobody has written it"; `/api/apply` 422s on every one |
 | `stale-decision` | anything past the drain window, which means the approval flow has friction |
 | `capture-quality` | the share of suggestions arriving with no `scope`, measured rather than asserted |
