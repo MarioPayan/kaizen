@@ -580,7 +580,10 @@ function scopePatchMissesMemberRecurrence(state) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(carrierDate)) continue;
 
     const recent = state.suggestions.flatMap((member) => {
-      if (member.id === carrier.id || member.target !== carrier.target || member.scope !== carrier.scope) {
+      // Scope alone is not membership: a broad file can carry many independent
+      // fixes. `blockedBy` is the explicit carrier relation used by patch lookup
+      // and landing, so only those members can make this proposal stale.
+      if (member.blockedBy !== carrier.id) {
         return [];
       }
       const recurrenceDate = /^##\s+Recurrence\s+(?:—|-)\s*(\d{4}-\d{2}-\d{2})\b/im.exec(

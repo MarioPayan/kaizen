@@ -306,6 +306,7 @@ describe('kaizen doctor', () => {
         status: 'planned',
         scope: 'y/SKILL.md',
         file: here,
+        blockedBy: 'user/demo/2026-08-01-p1.md',
         latestRecurrence: '## Recurrence — 2026-08-01\n\nAgain.',
       }),
       // capture-quality: enough scopeless rows to cross the threshold
@@ -513,12 +514,13 @@ describe('kaizen doctor', () => {
 
   describe('scope-patch-misses-member-recurrence', () => {
     const here = new URL(import.meta.url).pathname;
+    const carrierId = 'user/demo/2026-08-23-carrier.md';
 
     it('flags a latest member recurrence dated on or after the live carrier was filed', () => {
       const found = only(
         stateWith([
           suggestion({
-            id: 'user/demo/2026-08-23-carrier.md',
+            id: carrierId,
             slug: 'carrier',
             status: 'planned',
             date: '2026-08-23',
@@ -527,6 +529,7 @@ describe('kaizen doctor', () => {
           suggestion({
             id: 'user/demo/2026-08-22-member.md',
             slug: 'member',
+            blockedBy: carrierId,
             latestRecurrence: '## Recurrence — 2026-08-24\n\nIt happened again.',
           }),
         ]),
@@ -536,6 +539,25 @@ describe('kaizen doctor', () => {
       expect(found[0].severity).toBe('medium');
       expect(found[0].evidence).toContain('2026-08-23-carrier.md@planned');
       expect(found[0].evidence).toContain('2026-08-22-member.md — Recurrence 2026-08-24');
+    });
+
+    it('ignores a recent recurrence that only shares the carrier scope', () => {
+      const quiet = stateWith([
+        suggestion({
+          id: carrierId,
+          slug: 'carrier',
+          status: 'planned',
+          date: '2026-08-23',
+          file: here,
+        }),
+        suggestion({
+          id: 'user/demo/2026-08-22-independent.md',
+          slug: 'independent',
+          latestRecurrence: '## Recurrence — 2026-08-24\n\nA separate mechanism.',
+        }),
+      ]);
+
+      expect(only(quiet, 'scope-patch-misses-member-recurrence')).toEqual([]);
     });
 
     it('ignores older or undated evidence, other targets and carriers without a live patch', () => {
@@ -549,11 +571,13 @@ describe('kaizen doctor', () => {
         suggestion({
           id: 'user/demo/2026-08-22-member.md',
           slug: 'member',
+          blockedBy: carrierId,
           latestRecurrence: '## Recurrence — 2026-08-22\n\nOlder.',
         }),
         suggestion({
           id: 'user/demo/2026-08-21-legacy.md',
           slug: 'legacy',
+          blockedBy: carrierId,
           latestRecurrence: '## Recurrence\n\nUndated legacy heading.',
         }),
         suggestion({
