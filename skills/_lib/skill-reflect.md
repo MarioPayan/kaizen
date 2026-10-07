@@ -110,7 +110,7 @@ suggestions share a fix. Omit them entirely.
 Field guidance for the five that are yours:
 
 - `severity` — `high` caused an error, wrong output, or needed the user to step in; `medium` slowed the run or forced a workaround; `low` is polish. Bias low; `high` should mean something actually broke.
-- `scope` — **required, and the one worth slowing down for.** The single file the fix lands in. If the fix is a script that does not exist yet, name the path it would live at. This is the strongest grouping signal there is: it is what turns nine separate "the remote isn't always origin" reports into one decision instead of nine.
+- `scope` — **required, and the one worth slowing down for.** The single file the fix lands in. Use a target-relative path for a file inside the configured skills tree. If the fix lands in a project outside that tree, use its absolute path (for example, `/repo/Agenda/e2e/helpers/app.ts`) so triage can resolve the intended repository without inferring it from the Context. If the fix is a script that does not exist yet, name the path it would live at. This is the strongest grouping signal there is: it is what turns nine separate "the remote isn't always origin" reports into one decision instead of nine.
 - `outcome` — how *this run* ended, not how bad the finding is.
 - `evidence` — the receipts, pasted rather than described. Triage re-reads the
   scope file at HEAD months later to decide whether the problem is still real,
