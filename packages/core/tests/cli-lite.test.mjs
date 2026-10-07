@@ -243,3 +243,19 @@ describe('kaizen capture --check', () => {
     expect(JSON.parse(result.stdout).match).toBe(existing);
   });
 });
+
+describe('scopePath', () => {
+  it('resolves a relative scope against the repo root that owns the skills dir', async () => {
+    const { execFileSync } = await import('node:child_process');
+    const { mkdtempSync, mkdirSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { scopePath } = await import('../src/scan.mjs');
+    const repo = mkdtempSync(join(tmpdir(), 'kaizen-scope-'));
+    execFileSync('git', ['init', '-q', repo]);
+    mkdirSync(join(repo, 'skills'));
+    const target = { skills: join(repo, 'skills') };
+    expect(scopePath({ scope: 'scripts/cli.mjs' }, target)).toBe(join(repo, 'scripts/cli.mjs'));
+    expect(scopePath({ scope: '/abs/x.md' }, target)).toBe('/abs/x.md');
+  });
+});

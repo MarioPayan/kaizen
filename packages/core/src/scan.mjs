@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
 import { expandPath, resolveTargets } from './config.mjs';
@@ -105,9 +106,30 @@ export function discoverSuggestions(feedbackDir, targetName, skillsDir = '') {
   return found;
 }
 
+const repoRoots = new Map();
+
+/** The git toplevel that owns a skills dir; scopes are relative to it, not to the skills dir. */
+function repoRoot(dir) {
+  if (!repoRoots.has(dir)) {
+    let root = dir;
+    try {
+      root = execFileSync('git', ['-C', dir, 'rev-parse', '--show-toplevel'], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+    } catch {
+      // Not a repository: fall back to the skills dir itself.
+    }
+    repoRoots.set(dir, root);
+  }
+  return repoRoots.get(dir);
+}
+
 export function scopePath(item, target) {
   if (!item.scope) return '';
-  return isAbsolute(item.scope) ? item.scope : resolve(target.skills, item.scope);
+  // expandPath also resolves relative paths against cwd, so only use it for ~ forms.
+  const scope = item.scope.startsWith('~') ? expandPath(item.scope) : item.scope;
+  return isAbsolute(scope) ? scope : resolve(repoRoot(target.skills), scope);
 }
 
 export function buildState(config) {
