@@ -56,7 +56,7 @@ describe('kaizen scan', () => {
   /**
    * A fenced read is fenced on both halves. `--id` used to trim the
    * suggestions and hand back every skill on the machine anyway, and the
-   * first opencode run got a dump too long to show for the one card it asked
+   * first runner run got a dump too long to show for the one card it asked
    * for.
    */
   it('fenced to one card, returns that card and its skill only', () => {

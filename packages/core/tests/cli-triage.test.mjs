@@ -45,10 +45,10 @@ describe('kaizen triage approval invalidation', () => {
     expect(refused.stderr).toMatch(/approved patch changed/);
     expect(readFileSync(file, 'utf8')).toMatch(/status: approved/);
 
-    const accepted = run({ id, status: 'planned', needs_review: 'claude' });
+    const accepted = run({ id, status: 'planned', needs_review: 'codex' });
     expect(accepted.status).toBe(0);
     expect(readFileSync(file, 'utf8')).toMatch(/status: planned/);
-    expect(readFileSync(file, 'utf8')).toMatch(/needs_review: claude/);
+    expect(readFileSync(file, 'utf8')).toMatch(/needs_review: codex/);
     expect(readFileSync(file, 'utf8')).toMatch(/approved_patch:\s*$/m);
   });
 });

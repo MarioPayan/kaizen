@@ -56,8 +56,8 @@ pub struct Lane<'a> {
 /// The three lanes that are not pipeline stages, in the order a card is tested
 /// against them — each a wait a status cannot express.
 ///
-/// `review` holds a status the runner wrote provisionally: opencode planned
-/// the card and flagged it, and until claude clears the flag it is not in the
+/// `review` holds a status the runner wrote provisionally: codex planned
+/// the card and flagged it, and until the checker clears the flag it is not in the
 /// planned lane, because the planned lane is what `A` approves. The card wears
 /// the spinner here while the check runs, and comes back to its stage when it
 /// passes — or goes back a stage, parked on you, when it does not.

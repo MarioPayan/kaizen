@@ -6,7 +6,7 @@
 //! back, and a runner that parked it on a call — because what you can *do*
 //! with a parked card falls out of the spec, not out of the reason.
 //!
-//! Which option leads does read the reason: claude and the server write a
+//! Which option leads does read the reason: the checker and the server write a
 //! prefix (`review:`, `apply:`) when the runner's output was wrong, and then
 //! "send it back for a new plan" is the move you almost always want. A park
 //! with no prefix is a runner asking you something, and "answer it" leads.
@@ -65,7 +65,7 @@ pub fn ways_out(s: &Suggestion, targets: &[Target]) -> Vec<WayOut> {
         way(
             "replan",
             "send back for a new plan",
-            "back to triaged; opencode plans again against HEAD, with this reason as its brief",
+            "back to triaged; codex plans again against HEAD, with this reason as its brief",
             Needs::Nothing,
         )
     });

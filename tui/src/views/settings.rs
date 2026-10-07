@@ -164,7 +164,7 @@ pub fn rows(cfg: &Value) -> Vec<Row> {
     out.push(Row {
         path: "dispatch.maxAgents".into(),
         label: "max agents".into(),
-        kind: Kind::Number(n("dispatch.maxAgents").max(1), 1, 8),
+        kind: Kind::Number(n("dispatch.maxAgents").max(1), 1, 16),
         heading: false,
         help: "fenced runs at once; the rest wait in line, and a backlog run always runs alone",
     });
@@ -177,8 +177,8 @@ pub fn rows(cfg: &Value) -> Vec<Row> {
     });
     // Read-only here: a model name is a string nobody wants to step through
     // one character at a time. Edit the JSON for these.
-    out.push(fact("opencode", s("dispatch.models.opencode"), "does the work — triage, plan, review; the ChatGPT subscription's model"));
-    out.push(fact("claude", s("dispatch.models.claude"), "checks it — every status opencode writes, and the verify at the end"));
+    out.push(fact("codex", s("dispatch.models.codex"), "does the work — triage, plan, review — and checks it; the ChatGPT subscription's model"));
+    out.push(fact("claude", s("dispatch.models.claude"), "the verify at the end, and nothing else — one run per suggestion"));
 
     out.push(heading("scan"));
     out.push(Row {

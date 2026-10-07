@@ -320,8 +320,8 @@ describe('api', () => {
     const { status, body } = await api('POST', '/api/apply', { id: 'user/demo/2026-06-06-narrow.md' });
     expect(status).toBe(200);
     // A landing is the runners' work again: the server put the card in line
-    // itself, and the free seat took it at once — opencode, to review it.
-    expect(spawned.at(-1)).toMatchObject({ runner: 'opencode', fencedTo: 'user/demo/2026-06-06-narrow.md' });
+    // itself, and the free seat took it at once — codex, to review it.
+    expect(spawned.at(-1)).toMatchObject({ runner: 'codex', fencedTo: 'user/demo/2026-06-06-narrow.md' });
     spawned.at(-1).emit('exit', 0, null);
 
     const files = git(skills, 'show', '--name-only', '--format=', body.sha).trim().split('\n');
@@ -446,7 +446,7 @@ describe('apply closes the siblings parked on it', () => {
     expect(body.sha).toMatch(/^[0-9a-f]{40}$/);
     expect(body.closed).toBe(1);
     // The landing handed the card to the runners; free the seat for the tests after.
-    expect(spawned.at(-1)).toMatchObject({ runner: 'opencode', fencedTo: 'user/demo/2026-05-05-lead.md' });
+    expect(spawned.at(-1)).toMatchObject({ runner: 'codex', fencedTo: 'user/demo/2026-05-05-lead.md' });
     spawned.at(-1).emit('exit', 0, null);
 
     expect(readFileSync(join(feedback, '2026-05-05-lead.md'), 'utf8')).toMatch(/status: applied/);
@@ -559,7 +559,7 @@ describe('POST /api/dispatch', () => {
       pid: first.body.pid,
       exitCode: null,
       id: null,
-      runner: 'opencode',
+      runner: 'codex',
       startedAt: expect.any(Number),
     });
     expect(during.body.dispatch.runs.filter((r) => r.running)).toHaveLength(1);
@@ -576,7 +576,7 @@ describe('POST /api/dispatch', () => {
       pid: first.body.pid,
       exitCode: 1,
       id: null,
-      runner: 'opencode',
+      runner: 'codex',
       startedAt: expect.any(Number),
     });
     expect(after.body.dispatch.runs.some((r) => r.running)).toBe(false);
@@ -602,7 +602,7 @@ describe('POST /api/dispatch', () => {
     expect(missing.status).toBe(404);
 
     // A closed card is owed nothing, and the refusal names its status rather
-    // than shrugging. (An *applied* one is still work now — opencode reviews
+    // than shrugging. (An *applied* one is still work now — codex reviews
     // it — which is why the first fixture no longer serves here.)
     writeFileSync(
       join(root, 'skills-feedback', 'demo', '2026-01-02-said-no.md'),
@@ -890,8 +890,9 @@ describe('POST /api/dispatch', () => {
 });
 
 /**
- * Two runners, one seat at a time: opencode does the work, claude checks it,
- * and the server is what hands a card from one to the other. Each test here
+ * Two runners, one seat at a time: codex does the work and its own checks,
+ * claude takes the verify, and the server is what hands a card from one hat to
+ * the other. Each test here
  * owns its corpus, because who runs next is a fact about every card in it.
  */
 describe('runners and the chain', () => {
@@ -917,11 +918,12 @@ describe('runners and the chain', () => {
     const app = createApp(
       { ...config, dispatch, targets: [{ name: 'user', skills, feedback, writable: true }] },
       {
-        spawn: (runner, id) => {
+        spawn: (runner, id, review) => {
           const child = new EventEmitter();
           child.pid = 9300 + mine.length;
           child.runner = runner;
           child.fencedTo = id;
+          child.review = review;
           mine.push(child);
           process.nextTick(() => child.emit('spawn'));
           return child;
@@ -946,10 +948,10 @@ describe('runners and the chain', () => {
     return { call, mine, settle, rewrite, close, skills, feedback };
   };
 
-  it('starts the runner the card names — opencode to do, claude to check — and checks first on the backlog', async () => {
+  it('starts the runner the card names, in the hat the card asks for, and checks first on the backlog', async () => {
     const t = await isolated([
       card('2026-04-01-fresh.md', 'status: recorded'),
-      card('2026-04-02-unchecked.md', 'status: planned\nneeds_review: claude'),
+      card('2026-04-02-unchecked.md', 'status: planned\nneeds_review: codex'),
       card('2026-04-03-landed.md', 'status: applied\napplied_sha: ' + 'b'.repeat(40)),
     ]);
     const fresh = 'user/demo/2026-04-01-fresh.md';
@@ -957,28 +959,30 @@ describe('runners and the chain', () => {
     const landed = 'user/demo/2026-04-03-landed.md';
 
     expect((await t.call('POST', '/api/dispatch', { id: fresh })).status).toBe(200);
-    expect(t.mine.at(-1)).toMatchObject({ runner: 'opencode', fencedTo: fresh });
+    expect(t.mine.at(-1)).toMatchObject({ runner: 'codex', fencedTo: fresh, review: false });
     // The wire says who has the seat, so the agents tab can name it.
     const state = (await t.call('GET', '/api/state')).body;
-    expect(state.dispatch.runs.at(-1)).toMatchObject({ runner: 'opencode', id: fresh, running: true });
+    expect(state.dispatch.runs.at(-1)).toMatchObject({ runner: 'codex', id: fresh, running: true });
     t.mine.at(-1).emit('exit', 0, null);
     await t.settle();
 
-    // A plan nobody has checked is not yours yet: `a` on it sends claude.
+    // A plan nobody has checked is not yours yet: `a` on it sends the checker —
+    // the same binary as the doer, in the other hat, which is why `review` rides
+    // along and is the only thing that says which pass to start.
     expect((await t.call('POST', '/api/dispatch', { id: unchecked })).status).toBe(200);
-    expect(t.mine.at(-1)).toMatchObject({ runner: 'claude', fencedTo: unchecked });
+    expect(t.mine.at(-1)).toMatchObject({ runner: 'codex', fencedTo: unchecked, review: true });
     t.mine.at(-1).emit('exit', 0, null);
     await t.settle();
 
-    // A landed change is work again — opencode reviews it before claude does.
+    // A landed change is work again — codex reviews it before claude verifies.
     expect((await t.call('POST', '/api/dispatch', { id: landed })).status).toBe(200);
-    expect(t.mine.at(-1)).toMatchObject({ runner: 'opencode', fencedTo: landed });
+    expect(t.mine.at(-1)).toMatchObject({ runner: 'codex', fencedTo: landed, review: false });
     t.mine.at(-1).emit('exit', 0, null);
     await t.settle();
 
     // The backlog: something is waiting on a check, so the check goes first.
     expect((await t.call('POST', '/api/dispatch')).status).toBe(200);
-    expect(t.mine.at(-1)).toMatchObject({ runner: 'claude', fencedTo: null });
+    expect(t.mine.at(-1)).toMatchObject({ runner: 'codex', fencedTo: null, review: true });
     t.mine.at(-1).emit('exit', 0, null);
     await t.settle();
     expect(t.mine).toHaveLength(4);
@@ -989,7 +993,7 @@ describe('runners and the chain', () => {
     const name = '2026-04-02-stale.md';
     const id = `user/demo/${name}`;
     const t = await isolated([
-      card(name, 'status: planned\nneeds_review: claude', '\n## Plan\n\np\n\n## Validation\n\nv\n'),
+      card(name, 'status: planned\nneeds_review: codex', '\n## Plan\n\np\n\n## Validation\n\nv\n'),
     ]);
     t.rewrite(
       name.replace(/\.md$/, '.patch'),
@@ -1007,7 +1011,7 @@ describe('runners and the chain', () => {
     const text = readFileSync(join(t.feedback, 'demo', name), 'utf8');
     const head = git(t.skills, 'rev-parse', '--short', 'HEAD').trim();
     expect(text).toContain('status: triaged');
-    expect(text).not.toContain('needs_review: claude');
+    expect(text).not.toContain('needs_review: codex');
     expect(text).toContain(`blocked_on: review: patch stale — does not apply at HEAD ${head}`);
     expect(text).toContain('## Verdict');
     expect(text).toContain('error: patch failed: tracked.txt:1');
@@ -1024,18 +1028,18 @@ describe('runners and the chain', () => {
     const t = await isolated([card('2026-04-01-fresh.md', 'status: recorded')]);
     const fresh = 'user/demo/2026-04-01-fresh.md';
     const planned = (flag) =>
-      card('2026-04-01-fresh.md', `status: planned${flag ? '\nneeds_review: claude' : ''}`)[1];
+      card('2026-04-01-fresh.md', `status: planned${flag ? '\nneeds_review: codex' : ''}`)[1];
 
     expect((await t.call('POST', '/api/dispatch', { id: fresh })).status).toBe(200);
-    expect(t.mine.at(-1).runner).toBe('opencode');
-    // opencode planned it and flagged it: the card changed hands, so the seat
-    // goes to claude without anyone asking.
+    expect(t.mine.at(-1).runner).toBe('codex');
+    // codex planned it and flagged it: the card changed hands, so the seat goes
+    // to the check without anyone asking.
     t.rewrite('2026-04-01-fresh.md', planned(true));
     t.mine.at(-1).emit('exit', 0, null);
     await t.settle();
     expect(t.mine).toHaveLength(2);
-    expect(t.mine.at(-1)).toMatchObject({ runner: 'claude', fencedTo: fresh });
-    // claude cleared the flag: a plan that is yours to approve is nobody's run.
+    expect(t.mine.at(-1)).toMatchObject({ runner: 'codex', fencedTo: fresh, review: true });
+    // The check cleared the flag: a plan that is yours to approve is nobody's run.
     t.rewrite('2026-04-01-fresh.md', planned(false));
     t.mine.at(-1).emit('exit', 0, null);
     await t.settle();
@@ -1068,7 +1072,7 @@ describe('runners and the chain', () => {
     const t = await isolated([
       card(
         '2026-04-05-unchecked.md',
-        'status: planned\nneeds_review: claude',
+        'status: planned\nneeds_review: codex',
         '\n## Plan\n\np\n\n## Validation\n\nv\n',
       ),
     ]);
@@ -1077,7 +1081,7 @@ describe('runners and the chain', () => {
 
     const forward = await t.call('POST', '/api/suggestion', { id, status: 'approved' });
     expect(forward.status).toBe(409);
-    expect(forward.body.error).toMatch(/waiting on claude's check/);
+    expect(forward.body.error).toMatch(/waiting on codex's check/);
 
     const sweep = await t.call('POST', '/api/sweep', { status: 'approved' });
     expect(sweep.status).toBe(409);
@@ -1216,7 +1220,7 @@ describe('parking and the ways out', () => {
     git(skills, 'checkout', '--', '.');
   });
 
-  it('sends a parked card back for a new plan, with why under Answer, and hands it to opencode', async () => {
+  it('sends a parked card back for a new plan, with why under Answer, and hands it to codex', async () => {
     const id = 'user/demo/2026-04-10-stale.md';
     const res = await call('POST', '/api/unblock', { id, choice: 'replan' });
     expect(res.status).toBe(200);
@@ -1225,7 +1229,7 @@ describe('parking and the ways out', () => {
     expect(text).toMatch(/status: triaged/);
     expect(text).toMatch(/blocked_on: $/m);
     expect(text).toMatch(/## Answer\n\n\d{4}-\d{2}-\d{2} — sent back: apply: /);
-    expect(mine.at(-1)).toMatchObject({ runner: 'opencode', fencedTo: id });
+    expect(mine.at(-1)).toMatchObject({ runner: 'codex', fencedTo: id });
     mine.at(-1).emit('exit', 0, null);
   });
 
@@ -1240,7 +1244,7 @@ describe('parking and the ways out', () => {
     expect(front('2026-04-10-asked.md')).toMatch(/## Answer\n\n\d{4}-\d{2}-\d{2} — in _lib/);
     expect(front('2026-04-10-asked.md')).toMatch(/blocked_on: $/m);
     // Answered and triaged: a run has it now.
-    expect(mine.at(-1)).toMatchObject({ runner: 'opencode', fencedTo: asked });
+    expect(mine.at(-1)).toMatchObject({ runner: 'codex', fencedTo: asked });
     mine.at(-1).emit('exit', 0, null);
 
     card('2026-04-10-done.md', 'planned', 'blocked_on: review: the plan is wrong\n');
@@ -1270,7 +1274,7 @@ describe('parking and the ways out', () => {
     expect(front('2026-04-10-stuck.md')).toMatch(/status: planned/);
 
     // The gates hold: a flagged plan cannot be sent anywhere but out.
-    card('2026-04-10-flagged.md', 'planned', 'needs_review: claude\nblocked_on: review: x\n');
+    card('2026-04-10-flagged.md', 'planned', 'needs_review: codex\nblocked_on: review: x\n');
     const gated = await call('POST', '/api/unblock', {
       id: 'user/demo/2026-04-10-flagged.md',
       choice: 'replan',
@@ -1311,13 +1315,13 @@ describe('parking and the ways out', () => {
     expect(recordedThere).toMatch(/status: recorded/);
     expect(recordedThere).not.toMatch(/confirmed_at:/);
     expect(recordedThere).toMatch(/blocked_on: $/m);
-    expect(mine.at(-1)).toMatchObject({ runner: 'opencode', fencedTo: recorded.body.id });
+    expect(mine.at(-1)).toMatchObject({ runner: 'codex', fencedTo: recorded.body.id });
     mine.at(-1).emit('exit', 0, null);
 
     card(
       '2026-04-10-unchecked.md',
       'triaged',
-      'needs_review: claude\nblocked_on: scope is outside a Git repository\n',
+      'needs_review: codex\nblocked_on: scope is outside a Git repository\n',
     );
     const unchecked = await call('POST', '/api/unblock', {
       id: 'user/demo/2026-04-10-unchecked.md',
@@ -1327,9 +1331,9 @@ describe('parking and the ways out', () => {
     expect(unchecked.status).toBe(200);
     const uncheckedThere = readFileSync(join(other, 'demo', '2026-04-10-unchecked.md'), 'utf8');
     expect(uncheckedThere).toMatch(/status: triaged/);
-    expect(uncheckedThere).toMatch(/needs_review: claude/);
+    expect(uncheckedThere).toMatch(/needs_review: codex/);
     expect(uncheckedThere).toMatch(/blocked_on: $/m);
-    expect(mine.at(-1)).toMatchObject({ runner: 'claude', fencedTo: unchecked.body.id });
+    expect(mine.at(-1)).toMatchObject({ runner: 'codex', fencedTo: unchecked.body.id });
     mine.at(-1).emit('exit', 0, null);
   });
 });

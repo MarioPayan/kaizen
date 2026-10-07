@@ -48,12 +48,13 @@ export function defaultConfig() {
     // already at the decision — off by default, every run is a model call.
     // `maxAgents` is how many fenced runs may go at once; the rest wait in
     // line. A backlog run always runs alone. `models` is what each runner the
-    // spec names is started with: opencode does the work on the ChatGPT
-    // subscription, claude checks it.
+    // spec names is started with: codex does the work — and its own checks —
+    // on the ChatGPT subscription, and claude is spent once per suggestion, on
+    // the verify at the end.
     dispatch: {
       auto: false,
       maxAgents: 1,
-      models: { opencode: 'openai/gpt-5.6-sol', claude: 'claude-fable-5' },
+      models: { codex: 'gpt-5.6-sol', claude: 'claude-fable-5' },
     },
     server: { host: '127.0.0.1', port: 7777 },
   };
@@ -142,9 +143,12 @@ export function validateConfig(cfg) {
   if (cfg.dispatch) {
     if (typeof cfg.dispatch.auto !== 'boolean') errs.push('dispatch.auto must be true or false');
     const n = cfg.dispatch.maxAgents;
-    if (!Number.isInteger(n) || n < 1 || n > 8) errs.push('dispatch.maxAgents must be 1-8');
+    // The ceiling is a sanity guard, not a machine fact: runs are API-bound
+    // between bursts, so the number that fits is the one whose *validation*
+    // bursts the box can take at once, which only the box can say.
+    if (!Number.isInteger(n) || n < 1 || n > 16) errs.push('dispatch.maxAgents must be 1-16');
     // A model named is a model spelled out; one left out falls back to the
-    // default at spawn time, so a config that pins only opencode's is fine.
+    // default at spawn time, so a config that pins only codex's is fine.
     const models = cfg.dispatch.models;
     if (models !== undefined) {
       if (!models || typeof models !== 'object' || Array.isArray(models)) {

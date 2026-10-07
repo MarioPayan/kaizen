@@ -1,4 +1,4 @@
-//! The agents: every run the server has going — opencode doing, claude
+//! The agents: every run the server has going — codex doing, claude
 //! checking — and who waits for a seat.
 //!
 //! One row per run — spinner, what it is on, pid, age — live ones first, then
@@ -48,7 +48,7 @@ fn target(id: Option<&str>) -> String {
     }
 }
 
-/// "opencode · " in front of what the run is on — or nothing, for a run adopted
+/// "codex · " in front of what the run is on — or nothing, for a run adopted
 /// across a restart from a record that never said who.
 fn who(r: &Run) -> String {
     if r.runner.is_empty() {

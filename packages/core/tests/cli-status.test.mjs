@@ -112,14 +112,14 @@ describe('kaizen status', () => {
   });
 
   /**
-   * A plan opencode wrote is not yours until claude has checked it. The
+   * A plan a run wrote is not yours until a check has cleared it. The
    * status says `planned`; the flag says whose move it is, and the line reads
    * the flag — or it would greet you with a decision you cannot make yet.
    */
   it('does not count a plan still waiting on its check', () => {
     const file = join(root, 'feedback', 'demo', '2026-01-01-a-thing.md');
     const approved = readFileSync(file, 'utf8');
-    writeFileSync(file, approved.replace('status: approved', 'status: planned\nneeds_review: claude'));
+    writeFileSync(file, approved.replace('status: approved', 'status: planned\nneeds_review: codex'));
     expect(run(base())).not.toMatch(/awaiting you/);
     writeFileSync(file, approved.replace('status: approved', 'status: planned\nneeds_review:'));
     expect(run(base())).toMatch(/1 awaiting you/);

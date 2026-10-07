@@ -15,9 +15,9 @@
     {
       "id": "triage",
       "title": "Triage",
-      "actor": "opencode, unattended",
-      "runner": "opencode",
-      "reviewer": "claude",
+      "actor": "codex, unattended",
+      "runner": "codex",
+      "reviewer": "codex",
       "produces": "triaged",
       "attended": false,
       "summary": "Decide whether the problem is real, still present, and correctly described — then label it. Re-read the scope file at HEAD before anything else: months pass between capture and triage, and a suggestion whose fix already landed is superseded, not work. Labelling changes no code, so it needs no approval.",
@@ -26,9 +26,9 @@
     {
       "id": "plan",
       "title": "Plan",
-      "actor": "opencode, unattended",
-      "runner": "opencode",
-      "reviewer": "claude",
+      "actor": "codex, unattended",
+      "runner": "codex",
+      "reviewer": "codex",
       "produces": "planned",
       "attended": false,
       "summary": "Turn a validated problem into something that can be approved: the change itself as a real patch, and the validation plan that will prove it worked. A plan without a validation plan is a guess with a diff attached.",
@@ -57,8 +57,8 @@
     {
       "id": "review",
       "title": "Review",
-      "actor": "opencode, unattended",
-      "runner": "opencode",
+      "actor": "codex, unattended",
+      "runner": "codex",
       "reviewer": "claude",
       "produces": "reviewed",
       "attended": false,
@@ -72,7 +72,7 @@
       "runner": "claude",
       "produces": "verified",
       "attended": false,
-      "summary": "Claude reads what opencode found, runs the validation plan written during planning against the change that actually landed, and says whether the loop closed. This is the phase that makes it closed rather than open: without it, applied means nothing more than the diff did not conflict.",
+      "summary": "Claude reads what codex found, runs the validation plan written during planning against the change that actually landed, and says whether the loop closed. This is the phase that makes it closed rather than open: without it, applied means nothing more than the diff did not conflict.",
       "requires": ["verified_at"]
     }
   ],
@@ -107,7 +107,7 @@
       "phase": "plan",
       "tone": "warning",
       "terminal": false,
-      "help": "A patch and a validation plan both exist. This is the only status that can be approved — once claude has checked it: a card still wearing needs_review is not yours yet.",
+      "help": "A patch and a validation plan both exist. This is the only status that can be approved — once the check has cleared: a card still wearing needs_review is not yours yet.",
       "next": ["approved", "triaged", "rejected", "superseded"]
     },
     {
@@ -140,7 +140,7 @@
       "phase": "review",
       "tone": "muted",
       "terminal": false,
-      "help": "opencode has read the landed change and written what it found. Claude runs the validation plan next and decides whether the loop closed.",
+      "help": "codex has read the landed change and written what it found. Claude runs the validation plan next and decides whether the loop closed.",
       "next": ["verified", "failed", "applied"]
     },
     {
@@ -297,7 +297,7 @@
       "phase": "review",
       "where": "body",
       "heading": "Review",
-      "help": "What opencode found on the landed change: the commit read against the plan, the validation command run and what it returned, and anything it would not have shipped."
+      "help": "What codex found on the landed change: the commit read against the plan, the validation command run and what it returned, and anything it would not have shipped."
     },
     {
       "id": "verified_at",
@@ -310,7 +310,7 @@
       "phase": "verify",
       "where": "body",
       "heading": "Verdict",
-      "help": "Claude's call on the runner's work — pass or reject, and why. Written on every check, and the brief opencode reads when a rejected card comes back around."
+      "help": "The reviewer's call on the runner's work — pass or reject, and why. Written on every check, and the brief codex reads when a rejected card comes back around."
     },
     {
       "id": "answer",

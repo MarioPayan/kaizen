@@ -53,7 +53,7 @@ pub struct PhaseSpec {
     pub title: String,
     pub actor: String,
     /// Who does the work, as the server spawns it and the lane names it:
-    /// `opencode`, `claude`, `you`, `server`, `skill`.
+    /// `codex`, `claude`, `you`, `server`, `skill`.
     pub runner: String,
     /// Who has to clear the runner's output before the card moves on. Empty
     /// for a phase whose status is settled the moment it is written.
@@ -229,7 +229,7 @@ mod tests {
     /// The dispatch gate. `triaged` is the one that was once refused: the old
     /// gate counted untriaged items only, and a fully-triaged backlog with no
     /// plans read as "nothing to do". `applied` and `reviewed` are the ones it
-    /// used to stop short of: a landed change is opencode's to review and then
+    /// used to stop short of: a landed change is codex's to review and then
     /// claude's to verify, and neither had a key.
     #[test]
     fn a_run_moves_everything_that_is_not_yours_or_the_servers() {
@@ -245,9 +245,9 @@ mod tests {
 
         // The flag overrides both the status and a carrier block: the check can
         // finish before the card parks behind the lead.
-        assert!(pending_pass("planned", "claude", ""));
+        assert!(pending_pass("planned", "codex", ""));
         assert!(!pending_pass("planned", "", ""));
-        assert!(pending_pass("planned", "claude", "carried by a lead"));
+        assert!(pending_pass("planned", "codex", "carried by a lead"));
         assert!(!pending_pass("recorded", "", "waiting on a call"));
     }
 
@@ -257,14 +257,14 @@ mod tests {
     #[test]
     fn the_next_phase_is_the_forward_one_and_names_its_runner() {
         let next = |s: &str| next_phase(s).map(|p| (p.id.as_str(), p.runner.as_str()));
-        assert_eq!(next("recorded"), Some(("triage", "opencode")));
-        assert_eq!(next("triaged"), Some(("plan", "opencode")));
+        assert_eq!(next("recorded"), Some(("triage", "codex")));
+        assert_eq!(next("triaged"), Some(("plan", "codex")));
         assert_eq!(next("planned"), Some(("decide", "you")));
         assert_eq!(next("approved"), Some(("apply", "server")));
-        assert_eq!(next("applied"), Some(("review", "opencode")));
+        assert_eq!(next("applied"), Some(("review", "codex")));
         assert_eq!(next("reviewed"), Some(("verify", "claude")));
         assert_eq!(next("verified"), None);
-        assert_eq!(reviewers(), ["claude"]);
+        assert_eq!(reviewers(), ["codex", "claude"]);
     }
 
     /// `a` and `x` are one key each across every lane, so what they do has to

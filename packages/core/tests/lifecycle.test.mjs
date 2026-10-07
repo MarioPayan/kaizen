@@ -125,13 +125,13 @@ describe('the shipped spec', () => {
    */
   it('names the runner from the phase, or the reviewer from the flag', () => {
     const card = (status, needsReview = '', blockedOn = '') => ({ status, needsReview, blockedOn });
-    expect(runnerOf(card('recorded'))).toBe('opencode');
-    expect(runnerOf(card('triaged'))).toBe('opencode');
+    expect(runnerOf(card('recorded'))).toBe('codex');
+    expect(runnerOf(card('triaged'))).toBe('codex');
     expect(runnerOf(card('planned'))).toBe('you');
     expect(runnerOf(card('approved'))).toBe('server');
-    expect(runnerOf(card('applied'))).toBe('opencode');
+    expect(runnerOf(card('applied'))).toBe('codex');
     expect(runnerOf(card('reviewed'))).toBe('claude');
-    expect(runnerOf(card('planned', 'claude'))).toBe('claude');
+    expect(runnerOf(card('planned', 'codex'))).toBe('codex');
     expect(runnerOf(card('verified'))).toBe('');
 
     // The dispatch gate: a model's move, and not parked.
@@ -140,9 +140,9 @@ describe('the shipped spec', () => {
       expect(pendingPass(card(s)), s).toBe(true);
     }
     for (const s of ['planned', 'approved', 'verified', 'rejected']) expect(awaitsPass(s), s).toBe(false);
-    expect(pendingPass(card('planned', 'claude'))).toBe(true);
+    expect(pendingPass(card('planned', 'codex'))).toBe(true);
     expect(pendingPass(card('triaged', '', 'waiting on a call'))).toBe(false);
-    expect(pendingPass(card('planned', 'claude', 'carried by a lead'))).toBe(true);
+    expect(pendingPass(card('planned', 'codex', 'carried by a lead'))).toBe(true);
     // The pile at the door of the decision is still one status; what the
     // callers subtract from it is the flag.
     expect(awaitingDecision()).toEqual(['planned']);
@@ -438,7 +438,7 @@ describe('the generated artifacts', () => {
   it('explain the check flag from the phases that name a reviewer', () => {
     const md = renderMarkdown(spec());
     expect(md).toContain('| Checked by |');
-    expect(md).toContain('`needs_review: claude`');
+    expect(md).toContain('`triaged` and `planned` for codex, `reviewed` for claude');
     // Derived: a spec with no reviewers says nothing about a flag nobody sets.
     const unchecked = { ...spec(), phases: spec().phases.map(({ reviewer: _r, ...p }) => p) };
     expect(renderMarkdown(unchecked)).not.toContain('is provisional');

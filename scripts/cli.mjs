@@ -266,7 +266,7 @@ function cmdScan() {
     );
     // A fenced read is fenced on both halves. `--id` used to trim the
     // suggestions and hand back every skill on the machine anyway — the
-    // first opencode run got a dump too long to show and had to re-read it
+    // first runner run got a dump too long to show and had to re-read it
     // from a file to find the one card it asked for.
     const kept = new Set(skill ? [skill] : state.suggestions.map((s) => s.skill));
     state.skills = state.skills.filter((k) => kept.has(k.name));
@@ -1422,7 +1422,7 @@ async function cmdServe() {
 /**
  * Hand a card, or the backlog, to the server's seats — the same request `a`
  * and `A` make from the board, for a shell or a Claude session that has no
- * board open. The server picks the runner from the card (opencode does, claude
+ * board open. The server picks the runner from the card (codex does, claude
  * checks) and chains the check after the work, so one call is the whole
  * unattended stretch.
  *

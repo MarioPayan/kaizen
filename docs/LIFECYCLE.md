@@ -10,17 +10,17 @@ each, so "where is this" always has one answer.
 | #   | Phase       | Who runs it                    | Checked by | Attended | Comes to rest at |
 | --- | ----------- | ------------------------------ | ---------- | -------- | ---------------- |
 | 1   | **Capture** | the skill that hit the problem |            | no       | `recorded`       |
-| 2   | **Triage**  | opencode, unattended           | claude     | no       | `triaged`        |
-| 3   | **Plan**    | opencode, unattended           | claude     | no       | `planned`        |
+| 2   | **Triage**  | codex, unattended              | codex      | no       | `triaged`        |
+| 3   | **Plan**    | codex, unattended              | codex      | no       | `planned`        |
 | 4   | **Decide**  | you                            |            | yes      | `approved`       |
 | 5   | **Apply**   | the server                     |            | no       | `applied`        |
-| 6   | **Review**  | opencode, unattended           | claude     | no       | `reviewed`       |
+| 6   | **Review**  | codex, unattended              | claude     | no       | `reviewed`       |
 | 7   | **Verify**  | claude, unattended             |            | no       | `verified`       |
 
-A status written by a checked phase — `triaged`, `planned`, `reviewed` — is provisional: the runner writes
-`needs_review: claude` beside it, and the card is not where its status says until claude
-has cleared the flag. A check that fails sends the card back one status and parks it
-on you (`blocked_on`), with a `## Verdict` saying why; clearing the block sends it round again.
+A status written by a checked phase is provisional: the runner writes
+`needs_review: <name>` beside it — `triaged` and `planned` for codex, `reviewed` for claude — and the card is not where its
+status says until that name has cleared the flag. A check that fails sends the card back one status
+and parks it on you (`blocked_on`), with a `## Verdict` saying why; clearing the block sends it round again.
 
 ### Capture
 
@@ -60,7 +60,7 @@ Cannot be left until these are present: `review`.
 
 ### Verify
 
-Claude reads what opencode found, runs the validation plan written during planning against the change that actually landed, and says whether the loop closed. This is the phase that makes it closed rather than open: without it, applied means nothing more than the diff did not conflict.
+Claude reads what codex found, runs the validation plan written during planning against the change that actually landed, and says whether the loop closed. This is the phase that makes it closed rather than open: without it, applied means nothing more than the diff did not conflict.
 
 Cannot be left until these are present: `verified_at`.
 
@@ -70,10 +70,10 @@ Cannot be left until these are present: `verified_at`.
 | ------------ | ----- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `recorded`   | `rec` | capture | Filed with its context and waiting for triage. Nobody has judged it yet — or a check sent it back to be judged again.                                                    |
 | `triaged`    | `tri` | triage  | Confirmed to still be a real problem at HEAD, and labelled. Ready for a plan — or, sent back here by a check that found the plan wanting.                                |
-| `planned`    | `pln` | plan    | A patch and a validation plan both exist. This is the only status that can be approved — once claude has checked it: a card still wearing needs_review is not yours yet. |
+| `planned`    | `pln` | plan    | A patch and a validation plan both exist. This is the only status that can be approved — once the check has cleared: a card still wearing needs_review is not yours yet. |
 | `approved`   | `apr` | decide  | You said yes to a specific patch. It lands on the next drain — or, if that patch no longer lands, goes back for a new plan and a new yes.                                |
 | `applied`    | `apl` | apply   | Landed as a commit. The server sets this after git succeeded — it cannot be set by hand.                                                                                 |
-| `reviewed`   | `rvw` | review  | opencode has read the landed change and written what it found. Claude runs the validation plan next and decides whether the loop closed.                                 |
+| `reviewed`   | `rvw` | review  | codex has read the landed change and written what it found. Claude runs the validation plan next and decides whether the loop closed.                                    |
 | `verified`   | `ver` | verify  | The validation plan passed against the landed change. Done, and provably so.                                                                                             |
 | `failed`     | `fai` | verify  | It landed and the validation plan did not pass. Goes back for a new plan rather than starting over — the problem is still real and still triaged.                        |
 | `rejected`   | `rej` | decide  | You said no. The file stays on disk as a record and stops being offered.                                                                                                 |
@@ -117,9 +117,9 @@ cannot be written down.
 | `patch`          | Plan        | a sibling `.patch` file       | The real diff, stored beside the suggestion or the live carrier named by its `blocked_on`, passing `git apply --check`. A described patch is not a patch.                                                                          |
 | `approved_patch` | Decide      | frontmatter                   | The identity of the patch the user approved. Set by the server from the sidecar bytes and checked again before apply.                                                                                                              |
 | `applied_sha`    | Apply       | frontmatter                   | The commit. Set by the server, never by hand.                                                                                                                                                                                      |
-| `review`         | Review      | a `## Review` section         | What opencode found on the landed change: the commit read against the plan, the validation command run and what it returned, and anything it would not have shipped.                                                               |
+| `review`         | Review      | a `## Review` section         | What codex found on the landed change: the commit read against the plan, the validation command run and what it returned, and anything it would not have shipped.                                                                  |
 | `verified_at`    | Verify      | frontmatter                   | When the validation plan was run against the landed change, and what it returned.                                                                                                                                                  |
-| `verdict`        | Verify      | a `## Verdict` section        | Claude's call on the runner's work — pass or reject, and why. Written on every check, and the brief opencode reads when a rejected card comes back around.                                                                         |
+| `verdict`        | Verify      | a `## Verdict` section        | The reviewer's call on the runner's work — pass or reject, and why. Written on every check, and the brief codex reads when a rejected card comes back around.                                                                      |
 | `answer`         | Decide      | a `## Answer` section         | What you said when a run parked the card on you, or why you sent it back — the brief the next run reads beside any verdict.                                                                                                        |
 
 ## The determinism ladder

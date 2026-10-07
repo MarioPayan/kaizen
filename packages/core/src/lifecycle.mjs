@@ -508,13 +508,17 @@ export function renderMarkdown(l) {
   // sentence that explains the flag is derived from them, and vanishes with them.
   const checked = l.phases.filter((p) => p.reviewer);
   if (checked.length) {
-    const who = [...new Set(checked.map((p) => p.reviewer))].join(' or ');
-    const which = checked.map((p) => `\`${p.produces}\``).join(', ');
+    // Grouped by reviewer, not flattened to "x or y": with more than one
+    // checker the flag's value differs per status, and a sentence that only
+    // lists the names leaves the runner guessing which one to write.
+    const by = new Map();
+    for (const p of checked) by.set(p.reviewer, [...(by.get(p.reviewer) ?? []), `\`${p.produces}\``]);
+    const pairs = [...by].map(([who, all]) => `${all.join(' and ')} for ${who}`).join(', ');
     push(
-      `A status written by a checked phase — ${which} — is provisional: the runner writes`,
-      `\`needs_review: ${who}\` beside it, and the card is not where its status says until ${who}`,
-      'has cleared the flag. A check that fails sends the card back one status and parks it',
-      'on you (`blocked_on`), with a `## Verdict` saying why; clearing the block sends it round again.',
+      'A status written by a checked phase is provisional: the runner writes',
+      `\`needs_review: <name>\` beside it — ${pairs} — and the card is not where its`,
+      'status says until that name has cleared the flag. A check that fails sends the card back one status',
+      'and parks it on you (`blocked_on`), with a `## Verdict` saying why; clearing the block sends it round again.',
       '',
     );
   }

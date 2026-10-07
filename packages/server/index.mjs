@@ -3,7 +3,8 @@
  *
  * A small route table, `node:http`, bound to loopback. Every route is a file
  * read, a file write, or a git call — save one, which starts a detached run
- * (opencode to do, claude to check) — there is no layer here worth a framework.
+ * (codex to do and to check itself, claude for the verify) — there is no layer
+ * here worth a framework.
  *
  * Two things are not negotiable and are enforced rather than documented:
  *   - the socket binds 127.0.0.1, because these routes write files and shell out
@@ -699,7 +700,7 @@ const routes = {
       });
       closed++;
     }
-    // A landed change is the runners' work again — opencode reviews it, claude
+    // A landed change is the runners' work again — codex reviews it, claude
     // verifies — so the landing puts the card in line itself. The first real
     // drain stalled here: the chain hands runs to each other, but nothing
     // handed the server's own act on to a run.
@@ -762,7 +763,7 @@ const routes = {
         move('triaged');
         return {
           id,
-          did: queue() ? 'sent back for a new plan — opencode has it' : 'sent back for a new plan',
+          did: queue() ? 'sent back for a new plan — codex has it' : 'sent back for a new plan',
         };
       }
       case 'clear': {
@@ -817,7 +818,7 @@ const routes = {
           drain(ctx);
           queued = true;
         }
-        return { id: moved, did: queued ? `moved to ${to.name} — opencode has it` : `moved to ${to.name}` };
+        return { id: moved, did: queued ? `moved to ${to.name} — codex has it` : `moved to ${to.name}` };
       }
       default:
         throw new HttpError(400, 'choice must be one of replan, clear, answer, supersede, reject, retarget');
@@ -891,10 +892,15 @@ function pendingCards(state, id) {
 
 /**
  * The same, as `card → runner` pairs. A card that changes hands is a new pair,
- * and a new pair is the only thing that earns another run — see `chain`.
+ * and a new pair is the only thing that earns another run — see `chain`. The
+ * hat is part of the pair, not just the name: codex is both the doer and its
+ * own checker, so a card it planned and flagged wears the same name on both
+ * sides of the hand-off and would otherwise look unchanged, chaining nothing.
  */
 function pendingPairs(state, id) {
-  return new Set(pendingCards(state, id).map((s) => `${s.id} → ${runnerOf(s)}`));
+  return new Set(
+    pendingCards(state, id).map((s) => `${s.id} → ${runnerOf(s)}${s.needsReview ? ' (check)' : ''}`),
+  );
 }
 
 /**
@@ -962,7 +968,9 @@ async function rejectStaleReviewPatches(ctx, id, state) {
 function runnerFor(state, id) {
   const pending = pendingCards(state, id);
   const first = pending.find((s) => s.needsReview) ?? pending[0];
-  return first ? runnerOf(first) : '';
+  // `review` is the hat, not the binary: codex is both the doer and its own
+  // checker, so the name alone no longer says which pass to start it in.
+  return { runner: first ? runnerOf(first) : '', review: Boolean(first?.needsReview) };
 }
 
 /** The runs still going. */
@@ -992,10 +1000,10 @@ async function launch(ctx, id, state = buildState(ctx.config)) {
       : 'nothing for a pass to do';
     throw new HttpError(422, why);
   }
-  const runner = runnerFor(state, id);
+  const { runner, review } = runnerFor(state, id);
   let child;
   try {
-    child = ctx.spawn(runner, id);
+    child = ctx.spawn(runner, id, review);
   } catch (e) {
     throw new HttpError(500, `could not start ${runner || 'a run'} — ${e.message}`);
   }
@@ -1043,7 +1051,7 @@ function seatFreed(ctx, run, done) {
 
 /**
  * The hand-off between runners, so one key press is the whole unattended
- * stretch: opencode plans and flags, claude checks, and neither has to be sent
+ * stretch: codex plans and flags, the checker clears it, and neither has to be sent
  * by hand. A run that ended well and left work that was not there when it
  * started — a card now wanting a different runner — puts its own key back in
  * line, where it is re-gated like any other entry.
@@ -1138,7 +1146,7 @@ function maybeAutoDispatch(ctx) {
   if (!ctx.config.dispatch?.auto) return;
   if (!canSeat(ctx, null) || ctx.queue.length) return;
   const state = buildState(ctx.config);
-  // Pairs, not ids: a card that changed hands — opencode flagged it for claude
+  // Pairs, not ids: a card that changed hands — codex flagged it for a checker
   // — is new work, even though the card itself was seen before.
   const waiting = pendingPairs(state, null);
   const newcomers = [...waiting].filter((pair) => !ctx.autoSeen.has(pair));
@@ -1181,12 +1189,16 @@ const ROOT = resolve(here, '..', '..');
  * What each runner the spec names is started with. The id rides along as the
  * fence — the skill accepts it as an argument — and no id means the backlog.
  *
- * claude has the skill as a slash command and is sent in its `review` mode:
- * the checker, never the doer. opencode has no plugin root and no commands, so
- * it is told the path the skill's commands expand and which mode of the skill
- * is its own. `bypassPermissions` for claude and opencode's own config for
- * opencode, because both are headless — a permission prompt nobody can see is
- * a hang. Claude's model is a config value; opencode's model is the ChatGPT
+ * codex does the work and checks its own statuses, so it is started in whichever
+ * mode the card asks for; claude is reached only through the one `reviewer` the
+ * spec still names it on, so it is always the checker and never the doer. claude
+ * has the skill as a slash command; codex has no plugin root and no commands, so
+ * it is told the path the skill's commands expand and which mode of the skill is
+ * its own. `bypassPermissions` for claude and the matching bypass for codex,
+ * because both are headless — a permission prompt nobody can see is a hang, and
+ * codex's sandbox would refuse the skill repos outside its workspace anyway.
+ * `--skip-git-repo-check` because the cwd is the home directory, which is not a
+ * repo. Claude's model is a config value; codex's model is the ChatGPT
  * subscription's, and which one is config too.
  */
 const RUNNERS = {
@@ -1201,18 +1213,23 @@ const RUNNERS = {
       'bypassPermissions',
     ],
   ],
-  opencode: (id, model) => [
-    'opencode',
+  codex: (id, model, review) => [
+    'codex',
     [
-      'run',
-      '--dir',
+      'exec',
+      '--cd',
       homedir(),
+      '--skip-git-repo-check',
+      '--dangerously-bypass-approvals-and-sandbox',
       '-m',
       model,
-      `You are opencode, running kaizen's unattended pass: the runner, never the reviewer. ` +
+      `You are codex, running kaizen's unattended pass as ` +
+        `${review ? 'the reviewer, never the doer' : 'the runner, never the reviewer'}. ` +
         `CLAUDE_PLUGIN_ROOT is already set in your environment (${ROOT}), so the skill's ` +
-        `commands resolve as written. Read ${ROOT}/skills/kaizen/SKILL.md and follow its Runner mode for ` +
-        `${id ? `the suggestion ${id}` : 'the whole backlog'}. Never push. ` +
+        `commands resolve as written. Read ${ROOT}/skills/kaizen/SKILL.md and follow its ` +
+        `${review ? '`MODE=review` pass' : 'Runner mode'} for ` +
+        `${id ? `the suggestion ${id}` : 'the whole backlog'}` +
+        `${review ? ', taking only the cards whose `needs_review` names codex' : ''}. Never push. ` +
         `When you are done, print KAIZEN_DONE on its own line.`,
     ],
   ],
@@ -1223,13 +1240,13 @@ const RUNNERS = {
  * outlive a server restart, and the log is where a run that never wrote
  * anything explains itself.
  */
-function spawnRun(runner, id, config) {
+function spawnRun(runner, id, config, review) {
   const make = RUNNERS[runner];
   if (!make) throw new Error(`the spec names "${runner}" and this server cannot start it`);
   // The config's word, else the default's: `withDefaults` merges one level
   // deep, so a config that pins only one runner's model has dropped the other.
   const model = config.dispatch?.models?.[runner] ?? defaultConfig().dispatch.models[runner] ?? '';
-  const [cmd, argv] = make(id, model);
+  const [cmd, argv] = make(id, model, review);
   const log = join(dirname(configPath()), 'dispatch.log');
   const out = openSync(log, 'a');
   // The plugin root rides in the environment, not in the prompt: the skill's
@@ -1269,9 +1286,9 @@ export function createApp(config, deps = {}) {
   };
   // `(runner, id) → child`. Tests hand in one that only looks like a process —
   // and a test that forgets must not reach the real one: the day the injection
-  // key was renamed, vitest started opencode against a fixture, headless and
+  // key was renamed, vitest started codex against a fixture, headless and
   // with every permission granted. Under vitest there is no real spawner.
-  const real = (runner, id) => spawnRun(runner, id, ctx.config);
+  const real = (runner, id, review) => spawnRun(runner, id, ctx.config, review);
   const refuse = () => {
     throw new Error('no spawner injected — a test must hand createApp a fake one');
   };

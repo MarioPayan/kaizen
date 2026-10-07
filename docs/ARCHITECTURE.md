@@ -31,15 +31,16 @@ the thing together. The README covers the why; start there if you haven't.
    under `skill: session`. From there they are indistinguishable from any other
    suggestion — same grouping, same queue.
 
-3. **Triage / plan.** An `opencode` run (the `skills/kaizen/SKILL.md` skill in
+3. **Triage / plan.** A `codex` run (the `skills/kaizen/SKILL.md` skill in
    its `run` mode) reads the state, confirms each problem still exists at HEAD,
    labels it, and writes real patches plus validation plans — every status it
-   sets flagged `needs_review: claude`. All file edits go through the CLI/server,
+   sets flagged `needs_review: <checker>`. All file edits go through the CLI/server,
    never by hand-editing status fields the model forbids.
-4. **Check.** A `claude` run (the same skill in `review` mode) takes every
-   flagged card and clears the flag, or sends the card back one status and
-   parks it on you with the reason. Until it clears, the card sits in the
-   board's `review` lane and no key can approve it.
+4. **Check.** A run of the same skill in `review` mode takes every card the
+   flag names it on and clears the flag, or sends the card back one status and
+   parks it on you with the reason. codex checks its own triage and plans;
+   claude is spent only on the `reviewed` card at the end. Until it clears, the
+   card sits in the board's `review` lane and no key can approve it.
 5. **Decide.** The only attended phase. `kaizen tui` — `a` advances the
    selected card (here, that is your yes), `A` the whole planned lane.
 6. **Apply.** The server lands each approved patch as one commit with a
@@ -50,9 +51,10 @@ the thing together. The README covers the why; start there if you haven't.
    on any parked card opens its ways out (a new plan, an answer, another
    target, out), and `approved → triaged` is the edge a send-back takes.
    `git log --grep=Kaizen-Suggestion` is the ledger; `git revert` is the undo.
-7. **Review, then verify.** opencode reads the commit against the plan, runs the
+7. **Review, then verify.** codex reads the commit against the plan, runs the
    validation plan and writes `## Review`; claude runs it again and says whether
-   the loop closed. Only then is the suggestion terminal.
+   the loop closed — the one Anthropic call a suggestion costs. Only then is the
+   suggestion terminal.
 
 ## Repo layout
 
@@ -84,14 +86,15 @@ newcomers, so a card the pass parks does not re-trigger a run every time a seat
 frees.
 
 Two runners take the seats, and the spec says which: each phase names a
-`runner` (`opencode` does triage, plan and the post-apply review; `claude`
-verifies) and, where the runner's output is provisional, a `reviewer`. The
+`runner` (`codex` does triage, plan and the post-apply review, and checks its
+own triage and plans; `claude` verifies) and, where the runner's output is
+provisional, a `reviewer`. The
 server picks the binary from the card — `runnerOf`: the name on `needs_review`
 if set, else the next phase's runner — and for the backlog sends a reviewer
 first while anything is flagged. `dispatch.models` is what each is started
-with. Runs chain: a run that exits 0 and leaves a `(card, runner)` pair that was
+with. Runs chain: a run that exits 0 and leaves a `(card, runner, hat)` pair that was
 not pending when it started puts its own key back in line, so one `a` is the
-whole unattended stretch — opencode plans and flags, claude checks — and a run
+whole unattended stretch — codex plans and flags, a checker clears it — and a run
 that produced nothing new, or died, chains nothing. The check is a third gate
 on status writes: a card wearing `needs_review` cannot move forward, from a key
 or a sweep, until the reviewer clears it.
@@ -170,7 +173,7 @@ write files and shell out to git.
 | `GET /api/diff?id=`                    | the sibling `.patch`, if any                                                                                                                                                                                                                   |
 | `POST /api/suggestion`                 | one status move, gated (see below)                                                                                                                                                                                                             |
 | `POST /api/sweep`                      | one status move for all — moves the movable                                                                                                                                                                                                    |
-| `POST /api/dispatch`                   | one detached run, opencode or claude by the card — one id, or the backlog; queues behind a live one                                                                                                                                            |
+| `POST /api/dispatch`                   | one detached run, codex or claude by the card — one id, or the backlog; queues behind a live one                                                                                                                                               |
 | `GET /api/dispatch/log`                | the tail of the triage log, last 200 lines                                                                                                                                                                                                     |
 | `POST /api/apply`                      | `git apply` + one commit + writes `applied` + sha; closes the cards carried by it; queues the review. A patch that cannot land parks the card (`blocked_on: apply: …`, `parked: true` in the 422); a tree that is not ready is a plain refusal |
 | `POST /api/unblock`                    | one of a parked card's ways out — `replan`, `clear`, `answer`, `supersede`, `reject`, `retarget` — composed from the same gated writes a key makes; what the user typed lands under `## Answer`                                                |

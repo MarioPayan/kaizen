@@ -72,7 +72,7 @@ pub struct Suggestion {
     pub context: String,
     pub suggestion: String,
     pub rationale: String,
-    /// What opencode found on the landed change, and what claude decided on
+    /// What codex found on the landed change, and what claude decided on
     /// each check — the reason behind a block, readable without the file.
     pub review: String,
     pub verdict: String,
@@ -140,7 +140,7 @@ pub struct Run {
     pub pid: u64,
     /// The suggestion the run is fenced to; `None` means the whole backlog.
     pub id: Option<String>,
-    /// Who has the seat — `opencode` or `claude`. Empty for a run adopted
+    /// Who has the seat — `codex` or `claude`. Empty for a run adopted
     /// across a restart from a record that predates the field.
     pub runner: String,
     pub running: bool,
@@ -455,7 +455,7 @@ impl Client {
         ))
     }
 
-    /// Hand work to one detached claude run — one suggestion when fenced to an
+    /// Hand work to one detached run — one suggestion when fenced to an
     /// id, the backlog otherwise. Returns how many items the pass covers;
     /// progress comes back through the event stream as the run writes, so
     /// there is nothing to poll.

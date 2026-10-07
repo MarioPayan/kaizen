@@ -18,11 +18,11 @@ Seven phases, and a suggestion rests in exactly one status between each. The pha
 | Phase | Who | Step below | Comes to rest at |
 |---|---|---|---|
 | Capture | the skill that hit the problem | `skill-reflect`, not this skill | `recorded` |
-| Triage | opencode, checked by claude | Steps 2–4 | `triaged` |
-| Plan | opencode, checked by claude | Step 5 | `planned` |
+| Triage | codex, checked by codex | Steps 2–4 | `triaged` |
+| Plan | codex, checked by codex | Step 5 | `planned` |
 | Decide | **you** | Step 6 | `approved` |
 | Apply | the server | Step 7 | `applied` |
-| Review | opencode, checked by claude | Step 7a | `reviewed` |
+| Review | codex, checked by claude | Step 7a | `reviewed` |
 | Verify | claude | Step 6b, on a `reviewed` card | `verified` |
 
 Read it with `kaizen docs`, in the app's Docs tab, or with `D` in the TUI. All three render the same file.
@@ -38,14 +38,16 @@ Files written before the spec carry the older names — `new` and `proposed`. Th
 
 ## Who runs what
 
-Two models take turns, and the spec says which is whose (`runner` and `reviewer` on each phase):
+The spec says who each phase belongs to (`runner` and `reviewer` on each phase),
+and the Claude subscription buys exactly one run per suggestion:
 
-- **opencode is the runner.** It does the work of every unattended phase — triage, plan, and the review of a landed change — on the ChatGPT subscription, so the Claude subscription is spent on judgement only. If you are opencode reading this, your `MODE` is `run`.
-- **claude is the reviewer.** It does not triage or plan; it checks what opencode wrote, and it verifies what landed. A check is claude re-running the phase's own gate on the runner's output — the same questions the phase asked, asked again by someone who did not do the work. If you are claude reading this from a server run, your `MODE` is `review`.
-- **The flag is the hand-off.** Every status the runner writes is provisional. Go as far as the phase gates let you in one run — a `recorded` card is triaged *and then planned* before it is handed over, so one check covers the labels and the plan — and write `"needs_review": "claude"` in the same `triage --apply` call as the status you stop at. A card you leave short of `planned` (a call only the user can make, per Step 5) is flagged where it stops. The board draws a flagged card in the `review` lane, the server hands the next seat to claude on its own, and nothing — not `A`, not a sweep — can move the card forward until claude clears the flag. A status without the flag is a status claude has agreed with.
-- **A check that fails sends the card back.** claude writes the status one phase back (`planned → triaged`, `triaged → recorded`, `reviewed → applied`), clears the flag, parks the card on the user with `"blocked_on": "review: <one line>"`, and puts the findings under `## Verdict`. A landing that cannot happen parks the card the same way — `"blocked_on": "apply: <git's line>"` — and a runner that needs a call only the user can make parks it in its own words (Step 5).
+- **codex is the runner.** It does the work of every unattended phase — triage, plan, and the review of a landed change — on the ChatGPT subscription. If you are codex reading this from a server run without a mode, your `MODE` is `run`.
+- **codex is also its own checker, up to the decision.** A `triaged` or `planned` card is flagged for codex, and a second codex run re-asks the phase's own gate against what the first one wrote. Same subscription, fresh context, a checking brief rather than a doing one. If you are codex reading this in `MODE=review`, take only the cards whose `needs_review` names codex.
+- **claude is the verify, and nothing else.** It does not triage, plan, or review; it takes a `reviewed` card, runs the validation plan against the change that actually landed, and says whether the loop closed. That is the one Anthropic call a suggestion costs. If you are claude reading this from a server run, your `MODE` is `review` and the only cards that are yours are the `reviewed` ones.
+- **The flag is the hand-off.** Every status the runner writes is provisional. Go as far as the phase gates let you in one run — a `recorded` card is triaged *and then planned* before it is handed over, so one check covers the labels and the plan — and write `"needs_review": "codex"` in the same `triage --apply` call as the status you stop at. A card you leave short of `planned` (a call only the user can make, per Step 5) is flagged where it stops. The board draws a flagged card in the `review` lane, the server hands the next seat to the name on the flag, and nothing — not `A`, not a sweep — can move the card forward until that name clears it. A status without the flag is a status a check has agreed with.
+- **A check that fails sends the card back.** The checker writes the status one phase back (`planned → triaged`, `triaged → recorded`, `reviewed → applied`), clears the flag, parks the card on the user with `"blocked_on": "review: <one line>"`, and puts the findings under `## Verdict`. A landing that cannot happen parks the card the same way — `"blocked_on": "apply: <git's line>"` — and a runner that needs a call only the user can make parks it in its own words (Step 5).
 - **A parked card offers its ways out.** `a` on it opens the menu: send it back for a new plan, clear the block, answer it, move it to the target whose repo the fix lands in, supersede, reject. What the user types lands under `## Answer`. A card that comes round again therefore carries a `## Verdict` and/or an `## Answer`, and **the runner reads both as its brief** before doing anything else. `x` is still the way out.
-- **The server chains them.** One `a` on a card, one `A` on a lane, one `kaizen dispatch [id]`: opencode runs, flags, exits; claude runs, clears or sends back. Neither is sent by hand.
+- **The server chains them.** One `a` on a card, one `A` on a lane, one `kaizen dispatch [id]`: a run does, flags, exits; the next run checks, clears or sends back. Neither is sent by hand.
 
 **In an interactive Claude session**, `/kaizen:triage [id]` is a hand-off, not a pass. Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/cli.mjs" dispatch [id]` — the server must be up (`kaizen serve`; `kaizen tui` starts it) — report what it said, and stop. Do not triage or plan yourself. `review`, `drain` and `report` still run where they are invoked.
 
@@ -66,7 +68,7 @@ Two models take turns, and the spec says which is whose (`runner` and `reviewer`
 
 ## Inputs
 
-- `MODE` — (optional) `run` (the runner's pass: Steps 1–5 and 7a), `review` (the reviewer's: Step 6b), `drain` (Step 7), `report` (read-only). No mode in an interactive Claude session means the hand-off above.
+- `MODE` — (optional) `run` (the runner's pass: Steps 1–5 and 7a), `review` (the checker's: Step 6b — only the cards the flag names you on), `drain` (Step 7), `report` (read-only). No mode in an interactive Claude session means the hand-off above.
 - `TARGET` — (optional) a suggestion id or skill name to limit the pass
 
 ## Outputs
@@ -114,8 +116,8 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/cli.mjs" triage --apply decisions.json
 
 Then go on to plan (Step 5) in the same run. The `needs_review` flag goes on the
 status you stop at — `planned`, normally — not on `triaged` in passing: one
-check covers both, and a flag here would cost a claude run and a second
-opencode run for nothing.
+check covers both, and a flag here would cost a check run and a second
+runner run for nothing.
 
 It validates every value against the closed vocabularies and **writes nothing if
 any entry is bad**, so a typo costs one retry rather than leaving half the queue
@@ -134,7 +136,7 @@ For each suggestion where `triaged` is false, decide:
 | `effort` | `S` · `M` · `L` |
 | `confirmed_at` | the date and short sha you re-read the scope file at, per Step 3 |
 | `status` | `triaged` once confirmed and labelled · `superseded` if the fix already landed |
-| `needs_review` | `claude`, beside the status you stop at — the hand-off; the reviewer clears it |
+| `needs_review` | `codex`, beside the status you stop at — the hand-off; the checker clears it |
 
 Two rules while triaging:
 
@@ -282,13 +284,13 @@ Store it beside the suggestion as `<suggestion-basename>.patch`. For a repeated-
 
 If this replaces the sidecar of an `approved` card, the approval no longer
 names the patch on disk. In the same `triage --apply` call, return the card to
-`planned` with `needs_review: claude` (and update Plan or Validation when the
+`planned` with `needs_review: codex` (and update Plan or Validation when the
 change altered them). `approved_patch` is server-owned: the next attended
 approval stamps the new sidecar identity, and apply refuses a sidecar that no
 longer matches it.
 
 Once the sidecar patch exists, write the complete plan, validation, labels,
-`status: planned`, and `"needs_review": "claude"` in one `triage --apply` call.
+`status: planned`, and `"needs_review": "codex"` in one `triage --apply` call.
 Only then run `kaizen verify --dry <id>`: the command accepts `planned` cards,
 applies the sidecar patch, and runs the fenced `bash` block above in a throwaway
 worktree. A validation that has not passed is not ready for review.
@@ -309,17 +311,19 @@ patch to satisfy the gate.
 ## Step 6 — Stop
 
 This is where the runner stops. Do not present a table for approval: a plan is
-not approvable until claude has checked it, and the flag you wrote is what
-sends claude. Say in one line what you flagged and what you parked, and end.
+not approvable until a check has cleared it, and the flag you wrote is what
+sends the checker. Say in one line what you flagged and what you parked, and end.
 
 **Nothing applies without the user's approval.** There is no bypass — the config used to declare an `autoApply` list and nothing ever read it, so the setting has been removed rather than left describing behaviour that did not exist. The decision is the one attended phase, and it happens on the board: `kaizen tui`, where a checked plan sits in `planned` with its patch (`d`) and its validation plan (`enter`), `a` approves one and `A` the lane.
 
-## Step 6b — Check (`MODE=review`, claude)
+## Step 6b — Check (`MODE=review`)
 
-The reviewer's pass, and the only thing claude does short of the decision. Read
-the state (Step 1) and take every card wearing `needs_review` — or the one
-`TARGET` names. For each, the check is the phase's own gate re-run by a second
-pair of eyes:
+The checker's pass. Read the state (Step 1) and take every card whose
+`needs_review` **names you** — or the one `TARGET` names. codex owns the
+`recorded`, `triaged` and `planned` rows; `reviewed` is claude's, and it is the
+only row claude has. Taking a row that is not yours spends the wrong
+subscription. For each, the check is the phase's own gate re-run with a checking
+brief rather than a doing one:
 
 | Card is | Check |
 |---|---|
@@ -331,7 +335,7 @@ pair of eyes:
 Then write the verdict in one `triage --apply` call:
 
 - **Pass** → `"needs_review": ""` and `"verdict": "pass — <what you checked>"`. For a `reviewed` card that call also carries `"status": "verified"` and `"verified_at": "<date — what the command returned>"`.
-- **Send back** → the status one phase back (`triaged` → `"recorded"`, `planned` → `"triaged"`, `reviewed` → `"applied"`), `"needs_review": ""`, `"blocked_on": "review: <one line>"`, and `"verdict": "<what is wrong, and what would fix it>"`. The card parks on the user; clearing the block sends opencode round again with your verdict as its brief. Do not fix it yourself — the point of the split is that claude judges and opencode does.
+- **Send back** → the status one phase back (`triaged` → `"recorded"`, `planned` → `"triaged"`, `reviewed` → `"applied"`), `"needs_review": ""`, `"blocked_on": "review: <one line>"`, and `"verdict": "<what is wrong, and what would fix it>"`. The card parks on the user; clearing the block sends the runner round again with your verdict as its brief. Do not fix it yourself — the point of the split is that the checking run judges and the doing run does.
 - **The validation plan failed on a `reviewed` card** → `"status": "failed"`, the output under `"verdict"`, no flag. `failed` goes back to `planned`, not to the start: the problem is still real and still triaged, only the fix was wrong. Do not revert — show the `git revert <applied_sha>` that would, and let the user choose.
 
 A check is not a re-triage. If the labels are defensible, pass them; the
@@ -355,7 +359,7 @@ kaizen(<type>/<objective>): <scope or slug>
 Kaizen-Suggestion: <suggestion id>
 ```
 
-5. Once opencode has reviewed the landing and claude has verified it (below), the whole walk stamps in one call — it checks every transition and every phase requirement against the spec, all-or-nothing, and it passes through `reviewed`, so it refuses a card with no `## Review`:
+5. Once codex has reviewed the landing and claude has verified it (below), the whole walk stamps in one call — it checks every transition and every phase requirement against the spec, all-or-nothing, and it passes through `reviewed`, so it refuses a card with no `## Review`:
 
 ```bash
 kaizen drain --apply - <<'JSON'
@@ -365,7 +369,7 @@ JSON
 
 `git log --grep=Kaizen-Suggestion` is then the applied-changes ledger, for free. Rollback is `git revert <sha>`.
 
-### Step 7a — Review the landed change (`MODE=run`, opencode)
+### Step 7a — Review the landed change (`MODE=run`, codex)
 
 `applied` means git accepted a diff. It does not mean the problem is fixed, and
 treating the two as the same thing is why a queue can fill with landed changes
@@ -389,7 +393,8 @@ rerunning. Do not reconstruct the evidence manually or advance a failed
 validation. Once it passes, write in one call `"review": "<what the commit
 does, whether it matches the plan, what the validation returned, anything you
 would not have shipped>"`, `"status": "reviewed"` and `"needs_review":
-"claude"`. The server hands the card to claude from there.
+"claude"`. This is the one flag that names claude; the server hands the card to
+it from there.
 
 ### Then verify — the drain is not finished at `reviewed`
 
@@ -405,7 +410,8 @@ suggestion verified on the strength of the diff looking correct.
 
 Kaizen is not exempt from the loop it runs. Once per **backlog** pass of the
 reviewer — skip this step when `TARGET` is set, and skip it as the runner:
-kaizen judging kaizen is claude's job, and the server fans runs out — three
+kaizen judging kaizen is the checker's job, not the runner's, and the server
+fans runs out — three
 once ran this rubric against the same tree within a minute. Its result says
 nothing about the one card a fenced pass is deciding, and `doctor --file` from
 concurrent passes races on the date-keyed filename.

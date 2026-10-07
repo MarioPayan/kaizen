@@ -433,7 +433,7 @@ impl App {
 /// the wire to say the same thing.
 ///
 /// Derived, so a lane cannot be left without its key: wherever a model moves
-/// the card a run is sent — opencode to do, claude to check — at the decision
+/// the card a run is sent — codex to do, a checker to check — at the decision
 /// you do, right after it the server lands it. A card flagged for a check is
 /// the reviewer's whatever its status, so the flag is read before the status.
 ///
@@ -1955,13 +1955,13 @@ mod tests {
     fn every_lane_says_what_it_waits_for_and_whose_move_it_is() {
         let text = render(&app_with_state(), 130, 30);
         for caption in [
-            "→ triage (opencode)",
-            "→ plan (opencode)",
+            "→ triage (codex)",
+            "→ plan (codex)",
             "→ decide (you)",
             "→ apply (server)",
-            "→ review (opencode)",
+            "→ review (codex)",
             "→ verify (claude)",
-            "→ check (claude)",
+            "→ check (codex/claude)",
         ] {
             assert!(text.contains(caption), "missing {caption:?}: {text}");
         }
@@ -2122,11 +2122,11 @@ mod tests {
         assert_eq!(lane(&state, "triaged"), ["b.md", "a.md"]);
         assert!(lane(&state, "◎ review").is_empty(), "a run is not a check owed");
 
-        // The run wrote a status and flagged it: the card is claude's now, and
-        // it sits in review until claude says so — not in planned, which `A`
+        // The run wrote a status and flagged it: the card is the checker's now,
+        // and it sits in review until the checker says so — not in planned, which `A`
         // would approve.
         state.suggestions[0].status = "planned".into();
-        state.suggestions[0].needs_review = "claude".into();
+        state.suggestions[0].needs_review = "codex".into();
         state.dispatch = Some(dispatch(vec![run(4242, Some("a.md"), Some(0))], vec![]));
         assert_eq!(lane(&state, "◎ review"), ["a.md"]);
         assert!(lane(&state, "planned").is_empty(), "an unchecked plan is not yours yet");
@@ -2328,22 +2328,22 @@ mod tests {
             Err(why) => why,
             Ok(_) => panic!("expected a refusal"),
         };
-        assert!(matches!(advance(&card("recorded", "")), Ok(Req::Dispatch { id: Some(_) })), "opencode triages");
-        assert!(matches!(advance(&card("triaged", "")), Ok(Req::Dispatch { id: Some(_) })), "opencode plans");
+        assert!(matches!(advance(&card("recorded", "")), Ok(Req::Dispatch { id: Some(_) })), "codex triages");
+        assert!(matches!(advance(&card("triaged", "")), Ok(Req::Dispatch { id: Some(_) })), "codex plans");
         assert!(
             matches!(advance(&card("planned", "")), Ok(Req::SetStatus { status, .. }) if status == "approved"),
             "you decide"
         );
         assert!(matches!(advance(&card("approved", "")), Ok(Req::Apply { .. })), "the server lands");
-        assert!(matches!(advance(&card("failed", "")), Ok(Req::Dispatch { id: Some(_) })), "back to opencode");
-        assert!(matches!(advance(&card("applied", "")), Ok(Req::Dispatch { id: Some(_) })), "opencode reviews");
+        assert!(matches!(advance(&card("failed", "")), Ok(Req::Dispatch { id: Some(_) })), "back to codex");
+        assert!(matches!(advance(&card("applied", "")), Ok(Req::Dispatch { id: Some(_) })), "codex reviews");
         assert!(matches!(advance(&card("reviewed", "")), Ok(Req::Dispatch { id: Some(_) })), "claude verifies");
         assert!(refusal(advance(&card("verified", ""))).contains("terminal"));
-        // A plan nobody has checked is claude's, not yours: `a` sends the check,
+        // A plan nobody has checked is the checker's, not yours: `a` sends the check,
         // never the approval.
         let mut unchecked = card("planned", "");
-        unchecked.needs_review = "claude".into();
-        assert!(matches!(advance(&unchecked), Ok(Req::Dispatch { id: Some(_) })), "claude checks");
+        unchecked.needs_review = "codex".into();
+        assert!(matches!(advance(&unchecked), Ok(Req::Dispatch { id: Some(_) })), "codex checks");
 
         assert!(
             matches!(discard(&card("recorded", "")), Ok(Req::SetStatus { status, .. }) if status == "rejected"),
