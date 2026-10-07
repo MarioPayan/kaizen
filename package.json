@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Perpetual improvement loop for Claude Code skills.",
+  "description": "Capture skill problems and collect them for a focused repair session.",
   "license": "MIT",
   "workspaces": [
     "packages/*"
@@ -14,13 +14,10 @@
   "scripts": {
     "kaizen": "node scripts/cli.mjs",
     "test": "npm run test --workspaces --if-present",
-    "lint": "npm run lint --workspaces --if-present",
+    "lint": "eslint scripts packages/core/src packages/core/tests",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "docs": "node scripts/cli.mjs docs",
-    "docs:check": "node scripts/cli.mjs docs --check",
-    "check": "npm run docs:check && npm run format:check && npm run lint && npm run test",
-    "tui": "cd tui && cargo build --release"
+    "check": "npm run format:check && npm run lint && npm run test"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

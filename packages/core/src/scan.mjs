@@ -1,507 +1,165 @@
-/**
- * Reading the world: what skills exist, what they have filed, and how the two relate.
- *
- * Everything here reads in place. Skills are never copied into kaizen — a skill
- * edited in an editor is current the next time this runs, and there is no second
- * copy to drift.
- */
-import { readdirSync, readFileSync, statSync, existsSync } from 'node:fs';
-import { basename, join, relative, dirname, resolve, isAbsolute, normalize, sep } from 'node:path';
-import { execFileSync } from 'node:child_process';
-import { ageOf, assignUids, localToday, parseSuggestion } from './suggestion.mjs';
-import { resolveTargets, expandPath } from './config.mjs';
-import { surfaceOf, passesSurface } from './taxonomy.mjs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
+import { expandPath, resolveTargets } from './config.mjs';
+import { parseSuggestion } from './suggestion.mjs';
 import { isInside, suggestionId } from './paths.mjs';
-import { inPatchWindow, isTerminal } from './lifecycle.mjs';
 
-const SCRIPT_EXT = /\.(sh|py|mjs|js|ts|bash|zsh)$/i;
-
-function safeReaddir(dir, opts) {
+function entries(path, options) {
   try {
-    return readdirSync(dir, opts);
+    return readdirSync(path, options);
   } catch {
     return [];
   }
 }
 
-/**
- * The day a suggestion file was last written, as `YYYY-MM-DD` — every status
- * change rewrites it, so for a finished card this is when it finished. `null`
- * when it cannot be read, which the caller reads as "fall back to the filing
- * date" rather than as a date of its own.
- */
-function lastTouched(file) {
-  try {
-    return statSync(file).mtime.toLocaleDateString('sv');
-  } catch {
-    return null;
-  }
-}
-
-function countLines(file) {
-  try {
-    const text = readFileSync(file, 'utf8');
-    return text.length === 0 ? 0 : text.split('\n').length;
-  } catch {
-    return 0;
-  }
-}
-
-/** Walk a skill directory, counting prose against deterministic assets. */
-function inspectSkillDir(dir) {
-  let scripts = 0;
-  const walk = (d, depth) => {
-    if (depth > 3) return;
-    for (const entry of safeReaddir(d, { withFileTypes: true })) {
-      if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
-      const full = join(d, entry.name);
-      if (entry.isDirectory()) walk(full, depth + 1);
-      else if (SCRIPT_EXT.test(entry.name)) scripts++;
+/** Discover direct skills, skills-dir plugins, and shared Markdown under lib/. */
+export function discoverSkills(skillsDir, { target = '', kind = 'user' } = {}) {
+  if (!existsSync(skillsDir)) return [];
+  const found = [];
+  const addLibrary = (root, path) => {
+    for (const entry of entries(path, { withFileTypes: true })) {
+      const full = join(path, entry.name);
+      if (entry.isDirectory()) addLibrary(root, full);
+      else if (entry.name.endsWith('.md'))
+        found.push({ name: relative(root, full), target, kind: 'library', path: full });
     }
   };
-  walk(dir, 0);
-  return { scripts };
-}
-
-/**
- * A skills directory holds one folder per skill (each with SKILL.md), plugin
- * folders holding more skills under `skills/`, and optional shared modules
- * under `_lib` or `lib`. Library modules carry no frontmatter by
- * design, so they are catalogued separately rather than treated as skills.
- */
-export function discoverSkills(skillsDir, { target = '', kind = 'user' } = {}) {
-  const out = [];
-  if (!existsSync(skillsDir)) return out;
-
-  for (const entry of safeReaddir(skillsDir, { withFileTypes: true })) {
-    if (entry.name.startsWith('.')) continue;
-    const dir = join(skillsDir, entry.name);
-    const isDir = entry.isDirectory() || entry.isSymbolicLink();
-    if (!isDir) continue;
-
+  for (const entry of entries(skillsDir, { withFileTypes: true })) {
+    if (entry.name.startsWith('.') || (!entry.isDirectory() && !entry.isSymbolicLink())) continue;
+    const directory = join(skillsDir, entry.name);
     if (entry.name === '_lib' || entry.name === 'lib') {
-      const walkLib = (d) => {
-        for (const e of safeReaddir(d, { withFileTypes: true })) {
-          const full = join(d, e.name);
-          if (e.isDirectory()) walkLib(full);
-          else if (e.name.endsWith('.md')) {
-            out.push({
-              name: relative(skillsDir, full),
-              kind: 'library',
-              target,
-              path: full,
-              lines: countLines(full),
-              scripts: 0,
-            });
-          }
-        }
-      };
-      walkLib(dir);
+      addLibrary(skillsDir, directory);
       continue;
     }
-
-    // A plugin dropped into a skills dir (Claude Code loads it as
-    // `<name>@skills-dir`) keeps its skills one level down, in `skills/`.
-    const pluginSkills = join(dir, 'skills');
-    const isPlugin = existsSync(join(dir, '.claude-plugin', 'plugin.json')) && existsSync(pluginSkills);
-    const candidates = isPlugin
-      ? safeReaddir(pluginSkills, { withFileTypes: true })
-          .filter((e) => !e.name.startsWith('.') && (e.isDirectory() || e.isSymbolicLink()))
-          .map((e) => [e.name, join(pluginSkills, e.name)])
-      : [[entry.name, dir]];
-    for (const [name, skillDir] of candidates) {
-      const skillFile = join(skillDir, 'SKILL.md');
-      if (!existsSync(skillFile)) continue;
-      out.push({
-        name,
-        kind,
-        target,
-        path: skillFile,
-        dir: skillDir,
-        lines: countLines(skillFile),
-        scripts: inspectSkillDir(skillDir).scripts,
-      });
+    const plugin = join(directory, 'skills');
+    const candidates =
+      existsSync(join(directory, '.claude-plugin', 'plugin.json')) && existsSync(plugin)
+        ? entries(plugin, { withFileTypes: true })
+            .filter((item) => item.isDirectory() || item.isSymbolicLink())
+            .map((item) => [item.name, join(plugin, item.name)])
+        : [[entry.name, directory]];
+    for (const [name, candidate] of candidates) {
+      const path = join(candidate, 'SKILL.md');
+      if (existsSync(path)) found.push({ name, target, kind, path, dir: candidate });
     }
   }
-  return out.sort((a, b) => b.lines - a.lines);
+  return found.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/**
- * Identify the repository a directory belongs to, collapsing git worktrees.
- *
- * In a worktree `--git-dir` points at `<main>/.git/worktrees/<name>` while
- * `--git-common-dir` points at the shared `<main>/.git`. Comparing them is how
- * git itself distinguishes the two, so it is exact rather than a name heuristic.
- *
- * This matters a lot in practice: a repo with 24 active worktrees presents the
- * same ten skills 24 times, and without collapsing them the inventory is almost
- * entirely duplicates.
- */
-const repoCache = new Map();
-const gitRootCache = new Map();
-
-function gitRoot(path) {
-  let dir = resolve(path);
-  while (!existsSync(dir) && dirname(dir) !== dir) dir = dirname(dir);
-  try {
-    if (!statSync(dir).isDirectory()) dir = dirname(dir);
-  } catch {
-    return '';
-  }
-
-  if (gitRootCache.has(dir)) return gitRootCache.get(dir);
-  let root = '';
-  try {
-    root = execFileSync('git', ['-C', dir, 'rev-parse', '--show-toplevel'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
-  } catch {
-    /* outside a Git repository */
-  }
-  gitRootCache.set(dir, root);
-  return root;
-}
-
-function repoIdentity(dir) {
-  if (repoCache.has(dir)) return repoCache.get(dir);
-  let identity = { repo: dir, isWorktree: false, versioned: false };
-  try {
-    const common = execFileSync(
-      'git',
-      ['-C', dir, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
-      {
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-      },
-    ).trim();
-    if (common) {
-      identity = {
-        repo: dirname(common),
-        isWorktree: resolve(common) !== resolve(dir, '.git'),
-        versioned: true,
-      };
-    }
-  } catch {
-    /* not a git repo — treat the directory as its own identity */
-  }
-  repoCache.set(dir, identity);
-  return identity;
-}
-
-/**
- * Bounded, opt-in discovery of project-level `.claude/skills`.
- *
- * Depth-limited because walking a repo root blindly is slow, and worktree-aware
- * because otherwise it is mostly slow for nothing.
- */
 export function discoverProjectSkills({ roots = [], depth = 3 } = {}) {
-  const out = [];
-  const seenDirs = new Set();
-  const seenSkills = new Set();
-  const worktreeCount = new Map();
-
-  const walk = (dir, level) => {
+  const found = [];
+  const seen = new Set();
+  const walk = (directory, level) => {
     if (level > depth) return;
-    const candidate = join(dir, '.claude', 'skills');
-    if (existsSync(candidate) && !seenDirs.has(candidate)) {
-      seenDirs.add(candidate);
-      const { repo, isWorktree, versioned } = repoIdentity(dir);
-      if (isWorktree) worktreeCount.set(repo, (worktreeCount.get(repo) ?? 0) + 1);
-
-      for (const skill of discoverSkills(candidate, { target: `project:${repo}`, kind: 'project' })) {
-        // One entry per skill per repository. A worktree holds the same file,
-        // and listing it again says nothing new.
-        const key = `${repo}::${skill.name}`;
-        if (seenSkills.has(key)) continue;
-        seenSkills.add(key);
-        out.push({ ...skill, project: repo, foundIn: dir, versioned });
+    const skills = join(directory, '.claude', 'skills');
+    if (existsSync(skills)) {
+      for (const skill of discoverSkills(skills, { target: `project:${directory}`, kind: 'project' })) {
+        const key = `${directory}\0${skill.name}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          found.push({ ...skill, project: directory });
+        }
       }
     }
-    for (const entry of safeReaddir(dir, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
-      walk(join(dir, entry.name), level + 1);
+    for (const entry of entries(directory, { withFileTypes: true })) {
+      if (entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules')
+        walk(join(directory, entry.name), level + 1);
     }
   };
-
-  for (const root of roots) {
-    const abs = expandPath(root);
-    try {
-      if (statSync(abs).isDirectory()) walk(abs, 1);
-    } catch {
-      /* configured root does not exist — reported by the caller, not fatal */
-    }
-  }
-
-  return out.map((s) => ({ ...s, worktrees: worktreeCount.get(s.project) ?? 0 }));
+  for (const root of roots) if (existsSync(expandPath(root))) walk(expandPath(root), 1);
+  return found;
 }
 
-/** One target-local file has one scope regardless of how its path was captured. */
 export function normalizeScope(scope, skillsDir = '') {
   if (!scope) return scope;
   if (!isAbsolute(scope) && scope !== '~' && !scope.startsWith(`~${sep}`)) return normalize(scope);
-
   const absolute = expandPath(scope);
   const root = skillsDir && expandPath(skillsDir);
   return root && isInside(root, absolute) ? relative(root, absolute) || '.' : absolute;
 }
 
-/** Read every suggestion filed under a feedback directory. */
 export function discoverSuggestions(feedbackDir, targetName, skillsDir = '') {
-  const out = [];
-  if (!existsSync(feedbackDir)) return out;
-
-  for (const entry of safeReaddir(feedbackDir, { withFileTypes: true })) {
-    // `_`-prefixed is "not a skill", the same convention `_lib` already uses in
-    // a skills tree. It is what makes the documented `_archive/` escape hatch
-    // work: without it, archiving an orphan just renames the orphan to
-    // `_archive` and the warning never clears.
+  if (!existsSync(feedbackDir)) return [];
+  const found = [];
+  for (const entry of entries(feedbackDir, { withFileTypes: true })) {
     if (!entry.isDirectory() || entry.name.startsWith('.') || entry.name.startsWith('_')) continue;
-    const skillDir = join(feedbackDir, entry.name);
-    for (const file of safeReaddir(skillDir)) {
-      if (!file.endsWith('.md')) continue;
-      const full = join(skillDir, file);
-      let text;
+    for (const name of entries(join(feedbackDir, entry.name))) {
+      if (!name.endsWith('.md')) continue;
+      const file = join(feedbackDir, entry.name, name);
       try {
-        text = readFileSync(full, 'utf8');
+        const item = parseSuggestion({
+          id: suggestionId(targetName, entry.name, name),
+          file,
+          skill: entry.name,
+          target: targetName,
+          text: readFileSync(file, 'utf8'),
+        });
+        item.scope = normalizeScope(item.scope, skillsDir);
+        item.patch = existsSync(file.replace(/\.md$/, '.patch')) ? file.replace(/\.md$/, '.patch') : null;
+        found.push(item);
       } catch {
-        continue;
+        // One unreadable capture must not hide the rest of the backlog.
       }
-      const suggestion = parseSuggestion({
-        id: suggestionId(targetName, entry.name, file),
-        file: full,
-        skill: entry.name,
-        target: targetName,
-        text,
-      });
-      suggestion.scope = normalizeScope(suggestion.scope, skillsDir);
-      out.push(suggestion);
     }
   }
-  return out;
+  return found;
 }
 
-/**
- * Fill in `blockedBy` — which open card, if any, a block is actually waiting on.
- *
- * Two different waits wear the one `blocked_on` field, and they want opposite
- * things from every view. A block that names another suggestion still in play is
- * waiting on *that card* — no key of yours moves it, so it parks out of the way.
- * Every other block is waiting on *you*, and belongs in its own lane with the
- * flag up, where the key that moves it already is. `blockedBy` goes empty again
- * once the card it names closes, which is what surfaces a member whose carrier
- * has landed.
- *
- * Its own export because the status bar needs the same answer and cannot afford
- * `buildState`: that rescans the skills tree and, with project scanning on,
- * walks three levels of every configured root. The bar redraws on a timer.
- */
-export function assignBlockedBy(suggestions) {
-  const open = suggestions.filter((s) => !isTerminal(s.status));
-  for (const s of suggestions) {
-    if (!s.blockedOn) {
-      s.blockedBy = '';
-      continue;
-    }
-    const candidates = open.filter((o) => o.id !== s.id);
-    const exact = candidates.find((o) => s.blockedOn.includes(o.id));
-    const named = candidates.find((o) => s.blockedOn.includes(basename(o.file, '.md')));
-    const bySlug = candidates.filter((o) => o.slug && s.blockedOn.includes(o.slug));
-    s.blockedBy = exact?.id ?? named?.id ?? (bySlug.length === 1 ? bySlug[0].id : '');
-  }
-  return suggestions;
+export function scopePath(item, target) {
+  if (!item.scope) return '';
+  return isAbsolute(item.scope) ? item.scope : resolve(target.skills, item.scope);
 }
 
-/** The proposal owned by this card, or by the live card it explicitly rides on. */
-export function patchFor(s, suggestions = []) {
-  const own = s.file.replace(/\.md$/, '.patch');
-  if (existsSync(own)) return own;
-  if (!s.blockedBy) return null;
-
-  const carrier = suggestions.find((candidate) => candidate.id === s.blockedBy);
-  if (!carrier || carrier.target !== s.target || !inPatchWindow(carrier.status)) return null;
-  const patch = carrier.file.replace(/\.md$/, '.patch');
-  return existsSync(patch) ? patch : null;
-}
-
-/** Resolve the discovered project that owns a suggestion's skill, if any. */
-export function suggestionProject(state, suggestion) {
-  const projects = [
-    ...new Set(
-      state.skills
-        .filter((skill) => skill.name === suggestion?.skill && skill.project)
-        .map((skill) => skill.project),
-    ),
-  ];
-  if (projects.length > 1) {
-    throw new Error(`project skill "${suggestion.skill}" is ambiguous — found in: ${projects.join(', ')}`);
-  }
-  return projects[0];
-}
-
-/** Build the complete state the app and the skill both read. */
 export function buildState(config) {
   const targets = resolveTargets(config);
   const skills = [];
   const suggestions = [];
   const warnings = [];
-
-  // Two targets may legitimately name the same feedback directory (or the same
-  // skills tree via different paths). Counting a file twice would inflate every
-  // number the dashboard shows, so the first target to claim a path keeps it.
   const seenFeedback = new Set();
-  const seenSkillFiles = new Set();
-
-  for (const t of targets) {
-    if (!existsSync(t.skills)) warnings.push(`target "${t.name}": skills path not found — ${t.skills}`);
-    if (t.feedback && !existsSync(t.feedback)) {
-      warnings.push(`target "${t.name}": feedback path not found — ${t.feedback}`);
-    }
-    const targetRoot = existsSync(t.skills) ? gitRoot(t.skills) : '';
-    if (t.writable && existsSync(t.skills) && !targetRoot) {
-      warnings.push(
-        `target "${t.name}": writable skills path is not inside a Git repository — Runner mode cannot advance suggestions past recorded until it points at a Git-tracked tree: ${t.skills}`,
-      );
-    }
-
-    for (const skill of discoverSkills(t.skills, { target: t.name })) {
-      if (seenSkillFiles.has(skill.path)) continue;
-      seenSkillFiles.add(skill.path);
-      skills.push(skill);
-    }
-
-    // Discovery-only: the target contributes skills to the inventory and
-    // nothing else, which is exactly what stops their feedback folders
-    // elsewhere from reading as orphans.
-    if (!t.feedback) continue;
-    if (seenFeedback.has(t.feedback)) {
-      warnings.push(`target "${t.name}": shares a feedback directory with an earlier target — counted once`);
-      continue;
-    }
-    seenFeedback.add(t.feedback);
-    const found = discoverSuggestions(t.feedback, t.name, t.skills);
-    for (const suggestion of found) {
-      if (!suggestion.scope) continue;
-      const scope = isAbsolute(suggestion.scope)
-        ? suggestion.scope
-        : resolve(targetRoot || t.skills, suggestion.scope);
-      if (!gitRoot(scope)) {
-        warnings.push(
-          `suggestion "${suggestion.id}": scope is not inside a Git repository — Runner mode cannot advance it past recorded until it points at a Git-tracked tree: ${scope}`,
-        );
+  const seenSkills = new Set();
+  const feedbackSkills = new Set();
+  for (const target of targets) {
+    if (!existsSync(target.skills))
+      warnings.push(`target "${target.name}": skills path not found — ${target.skills}`);
+    if (target.feedback && !existsSync(target.feedback))
+      warnings.push(`target "${target.name}": feedback path not found — ${target.feedback}`);
+    for (const skill of discoverSkills(target.skills, { target: target.name })) {
+      if (!seenSkills.has(skill.path)) {
+        seenSkills.add(skill.path);
+        skills.push(skill);
       }
     }
-    suggestions.push(...found);
-  }
-
-  if (config.scan?.enabled) {
-    const projectSkills = discoverProjectSkills({ roots: config.scan.roots, depth: config.scan.depth });
-    skills.push(...projectSkills);
-    for (const project of new Set(projectSkills.filter((s) => !s.versioned).map((s) => s.project))) {
-      warnings.push(
-        `project skills are not in a Git repository — confirmation and patch planning are unavailable: ${project}`,
-      );
+    if (target.feedback && !seenFeedback.has(target.feedback)) {
+      seenFeedback.add(target.feedback);
+      for (const entry of entries(target.feedback, { withFileTypes: true })) {
+        if (entry.isDirectory() && !entry.name.startsWith('.') && !entry.name.startsWith('_'))
+          feedbackSkills.add(entry.name);
+      }
+      suggestions.push(...discoverSuggestions(target.feedback, target.name, target.skills));
     }
   }
-
-  // `surface` is a view preference, not a filter on what exists. Every suggestion
-  // is still returned and still counted in `metrics`; each is only tagged with
-  // whether the user asked to have it put in front of them. Applying it once here
-  // means the app and the session line share one implementation without either
-  // importing this package.
-  const surface = surfaceOf(config);
-  const today = localToday();
-  // Handles are unique across every target, so this is the one place they can
-  // be given out.
-  assignUids(suggestions);
-  for (const s of suggestions) {
-    s.surfaced = passesSurface(s, surface);
-    // Stamped per build, so it is true as of this state and every view that
-    // groups by recency draws the same line in the same place.
-    s.age = ageOf(s.date, today);
-    // For a finished card, recency means when it *finished*, not when it was
-    // filed: a finding filed in July and verified this morning is the freshest
-    // thing on the board, and grouping it by its filing date buries it under
-    // the history a view is trying to hide. The file is rewritten on every
-    // status change, so its mtime is the last transition — good enough to sort
-    // history by, and it needs no new frontmatter on 194 existing files. Falls
-    // back to the filing date when the file cannot be stat'd, and an open card
-    // has not closed at all, so it keeps its filing age.
-    s.closedAge = isTerminal(s.status) ? ageOf(lastTouched(s.file) ?? s.date, today) : s.age;
-  }
-
-  // A feedback folder whose skill no longer exists still holds real findings —
-  // often the same live problem filed under a name that has since been renamed.
-  const liveSkills = new Set(skills.map((s) => s.name));
-  const orphans = [...new Set(suggestions.map((s) => s.skill))]
-    .filter((name) => !liveSkills.has(name))
-    .sort();
-
-  // Terminal comes from the spec, so this list cannot drift from the model the
-  // app and the TUI draw. Note `applied` is *not* terminal any more: a landed
-  // change whose validation plan has not run is unfinished, and saying so is
-  // the entire reason the verify phase exists.
-  const open = suggestions.filter((s) => !isTerminal(s.status));
-
-  // Derived here for the same reason uids are: it takes the whole corpus.
-  assignBlockedBy(suggestions);
-  for (const s of suggestions) s.patch = patchFor(s, suggestions);
-  const byName = new Map();
-  for (const s of suggestions) byName.set(s.skill, (byName.get(s.skill) ?? 0) + 1);
-
+  if (config.scan?.enabled)
+    skills.push(...discoverProjectSkills({ roots: config.scan.roots, depth: config.scan.depth }));
+  const liveSkills = new Set(skills.filter((skill) => skill.kind !== 'library').map((skill) => skill.name));
   return {
     generatedAt: new Date().toISOString(),
     targets,
     warnings,
-    skills: skills.map((s) => {
-      const suggestions = byName.get(s.name) ?? 0;
-      // The ratio the whole thesis rests on: failures per unit of prose.
-      const per100 = s.lines ? Number(((suggestions / s.lines) * 100).toFixed(2)) : 0;
-      return { ...s, suggestions, per100, health: health(s, suggestions, per100) };
-    }),
+    skills,
     suggestions,
-    orphans,
-    metrics: metrics(suggestions, skills, open),
+    orphans: [...feedbackSkills].filter((name) => name !== 'session' && !liveSkills.has(name)).sort(),
+    metrics: {
+      total: suggestions.length,
+      open: suggestions.filter((item) => item.status === 'open').length,
+    },
   };
 }
 
-/**
- * The thesis, as a label.
- *
- * A skill with scripts and no complaints is the shape the system is trying to
- * produce; heavy prose with a high complaint rate is what it is trying to
- * remove. Computed here rather than in a front end because it is a fact about
- * the scan, and the scanner is the single source for everything else on the row.
- */
-function health(skill, suggestions, per100) {
-  if (skill.scripts > 0 && suggestions === 0) return 'scripted';
-  if (per100 >= 2) return 'noisy';
-  if (per100 > 0) return 'watch';
-  return 'quiet';
+export function targetFor(config, name) {
+  return resolveTargets(config).find((target) => target.name === name);
 }
 
-function metrics(suggestions, skills, open) {
-  const incidents = suggestions.reduce((sum, s) => sum + s.incidents, 0);
-  const recurrences = suggestions.reduce((sum, s) => sum + s.recurrences, 0);
-  const byRung = {};
-  for (const s of suggestions) {
-    if (s.rung === null) continue;
-    byRung[s.rung] = (byRung[s.rung] ?? 0) + s.incidents;
-  }
-  const proseLines = skills.reduce((sum, s) => sum + s.lines, 0);
-  return {
-    total: suggestions.length,
-    open: open.length,
-    untriaged: suggestions.filter((s) => !s.triaged).length,
-    // Parked on a decision only the user can make — the count that turns
-    // "twelve identical triaged rows" into "three are yours".
-    onYou: open.filter((s) => s.blockedOn).length,
-    incidents,
-    recurrences,
-    incidentsByRung: byRung,
-    proseLines,
-    scriptCount: skills.reduce((sum, s) => sum + s.scripts, 0),
-    incidentsPer100Lines: proseLines ? Number(((incidents / proseLines) * 100).toFixed(2)) : 0,
-  };
+export function relativeToTarget(item, target) {
+  const path = scopePath(item, target);
+  return path && isInside(dirname(target.skills), path) ? relative(dirname(target.skills), path) : path;
 }

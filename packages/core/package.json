@@ -13,7 +13,7 @@
     "./paths": "./src/paths.mjs"
   },
   "scripts": {
-    "test": "vitest run",
+    "test": "vitest run --configLoader runner",
     "lint": "eslint src tests"
   }
 }

@@ -1,13 +1,11 @@
 import js from '@eslint/js';
 
-// Plain Node ESM throughout. The TypeScript and React blocks that used to live
-// here went with the web app — the only front end now is the Rust TUI, which
-// cargo clippy covers.
+// Plain Node ESM throughout.
 export default [
   { ignores: ['**/dist/**', '**/node_modules/**', '**/target/**'] },
   js.configs.recommended,
   {
-    files: ['scripts/**/*.mjs', 'packages/core/**/*.mjs', 'packages/server/**/*.mjs'],
+    files: ['scripts/**/*.mjs', 'packages/core/**/*.mjs'],
     languageOptions: {
       ecmaVersion: 2024,
       sourceType: 'module',

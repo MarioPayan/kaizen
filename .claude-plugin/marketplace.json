@@ -7,7 +7,7 @@
     {
       "name": "kaizen",
       "source": "./",
-      "description": "Perpetual improvement loop for Claude Code skills."
+      "description": "Capture skill problems and collect them for a focused agent repair session."
     }
   ]
 }
