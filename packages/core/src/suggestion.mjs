@@ -208,6 +208,10 @@ export function parseSuggestion({ id, file, skill, target, text }) {
     context: captureSection(body, 'Context', 'What ran'),
     suggestion: captureSection(body, 'Suggestion', 'Proposal'),
     rationale: captureSection(body, 'Why it matters', 'Why', 'What cost time'),
+    // Doctor findings put the concrete receipt here. The scanner is the
+    // runner's complete input, so omitting it forced a second read of the
+    // markdown file for exactly the cards whose suggestion refers to evidence.
+    evidence: section(body, 'Evidence'),
     plan: section(body, 'Plan'),
     validation: section(body, 'Validation'),
     // What the two reviews wrote, so the detail window can show a rejected

@@ -64,6 +64,19 @@ describe('buildState Git warnings', () => {
   });
 });
 
+describe('suggestion evidence', () => {
+  it('is present in scanner output so a targeted caller needs no second file read', () => {
+    const { root, config } = fixture();
+    writeFileSync(
+      join(root, 'feedback', 'demo', '2026-01-01-finding.md'),
+      '---\nskill: demo\ndate: 2026-01-01\n---\n\n## Context\n\nc\n\n## Evidence\n\n- named patch A\n- named patch B\n\n## Suggestion\n\ndo it\n',
+    );
+
+    const [finding] = buildState(config).suggestions;
+    expect(finding.evidence).toBe('- named patch A\n- named patch B');
+  });
+});
+
 describe('closedAge', () => {
   /**
    * The board hides finished history by this, so measuring it from the filing
