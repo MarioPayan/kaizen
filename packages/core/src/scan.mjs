@@ -64,8 +64,9 @@ function inspectSkillDir(dir) {
 }
 
 /**
- * A skills directory holds one folder per skill (each with SKILL.md), plus
- * optional shared modules under `_lib`. Library modules carry no frontmatter by
+ * A skills directory holds one folder per skill (each with SKILL.md), plugin
+ * folders holding more skills under `skills/`, and optional shared modules
+ * under `_lib` or `lib`. Library modules carry no frontmatter by
  * design, so they are catalogued separately rather than treated as skills.
  */
 export function discoverSkills(skillsDir, { target = '', kind = 'user' } = {}) {
@@ -78,7 +79,7 @@ export function discoverSkills(skillsDir, { target = '', kind = 'user' } = {}) {
     const isDir = entry.isDirectory() || entry.isSymbolicLink();
     if (!isDir) continue;
 
-    if (entry.name === '_lib') {
+    if (entry.name === '_lib' || entry.name === 'lib') {
       const walkLib = (d) => {
         for (const e of safeReaddir(d, { withFileTypes: true })) {
           const full = join(d, e.name);
@@ -99,17 +100,28 @@ export function discoverSkills(skillsDir, { target = '', kind = 'user' } = {}) {
       continue;
     }
 
-    const skillFile = join(dir, 'SKILL.md');
-    if (!existsSync(skillFile)) continue;
-    out.push({
-      name: entry.name,
-      kind,
-      target,
-      path: skillFile,
-      dir,
-      lines: countLines(skillFile),
-      scripts: inspectSkillDir(dir).scripts,
-    });
+    // A plugin dropped into a skills dir (Claude Code loads it as
+    // `<name>@skills-dir`) keeps its skills one level down, in `skills/`.
+    const pluginSkills = join(dir, 'skills');
+    const isPlugin = existsSync(join(dir, '.claude-plugin', 'plugin.json')) && existsSync(pluginSkills);
+    const candidates = isPlugin
+      ? safeReaddir(pluginSkills, { withFileTypes: true })
+          .filter((e) => !e.name.startsWith('.') && (e.isDirectory() || e.isSymbolicLink()))
+          .map((e) => [e.name, join(pluginSkills, e.name)])
+      : [[entry.name, dir]];
+    for (const [name, skillDir] of candidates) {
+      const skillFile = join(skillDir, 'SKILL.md');
+      if (!existsSync(skillFile)) continue;
+      out.push({
+        name,
+        kind,
+        target,
+        path: skillFile,
+        dir: skillDir,
+        lines: countLines(skillFile),
+        scripts: inspectSkillDir(skillDir).scripts,
+      });
+    }
   }
   return out.sort((a, b) => b.lines - a.lines);
 }

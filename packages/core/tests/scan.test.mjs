@@ -111,3 +111,23 @@ describe('closedAge', () => {
     expect(byId['2026-01-01-closed.md'].closedAge).toBe('today');
   });
 });
+
+describe('skills-dir plugins', () => {
+  it('finds skills inside a plugin folder and catalogues lib/ as library', () => {
+    const { root, config } = fixture();
+    const plugin = join(root, 'skills', 'ts');
+    mkdirSync(join(plugin, '.claude-plugin'), { recursive: true });
+    writeFileSync(join(plugin, '.claude-plugin', 'plugin.json'), '{"name":"ts"}');
+    mkdirSync(join(plugin, 'skills', 'standup'), { recursive: true });
+    writeFileSync(join(plugin, 'skills', 'standup', 'SKILL.md'), '---\nname: standup\n---\n');
+    mkdirSync(join(root, 'skills', 'lib', 'github'), { recursive: true });
+    writeFileSync(join(root, 'skills', 'lib', 'github', 'README.md'), '# github\n');
+
+    const skills = buildState(config).skills;
+    const names = skills.map((s) => s.name);
+    expect(names).toContain('standup');
+    expect(names).toContain('demo');
+    expect(names).not.toContain('ts');
+    expect(skills.find((s) => s.name === 'lib/github/README.md')?.kind).toBe('library');
+  });
+});
