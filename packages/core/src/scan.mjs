@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
 import { expandPath, resolveTargets } from './config.mjs';
 import { parseSuggestion } from './suggestion.mjs';
@@ -127,9 +128,32 @@ function repoRoot(dir) {
 
 export function scopePath(item, target) {
   if (!item.scope) return '';
+  // A trailing note ("… §1.3", "… (why)") is not part of the path.
+  const bare = item.scope.replace(/\s+(§.*|\(.*\))$/, '');
   // expandPath also resolves relative paths against cwd, so only use it for ~ forms.
-  const scope = item.scope.startsWith('~') ? expandPath(item.scope) : item.scope;
-  return isAbsolute(scope) ? scope : resolve(repoRoot(target.skills), scope);
+  const scope = bare.startsWith('~') ? expandPath(bare) : bare;
+  if (isAbsolute(scope)) return scope;
+  const root = repoRoot(target.skills);
+  // Captures also write paths relative to the skills dir or to the repo's parent.
+  const tries = [resolve(root, scope), resolve(target.skills, scope), resolve(dirname(root), scope)];
+  return tries.find((path) => existsSync(path)) ?? tries[0];
+}
+
+/**
+ * One group key per file, however a capture spelled it: relative to the target repo holding it
+ * (prefixed `<target>:` for every target but the first), else ~-absolute.
+ */
+export function scopeKey(item, targets) {
+  const own = targets.find((target) => target.name === item.target);
+  const path = own ? scopePath(item, own) : item.scope;
+  if (!path) return '';
+  for (const [i, target] of targets.entries()) {
+    const root = repoRoot(target.skills);
+    if (!isInside(root, path)) continue;
+    const rel = relative(root, path) || '.';
+    return i === 0 ? rel : `${target.name}:${rel}`;
+  }
+  return path.startsWith(homedir()) ? `~${path.slice(homedir().length)}` : path;
 }
 
 export function buildState(config) {
