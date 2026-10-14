@@ -34,8 +34,17 @@ the repair directly.
 4. Validate with the target repository's checks and any changed script's
    `--self-check`. Do not weaken tests to make the change pass.
 
-5. Show the user a concise diff summary and the exact suggestion ids the change
-   will close. Commit locally, never push. Add one trailer per item:
+5. Get approval before anything is committed or closed. Present every verdict
+   (each planned change with its diff and the exact suggestion ids it closes,
+   plus each drop, covered and re-scope decision) and wait for the answer.
+   Follow the user's artifact rules for this (for Mario,
+   `~/.claude/skills/rules/artifacts.md`: a decision deck, with one confirm
+   item per change and one per closure batch). Only a scope of three items or
+   fewer may use a plain yes/no in the terminal. Questions about *how* to do
+   the work are not approval of *what* it changes. Write fixes in English,
+   even when the suggestion was not.
+
+   Once approved, commit locally, never push. Add one trailer per item:
 
    ```text
    Kaizen-Suggestion: <id>
