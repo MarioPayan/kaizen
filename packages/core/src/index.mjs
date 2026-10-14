@@ -15,6 +15,7 @@ export {
   discoverSkills,
   discoverSuggestions,
   normalizeScope,
+  scopeKey,
   scopePath,
   targetFor,
 } from './scan.mjs';
