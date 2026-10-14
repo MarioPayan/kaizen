@@ -7,6 +7,7 @@ import {
   discoverSuggestions,
   loadConfig,
   normalizeScope,
+  scopeKey,
   resolveTargets,
   runDoctor,
   writeFrontmatter,
@@ -87,8 +88,9 @@ function cmdList() {
     items = items.filter((item) => item.target === target);
   }
   const groups = new Map();
+  const targets = resolveTargets(requireConfig());
   for (const item of items) {
-    const key = by === 'skill' ? item.skill : item.scope || '(no scope)';
+    const key = by === 'skill' ? item.skill : scopeKey(item, targets) || '(no scope)';
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(listedItem(item));
   }
