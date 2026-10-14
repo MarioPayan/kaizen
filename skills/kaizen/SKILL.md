@@ -17,7 +17,11 @@ the repair directly.
    scope file at `HEAD`. For each item decide:
 
    - fixed already: close it as fixed after identifying the commit;
+   - covered: another item or commit already handles it; close it with
+     `--dropped 'covered by <id|sha>'`;
    - drop: it is one-off, incorrect, obsolete, or not worth encoding;
+   - re-scope: it belongs to another file; edit its `scope:` frontmatter
+     line and leave it open for that group;
    - fix: it describes a problem that still exists.
 
 3. Make one coherent change per scope, at the lowest rung that works:
@@ -27,7 +31,8 @@ the repair directly.
    - skill prose only when inputs vary and judgement is required;
    - unaided reasoning only for genuinely novel cases.
 
-   Respect configured `budgets`. A hook or script beats repeated prose. A
+   Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/cli.mjs" doctor` before and after
+   the change: it must not add a `budget-exceeded` finding. A hook or script beats repeated prose. A
    sibling `.patch` is only an old proposal: reuse it only after checking that it
    still applies and still solves the current findings.
 
@@ -49,9 +54,6 @@ the repair directly.
    ```text
    Kaizen-Suggestion: <id>
    ```
-
-   Optionally ask Codex for a second-opinion review of the diff before the
-   commit when the change is broad or subtle.
 
 6. After the commit exists, close fixed items:
 
