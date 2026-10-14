@@ -14,7 +14,8 @@ the repair directly.
    groups.
 
 2. Work one scope group at a time. Read every grouped suggestion and read the
-   scope file at `HEAD`. For each item decide:
+   scope file on the target's default branch (`git show origin/HEAD:<path>`
+   when the checkout is behind it or on another branch). For each item decide:
 
    - fixed already: close it as fixed after identifying the commit;
    - covered: another item or commit already handles it; close it with
@@ -23,6 +24,9 @@ the repair directly.
    - re-scope: it belongs to another file; edit its `scope:` frontmatter
      line and leave it open for that group;
    - fix: it describes a problem that still exists.
+
+   Absence on a stale checkout proves nothing: a fixed or obsolete verdict
+   names the commit on the default branch that fixed or removed it.
 
 3. Make one coherent change per scope, at the lowest rung that works:
 
