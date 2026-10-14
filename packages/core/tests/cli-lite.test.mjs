@@ -258,4 +258,25 @@ describe('scopePath', () => {
     expect(scopePath({ scope: 'scripts/cli.mjs' }, target)).toBe(join(repo, 'scripts/cli.mjs'));
     expect(scopePath({ scope: '/abs/x.md' }, target)).toBe('/abs/x.md');
   });
+
+  it('strips trailing notes and finds paths written relative to the skills dir or the repo parent', async () => {
+    const { execFileSync } = await import('node:child_process');
+    const { mkdtempSync, mkdirSync, writeFileSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { basename, join } = await import('node:path');
+    const { scopePath, scopeKey } = await import('../src/scan.mjs');
+    const repo = mkdtempSync(join(tmpdir(), 'kaizen-scope-'));
+    execFileSync('git', ['init', '-q', repo]);
+    mkdirSync(join(repo, 'skills', 'demo'), { recursive: true });
+    writeFileSync(join(repo, 'skills', 'demo', 'SKILL.md'), '');
+    const target = { name: 't', skills: join(repo, 'skills') };
+    const file = join(repo, 'skills', 'demo', 'SKILL.md');
+    expect(scopePath({ scope: 'skills/demo/SKILL.md §1.3' }, target)).toBe(file);
+    expect(scopePath({ scope: 'demo/SKILL.md (why)' }, target)).toBe(file);
+    expect(scopePath({ scope: `${basename(repo)}/skills/demo/SKILL.md` }, target)).toBe(file);
+    const keys = ['skills/demo/SKILL.md', 'demo/SKILL.md §1.3', file].map((scope) =>
+      scopeKey({ scope, target: 't' }, [target]),
+    );
+    expect(new Set(keys)).toEqual(new Set(['skills/demo/SKILL.md']));
+  });
 });
