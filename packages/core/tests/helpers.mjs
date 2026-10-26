@@ -51,6 +51,12 @@ export function workspace(extra = {}) {
   return { root, repo, skills: join(repo, 'skills'), feedback: join(root, 'feedback'), config };
 }
 
+export function editConfig(config, change) {
+  const json = JSON.parse(readFileSync(config, 'utf8'));
+  change(json);
+  writeFileSync(config, JSON.stringify(json));
+}
+
 export function card(feedback, skill, name, { frontmatter = {}, body } = {}) {
   const data = { skill, date: name.slice(0, 10), severity: 'medium', status: 'open', ...frontmatter };
   return write(

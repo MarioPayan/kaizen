@@ -41,3 +41,5 @@ export { fixDate, recurredAfterFix } from './recurrence.mjs';
 export { assertInside, isInside, parseSuggestionId, suggestionId } from './paths.mjs';
 export { contentWords, findDuplicate } from './dedupe.mjs';
 export { proposeAliases, renameMap } from './aliases.mjs';
+export { lintMemory, projectCwd, references } from './memory.mjs';
+export { originBullets, originSlug, retirementCandidates } from './retirement.mjs';
