@@ -7,7 +7,9 @@ import {
   discoverSuggestions,
   findDuplicate,
   loadConfig,
+  mine,
   proposeAliases,
+  resolveSources,
   recurredAfterFix,
   scopeKey,
   resolveTargets,
@@ -337,6 +339,50 @@ function cmdAliases() {
   }
 }
 
+async function cmdMine() {
+  const config = requireConfig();
+  const days = option('days') === undefined ? undefined : Number(option('days'));
+  if (days !== undefined && (!Number.isInteger(days) || days < 1)) fail('--days must be a positive integer');
+  const limit = Number(option('limit') ?? 20);
+  const sources = resolveSources(config);
+  const report = await mine({
+    projectsDir: sources.projects,
+    facetsDir: sources.facets,
+    feedbackDirs: resolveTargets(config)
+      .map((target) => target.feedback)
+      .filter(Boolean),
+    days,
+  });
+  if (!has('text')) return console.log(JSON.stringify(report, null, 2));
+  const { parse, capture } = report;
+  console.log('kaizen mine — candidates only; nothing was filed.');
+  console.log(
+    `\nread ${parse.transcripts} transcript(s), ${parse.lines} line(s); ${parse.unparsedLines} unparsed, ${parse.untimed} without timestamp, ${parse.unreadable.length} unreadable file(s); ${parse.facets} facet file(s), ${parse.unparsedFacets.length} unparsed`,
+  );
+  console.log(
+    `\ncapture recall: ${capture.captured}/${capture.evaluated} friction session(s) wrote a capture${
+      capture.recall === null ? '' : ` (${Math.round(capture.recall * 100)}%)`
+    }; ${capture.unevaluated.length} could not be evaluated`,
+  );
+  for (const [category, count] of Object.entries(capture.frictionTotals).sort((a, b) => b[1] - a[1]))
+    console.log(`  ${count}× ${category}`);
+  for (const session of capture.missed.slice(0, limit))
+    console.log(
+      `  missed ${session.sessionId} [${Object.keys(session.friction).join(', ')}] ${session.summary}`,
+    );
+  console.log(`\nhook blocks (${report.hookBlocks.reduce((sum, block) => sum + block.count, 0)}):`);
+  for (const block of report.hookBlocks.slice(0, limit))
+    console.log(`  ${block.count}× ${block.guard}: ${block.trap}`);
+  console.log(`\ncorrection-like messages (${report.corrections.length}):`);
+  for (const item of report.corrections.slice(-limit))
+    console.log(`  ${item.timestamp.slice(0, 10)} ${item.project}: ${item.text}`);
+  console.log('\nskill runs (time to next human message):');
+  for (const run of report.skillRuns.slice(0, limit))
+    console.log(
+      `  ${run.skill}: ${run.runs} run(s), median ${run.medianSeconds === null ? '?' : Math.round(run.medianSeconds)}s, ${run.outputTokens} output tokens, ${run.unfinished} unfinished`,
+    );
+}
+
 function dateAge(value) {
   const time = Date.parse(value);
   return Number.isNaN(time) ? -Infinity : (Date.now() - time) / 86400000;
@@ -411,7 +457,7 @@ function cmdMigrate() {
 
 function help() {
   console.log(
-    `usage: kaizen <command>\n\ncommands:\n  status [--bar]\n  list [--by scope|skill] [--target <name>] [--json|--text]\n  capture --check --skill <name> --scope <path> --slug <slug>\n  close <id>... (--fixed <sha> | --dropped <reason>)\n  close --json <file|->\n  doctor\n  aliases [--json|--text]\n  prune [--days N] [--dry-run]\n  migrate [--dry-run]`,
+    `usage: kaizen <command>\n\ncommands:\n  status [--bar]\n  list [--by scope|skill] [--target <name>] [--json|--text]\n  capture --check --skill <name> --scope <path> --slug <slug>\n  close <id>... (--fixed <sha> | --dropped <reason>)\n  close --json <file|->\n  doctor\n  aliases [--json|--text]\n  mine [--days N] [--limit N] [--json|--text]\n  prune [--days N] [--dry-run]\n  migrate [--dry-run]`,
   );
 }
 
@@ -422,6 +468,7 @@ const commands = {
   close: cmdClose,
   doctor: cmdDoctor,
   aliases: cmdAliases,
+  mine: cmdMine,
   prune: cmdPrune,
   migrate: cmdMigrate,
   help,
