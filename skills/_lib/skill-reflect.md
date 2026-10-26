@@ -68,9 +68,15 @@ script path when the file does not exist yet.
    <What this instance adds.>
    ```
 
+   The check searches every skill and target, not only `SKILL_NAME`'s folder.
+   If `match` is null but `fixedMatch` names the same failure, the problem came
+   back after a fix: append the same `## Recurrence` section to that file
+   instead of writing a new one. `kaizen doctor` then reports it as
+   `recurred-after-fix` and `kaizen list` resurfaces it.
+
    Shared scope alone is not enough; one file can contain unrelated rules. If
    the check is unavailable, manually compare normalized scope and three shared
-   slug words in the skill's feedback folder.
+   slug words in the feedback folders.
 4. Write the new file or recurrence.
 5. Print exactly one final line: `Reflection: <path>`,
    `Reflection: appended to <path>`, or `Reflection: no suggestion.`

@@ -15,6 +15,20 @@ export function configPath() {
     : resolve(homedir(), '.claude', 'kaizen', 'config.json');
 }
 
+/** Where Claude Code keeps the data `doctor` and `mine` read; overridable for tests and other layouts. */
+export function defaultSources() {
+  return { projects: '~/.claude/projects', facets: '~/.claude/usage-data/facets' };
+}
+
+function isStringMap(value) {
+  return (
+    !!value &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    Object.entries(value).every(([key, path]) => key && typeof path === 'string' && path)
+  );
+}
+
 export function defaultConfig() {
   return {
     version: CONFIG_VERSION,
@@ -22,6 +36,7 @@ export function defaultConfig() {
     scan: { enabled: false, roots: [], depth: 3 },
     cadence: { sessionHook: true },
     budgets: [],
+    sources: defaultSources(),
   };
 }
 
@@ -42,6 +57,8 @@ export function validateConfig(config) {
         errors.push(`targets[${index}].skills is required`);
       if (target.feedback !== undefined && (typeof target.feedback !== 'string' || !target.feedback))
         errors.push(`targets[${index}].feedback must be a non-empty path`);
+      if (target.scopeAliases !== undefined && !isStringMap(target.scopeAliases))
+        errors.push(`targets[${index}].scopeAliases must map old scope paths to new ones`);
     });
     if (new Set(names).size !== names.length) errors.push('target names must be unique');
   }
@@ -49,6 +66,12 @@ export function validateConfig(config) {
     if (!Array.isArray(config.scan.roots)) errors.push('scan.roots must be an array');
     if (!Number.isInteger(config.scan.depth) || config.scan.depth < 1 || config.scan.depth > 8)
       errors.push('scan.depth must be an integer between 1 and 8');
+  }
+  if (config.sources !== undefined) {
+    if (!isStringMap(config.sources)) errors.push('sources must map names to paths');
+    else
+      for (const key of Object.keys(config.sources))
+        if (!(key in defaultSources())) errors.push(`sources.${key} is not a known source`);
   }
   if (config.budgets !== undefined) {
     if (!Array.isArray(config.budgets)) errors.push('budgets must be an array');
@@ -92,6 +115,12 @@ export function saveConfig(config, path = configPath()) {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`);
   return path;
+}
+
+export function resolveSources(config) {
+  return Object.fromEntries(
+    Object.entries({ ...defaultSources(), ...config.sources }).map(([key, path]) => [key, expandPath(path)]),
+  );
 }
 
 export function resolveTargets(config) {

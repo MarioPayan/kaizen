@@ -60,7 +60,10 @@ export function isOpen(value) {
 export function parseSuggestion({ id, file, skill, target, text }) {
   const { data, body } = parseFrontmatter(text);
   const named = splitFilename(file);
-  const recurrences = [...body.matchAll(/^##\s+Recurrence\b[^\r\n]*$/gim)].length;
+  const headings = [...body.matchAll(/^##\s+Recurrence\b([^\r\n]*)$/gim)];
+  const recurrences = headings.length;
+  // A recurrence is dated by the first YYYY-MM-DD on its heading line; undated ones carry no date.
+  const recurrenceDates = headings.map((match) => /\d{4}-\d{2}-\d{2}/.exec(match[1])?.[0]).filter(Boolean);
   return {
     id,
     file,
@@ -73,6 +76,7 @@ export function parseSuggestion({ id, file, skill, target, text }) {
     date: data.date || named.date,
     slug: named.slug,
     recurrences,
+    recurrenceDates,
     context: firstSection(body, 'Context', 'What ran'),
     suggestion: firstSection(body, 'Suggestion', 'Proposal'),
     evidence: section(body, 'Evidence'),
@@ -80,6 +84,7 @@ export function parseSuggestion({ id, file, skill, target, text }) {
     answer: section(body, 'Answer'),
     appliedSha: data.applied_sha || '',
     closedAt: data.closed_at || '',
+    verifiedAt: data.verified_at || '',
     fixedBy: data.fixed_by || '',
     droppedReason: data.dropped_reason || '',
     data,
