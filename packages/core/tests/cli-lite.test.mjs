@@ -93,6 +93,8 @@ describe('kaizen list', () => {
       file: open,
       skill: 'demo',
       target: 'user',
+      status: 'open',
+      recurredAfterFix: null,
       scope: 'demo/SKILL.md',
       severity: 'medium',
       date: '2026-01-01',

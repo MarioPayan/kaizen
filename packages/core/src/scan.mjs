@@ -110,7 +110,7 @@ export function discoverSuggestions(feedbackDir, targetName, skillsDir = '') {
 const repoRoots = new Map();
 
 /** The git toplevel that owns a skills dir; scopes are relative to it, not to the skills dir. */
-function repoRoot(dir) {
+export function repoRoot(dir) {
   if (!repoRoots.has(dir)) {
     let root = dir;
     try {
@@ -126,10 +126,28 @@ function repoRoot(dir) {
   return repoRoots.get(dir);
 }
 
+/** A scope without its trailing note ("… §1.3", "… (why)"). */
+export function bareScope(scope) {
+  return String(scope ?? '').replace(/\s+(§.*|\(.*\))$/, '');
+}
+
+/**
+ * Rewrite a scope through a target's `scopeAliases` (old path -> new path). A key ending in `/`
+ * maps a whole directory prefix; any other key maps one exact path. The longest key wins.
+ */
+export function applyScopeAlias(scope, aliases) {
+  if (!scope || !aliases) return scope;
+  const keys = Object.keys(aliases).sort((a, b) => b.length - a.length);
+  for (const from of keys) {
+    if (scope === from) return aliases[from];
+    if (from.endsWith('/') && scope.startsWith(from)) return aliases[from] + scope.slice(from.length);
+  }
+  return scope;
+}
+
 export function scopePath(item, target) {
   if (!item.scope) return '';
-  // A trailing note ("… §1.3", "… (why)") is not part of the path.
-  const bare = item.scope.replace(/\s+(§.*|\(.*\))$/, '');
+  const bare = applyScopeAlias(bareScope(item.scope), target.scopeAliases);
   // expandPath also resolves relative paths against cwd, so only use it for ~ forms.
   const scope = bare.startsWith('~') ? expandPath(bare) : bare;
   if (isAbsolute(scope)) return scope;

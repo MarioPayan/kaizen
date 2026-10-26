@@ -5,8 +5,12 @@ import {
   appendSection,
   buildState,
   discoverSuggestions,
+  findDuplicate,
   loadConfig,
-  normalizeScope,
+  mine,
+  proposeAliases,
+  resolveSources,
+  recurredAfterFix,
   scopeKey,
   resolveTargets,
   runDoctor,
@@ -34,9 +38,15 @@ function requireConfig() {
   return loaded.config;
 }
 
-function openState() {
+/** Open items plus fixed items whose problem recurred after the fix; those carry `recurredAfterFix`. */
+function workState() {
   const state = buildState(requireConfig());
-  state.suggestions = state.suggestions.filter((item) => item.status === 'open');
+  const targets = new Map(state.targets.map((target) => [target.name, target]));
+  state.suggestions = state.suggestions.filter((item) => {
+    if (item.status === 'open') return true;
+    item.recurredAfterFix = recurredAfterFix(item, targets.get(item.target));
+    return !!item.recurredAfterFix;
+  });
   return state;
 }
 
@@ -64,6 +74,8 @@ function listedItem(item) {
     file: item.file,
     skill: item.skill,
     target: item.target,
+    status: item.status,
+    recurredAfterFix: item.recurredAfterFix ?? null,
     scope: item.scope,
     severity: item.severity,
     date: item.date,
@@ -81,7 +93,7 @@ function cmdList() {
   if (!['scope', 'skill'].includes(by))
     fail('usage: kaizen list [--by scope|skill] [--target <name>] [--json|--text]');
   const target = option('target');
-  const state = openState();
+  const state = workState();
   let items = state.suggestions;
   if (target) {
     if (!state.targets.some((candidate) => candidate.name === target)) fail(`unknown target: ${target}`);
@@ -114,42 +126,15 @@ function cmdList() {
     console.log(`${group.key} (${group.items.length})`);
     for (const item of group.items)
       console.log(
-        `  [${item.severity || '?'}] ${item.id}${item.recurrences ? ` (+${item.recurrences})` : ''}`,
+        `  [${item.severity || '?'}] ${item.id}${item.recurrences ? ` (+${item.recurrences})` : ''}${
+          item.recurredAfterFix ? ` recurred after fix ${item.recurredAfterFix.fixedOn}` : ''
+        }`,
       );
   }
 }
 
-const slugWords = (slug) =>
-  new Set(
-    String(slug ?? '')
-      .toLowerCase()
-      .split('-')
-      .filter(Boolean),
-  );
-
-function captureMatch({ suggestions, skill, scope, slug, skillsByTarget = new Map() }) {
-  const open = suggestions.filter(
-    (item) => (item.id.split('/')[1] || item.skill) === skill && item.status === 'open',
-  );
-  const sameScope = scope
-    ? open.find(
-        (item) => item.scope && item.scope === normalizeScope(scope, skillsByTarget.get(item.target) ?? ''),
-      )
-    : null;
-  if (sameScope) return { match: sameScope.file, reason: `same normalized scope: ${sameScope.scope}` };
-  const incoming = slugWords(slug);
-  for (const item of open) {
-    const shared = [...slugWords(item.slug)].filter((word) => incoming.has(word)).sort();
-    if (shared.length >= 3)
-      return {
-        match: item.file,
-        reason: `slug shares ${shared.length} dash-separated words: ${shared.join(', ')}`,
-      };
-  }
-  return {
-    match: null,
-    reason: `no open suggestion in skill "${skill}" shares its normalized scope or three slug words`,
-  };
+function captureMatch({ suggestions, skill, scope, slug, targets = [] }) {
+  return findDuplicate({ suggestions, skill, scope, slug, targets });
 }
 
 function captureSelfCheck() {
@@ -171,7 +156,25 @@ function captureSelfCheck() {
       target: 'user',
     },
   ];
-  const base = { suggestions, skill: 'demo', skillsByTarget: new Map([['user', '/skills']]) };
+  suggestions.push(
+    {
+      id: 'user/babysit/2026-01-02-background-wait-ends-subagent-run.md',
+      status: 'open',
+      scope: 'babysit/SKILL.md',
+      slug: 'background-wait-ends-subagent-run',
+      file: '/feedback/babysit/background.md',
+      target: 'user',
+    },
+    {
+      id: 'user/other/2026-01-03-gh-pr-edit-blocked-by-projects.md',
+      status: 'fixed',
+      scope: 'lib/pr/edit-pr.sh',
+      slug: 'gh-pr-edit-blocked-by-projects',
+      file: '/feedback/other/fixed.md',
+      target: 'user',
+    },
+  );
+  const base = { suggestions, skill: 'demo', targets: [{ name: 'user', skills: '/skills' }] };
   const checks = [
     [
       captureMatch({ ...base, scope: '/skills/demo/SKILL.md', slug: 'other' }).match,
@@ -184,6 +187,20 @@ function captureSelfCheck() {
     [
       !captureMatch({ ...base, scope: 'closed.md', slug: 'closed-card-does-not-match' }).match,
       'closed cards do not suppress a new capture',
+    ],
+    [
+      captureMatch({ ...base, scope: 'lib/github/post-push.md', slug: 'babysit-background-ends-subagent' })
+        .match === '/feedback/babysit/background.md',
+      'a similar slug in another skill finds the open card',
+    ],
+    [
+      !captureMatch({ ...base, scope: 'lib/github/post-push.md', slug: 'background-colour-token' }).match,
+      'one shared word in another skill is not a duplicate',
+    ],
+    [
+      captureMatch({ ...base, scope: 'x.md', slug: 'gh-pr-edit-projects-classic-blocked' }).fixedMatch ===
+        '/feedback/other/fixed.md',
+      'a fixed lookalike is reported as fixedMatch, not match',
     ],
   ];
   for (const [passed, label] of checks) console.log(`${passed ? 'ok  ' : 'FAIL'} ${label}`);
@@ -217,17 +234,7 @@ function cmdCapture() {
     const suggestions = targets.flatMap((target) =>
       target.feedback ? discoverSuggestions(target.feedback, target.name, target.skills) : [],
     );
-    console.log(
-      JSON.stringify(
-        captureMatch({
-          suggestions,
-          skill,
-          scope,
-          slug,
-          skillsByTarget: new Map(targets.map((target) => [target.name, target.skills])),
-        }),
-      ),
-    );
+    console.log(JSON.stringify(captureMatch({ suggestions, skill, scope, slug, targets })));
   } catch (error) {
     console.log(JSON.stringify({ match: null, reason: `capture check unavailable: ${error.message}` }));
   }
@@ -267,6 +274,7 @@ function batchFromArguments() {
 function cmdClose() {
   const batch = batchFromArguments();
   const state = buildState(requireConfig());
+  const targets = new Map(state.targets.map((target) => [target.name, target]));
   const byId = new Map(state.suggestions.map((item) => [item.id, item]));
   const duplicate = batch.find(
     (entry, index) => batch.findIndex((candidate) => candidate.id === entry.id) !== index,
@@ -275,7 +283,9 @@ function cmdClose() {
   for (const entry of batch) {
     const item = byId.get(entry.id);
     if (!item) fail(`unknown suggestion id: ${entry.id}`);
-    if (item.status !== 'open') fail(`suggestion is already closed: ${entry.id}`);
+    // A fixed item that recurred after its fix is back in the backlog, so it can be closed again.
+    if (item.status !== 'open' && !recurredAfterFix(item, targets.get(item.target)))
+      fail(`suggestion is already closed: ${entry.id}`);
     if (!entry.value.trim() || /[\r\n]/.test(entry.value))
       fail(`close value must be one non-empty line: ${entry.id}`);
   }
@@ -312,6 +322,65 @@ function cmdDoctor() {
   if (!findings.length) return console.log('kaizen doctor: no findings');
   for (const finding of findings) console.log(`[${finding.severity}] ${finding.check}: ${finding.message}`);
   console.log(`${findings.length} finding(s)`);
+}
+
+function cmdAliases() {
+  const state = buildState(requireConfig());
+  const proposals = proposeAliases(state).filter(
+    (proposal) => Object.keys(proposal.aliases).length || proposal.unresolved.length,
+  );
+  if (!has('text'))
+    return console.log(JSON.stringify({ generatedAt: state.generatedAt, proposals }, null, 2));
+  if (!proposals.length) return console.log('Every scope resolves to an existing file.');
+  for (const { target, aliases, unresolved } of proposals) {
+    console.log(`target "${target}": add to its config entry`);
+    console.log(JSON.stringify({ scopeAliases: aliases }, null, 2));
+    if (unresolved.length) console.log(`unresolved (${unresolved.length}):\n  ${unresolved.join('\n  ')}`);
+  }
+}
+
+async function cmdMine() {
+  const config = requireConfig();
+  const days = option('days') === undefined ? undefined : Number(option('days'));
+  if (days !== undefined && (!Number.isInteger(days) || days < 1)) fail('--days must be a positive integer');
+  const limit = Number(option('limit') ?? 20);
+  const sources = resolveSources(config);
+  const report = await mine({
+    projectsDir: sources.projects,
+    facetsDir: sources.facets,
+    feedbackDirs: resolveTargets(config)
+      .map((target) => target.feedback)
+      .filter(Boolean),
+    days,
+  });
+  if (!has('text')) return console.log(JSON.stringify(report, null, 2));
+  const { parse, capture } = report;
+  console.log('kaizen mine — candidates only; nothing was filed.');
+  console.log(
+    `\nread ${parse.transcripts} transcript(s), ${parse.lines} line(s); ${parse.unparsedLines} unparsed, ${parse.untimed} without timestamp, ${parse.unreadable.length} unreadable file(s); ${parse.facets} facet file(s), ${parse.unparsedFacets.length} unparsed`,
+  );
+  console.log(
+    `\ncapture recall: ${capture.captured}/${capture.evaluated} friction session(s) wrote a capture${
+      capture.recall === null ? '' : ` (${Math.round(capture.recall * 100)}%)`
+    }; ${capture.unevaluated.length} could not be evaluated`,
+  );
+  for (const [category, count] of Object.entries(capture.frictionTotals).sort((a, b) => b[1] - a[1]))
+    console.log(`  ${count}× ${category}`);
+  for (const session of capture.missed.slice(0, limit))
+    console.log(
+      `  missed ${session.sessionId} [${Object.keys(session.friction).join(', ')}] ${session.summary}`,
+    );
+  console.log(`\nhook blocks (${report.hookBlocks.reduce((sum, block) => sum + block.count, 0)}):`);
+  for (const block of report.hookBlocks.slice(0, limit))
+    console.log(`  ${block.count}× ${block.guard}: ${block.trap}`);
+  console.log(`\ncorrection-like messages (${report.corrections.length}):`);
+  for (const item of report.corrections.slice(-limit))
+    console.log(`  ${item.timestamp.slice(0, 10)} ${item.project}: ${item.text}`);
+  console.log('\nskill runs (time to next human message):');
+  for (const run of report.skillRuns.slice(0, limit))
+    console.log(
+      `  ${run.skill}: ${run.runs} run(s), median ${run.medianSeconds === null ? '?' : Math.round(run.medianSeconds)}s, ${run.outputTokens} output tokens, ${run.unfinished} unfinished`,
+    );
 }
 
 function dateAge(value) {
@@ -388,7 +457,7 @@ function cmdMigrate() {
 
 function help() {
   console.log(
-    `usage: kaizen <command>\n\ncommands:\n  status [--bar]\n  list [--by scope|skill] [--target <name>] [--json|--text]\n  capture --check --skill <name> --scope <path> --slug <slug>\n  close <id>... (--fixed <sha> | --dropped <reason>)\n  close --json <file|->\n  doctor\n  prune [--days N] [--dry-run]\n  migrate [--dry-run]`,
+    `usage: kaizen <command>\n\ncommands:\n  status [--bar]\n  list [--by scope|skill] [--target <name>] [--json|--text]\n  capture --check --skill <name> --scope <path> --slug <slug>\n  close <id>... (--fixed <sha> | --dropped <reason>)\n  close --json <file|->\n  doctor\n  aliases [--json|--text]\n  mine [--days N] [--limit N] [--json|--text]\n  prune [--days N] [--dry-run]\n  migrate [--dry-run]`,
   );
 }
 
@@ -398,6 +467,8 @@ const commands = {
   capture: cmdCapture,
   close: cmdClose,
   doctor: cmdDoctor,
+  aliases: cmdAliases,
+  mine: cmdMine,
   prune: cmdPrune,
   migrate: cmdMigrate,
   help,

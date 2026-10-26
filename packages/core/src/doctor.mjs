@@ -1,7 +1,10 @@
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { expandPath, resolveTargets } from './config.mjs';
+import { expandPath, resolveSources, resolveTargets } from './config.mjs';
+import { lintMemory } from './memory.mjs';
+import { retirementCandidates } from './retirement.mjs';
 import { scopePath } from './scan.mjs';
+import { recurredAfterFix } from './recurrence.mjs';
 
 export const CHECKS = [
   'budget-exceeded',
@@ -9,6 +12,9 @@ export const CHECKS = [
   'orphan-feedback-folder',
   'open-item-incomplete',
   'scope-file-missing',
+  'recurred-after-fix',
+  'memory-path-missing',
+  'retirement-candidate',
 ];
 
 function bytesUnder(path) {
@@ -74,5 +80,32 @@ export function runDoctor({ config, state }) {
         message: `scope does not exist: ${path}`,
       });
   }
+  for (const item of state.suggestions) {
+    const recurred = recurredAfterFix(item, targets.get(item.target));
+    if (recurred)
+      findings.push({
+        check: 'recurred-after-fix',
+        severity: 'high',
+        id: item.id,
+        message: `${item.id} was fixed on ${recurred.fixedOn} (${recurred.source}) and recurred ${recurred.dates.length}× after: ${recurred.dates.join(', ')}`,
+      });
+  }
+  for (const { file, reference } of lintMemory({
+    projectsDir: resolveSources(config).projects,
+    targets: resolveTargets(config),
+  }))
+    findings.push({
+      check: 'memory-path-missing',
+      severity: 'low',
+      file,
+      message: `${file} references ${reference}, which does not exist`,
+    });
+  for (const candidate of retirementCandidates({ config, state }))
+    findings.push({
+      check: 'retirement-candidate',
+      severity: 'low',
+      file: candidate.file,
+      message: `${candidate.file}:${candidate.line} origin ${candidate.origins.join(', ')} has no matching suggestion in 60 days (human decides): ${candidate.text.slice(0, 100)}`,
+    });
   return findings;
 }
