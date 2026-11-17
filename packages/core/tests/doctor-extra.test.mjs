@@ -97,6 +97,52 @@ describe('doctor: rule retirement candidates', () => {
   });
 });
 
+describe('doctor: scope missing on a stale checkout', () => {
+  it('reports a scope that exists on a remote default branch as stale, not missing', () => {
+    const { repo, feedback, config } = workspace();
+    write(join(repo, 'lib', 'moved.md'), 'x\n');
+    write(join(repo, 'skills', 'demo', 'tool.sh'), 'x\n');
+    write(join(repo, 'skills', 'kept', 'SKILL.md'), 'x\n');
+    git(repo, 'add', '.');
+    git(repo, 'commit', '-qm', 'default branch');
+    git(repo, 'update-ref', 'refs/remotes/upstream/main', 'HEAD');
+    git(repo, 'symbolic-ref', 'refs/remotes/upstream/HEAD', 'refs/remotes/upstream/main');
+    // The local checkout sits on a commit that does not have the files.
+    git(repo, 'rm', '-rq', 'lib', 'skills/demo');
+    git(repo, 'commit', '-qm', 'older local branch');
+    card(feedback, 'session', '2026-10-01-repo-relative', { frontmatter: { scope: 'lib/moved.md' } });
+    card(feedback, 'session', '2026-10-02-skills-relative', { frontmatter: { scope: 'demo/tool.sh' } });
+    card(feedback, 'session', '2026-10-03-absolute', {
+      frontmatter: { scope: `${join(repo, 'lib', 'moved.md')} (why)` },
+    });
+    card(feedback, 'session', '2026-10-04-nowhere', { frontmatter: { scope: 'lib/never.md' } });
+    const lines = run(config, 'doctor')
+      .stdout.split('\n')
+      .filter((line) => /scope-(file-missing|stale-checkout)/.test(line));
+    const stale = (id, rel) =>
+      `[low] scope-stale-checkout: ${id} scope is absent from this checkout but exists on upstream/HEAD: ${rel}`;
+    expect(lines).toEqual([
+      stale('user/session/2026-10-01-repo-relative.md', 'lib/moved.md'),
+      stale('user/session/2026-10-02-skills-relative.md', 'skills/demo/tool.sh'),
+      stale('user/session/2026-10-03-absolute.md', 'lib/moved.md'),
+      `[medium] scope-file-missing: scope does not exist: ${join(repo, 'lib', 'never.md')}`,
+    ]);
+  });
+
+  it('still reports missing when the repository has no remote default branch', () => {
+    const { repo, feedback, config } = workspace();
+    write(join(repo, 'lib', 'moved.md'), 'x\n');
+    git(repo, 'add', '.');
+    git(repo, 'commit', '-qm', 'init');
+    git(repo, 'rm', '-rq', 'lib');
+    git(repo, 'commit', '-qm', 'remove');
+    card(feedback, 'session', '2026-10-01-gone', { frontmatter: { scope: 'lib/moved.md' } });
+    expect(run(config, 'doctor').stdout).toContain(
+      `[medium] scope-file-missing: scope does not exist: ${join(repo, 'lib', 'moved.md')}`,
+    );
+  });
+});
+
 describe('doctor: budgets', () => {
   it('measures a single file, through a symlink', () => {
     const { root, config } = workspace();

@@ -52,6 +52,10 @@ its `## Recurrence` there, which is what `doctor` and `list` resurface.
 `doctor` checks budgets, target roots, orphan feedback folders, incomplete
 open items, missing scope files, and also:
 
+- `scope-stale-checkout` (instead of `scope-file-missing`): the scope is absent
+  from the checkout but exists on a remote's default branch
+  (`refs/remotes/<remote>/HEAD`), so the item is live and the checkout is
+  behind or on another branch;
 - `recurred-after-fix`: the rule above;
 - `memory-path-missing`: a project memory (`<projects>/*/memory/*.md`) names a
   file that does not exist. Relative paths resolve against the project's own

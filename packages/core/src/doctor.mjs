@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { expandPath, resolveSources, resolveTargets } from './config.mjs';
 import { lintMemory } from './memory.mjs';
 import { retirementCandidates } from './retirement.mjs';
-import { scopePath } from './scan.mjs';
+import { onRemoteDefault, scopeCandidates, scopePath } from './scan.mjs';
 import { recurredAfterFix } from './recurrence.mjs';
 
 export const CHECKS = [
@@ -12,6 +12,7 @@ export const CHECKS = [
   'orphan-feedback-folder',
   'open-item-incomplete',
   'scope-file-missing',
+  'scope-stale-checkout',
   'recurred-after-fix',
   'memory-path-missing',
   'retirement-candidate',
@@ -72,13 +73,26 @@ export function runDoctor({ config, state }) {
       });
     const target = targets.get(item.target);
     const path = target && scopePath(item, target);
-    if (item.scope && path && !existsSync(path))
-      findings.push({
-        check: 'scope-file-missing',
-        severity: 'medium',
-        id: item.id,
-        message: `scope does not exist: ${path}`,
-      });
+    if (!item.scope || !path || existsSync(path)) continue;
+    // Absence on a checkout that is behind or on another branch proves nothing.
+    const remote = scopeCandidates(item, target)
+      .map((candidate) => onRemoteDefault(candidate))
+      .find(Boolean);
+    findings.push(
+      remote
+        ? {
+            check: 'scope-stale-checkout',
+            severity: 'low',
+            id: item.id,
+            message: `${item.id} scope is absent from this checkout but exists on ${remote.ref}: ${remote.path}`,
+          }
+        : {
+            check: 'scope-file-missing',
+            severity: 'medium',
+            id: item.id,
+            message: `scope does not exist: ${path}`,
+          },
+    );
   }
   for (const item of state.suggestions) {
     const recurred = recurredAfterFix(item, targets.get(item.target));

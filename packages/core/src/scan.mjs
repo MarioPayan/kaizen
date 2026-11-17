@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
 import { expandPath, resolveTargets } from './config.mjs';
@@ -145,16 +145,58 @@ export function applyScopeAlias(scope, aliases) {
   return scope;
 }
 
-export function scopePath(item, target) {
-  if (!item.scope) return '';
+/** Every file a scope may name, most likely first. */
+export function scopeCandidates(item, target) {
+  if (!item.scope) return [];
   const bare = applyScopeAlias(bareScope(item.scope), target.scopeAliases);
   // expandPath also resolves relative paths against cwd, so only use it for ~ forms.
   const scope = bare.startsWith('~') ? expandPath(bare) : bare;
-  if (isAbsolute(scope)) return scope;
+  if (isAbsolute(scope)) return [scope];
   const root = repoRoot(target.skills);
   // Captures also write paths relative to the skills dir or to the repo's parent.
-  const tries = [resolve(root, scope), resolve(target.skills, scope), resolve(dirname(root), scope)];
-  return tries.find((path) => existsSync(path)) ?? tries[0];
+  return [resolve(root, scope), resolve(target.skills, scope), resolve(dirname(root), scope)];
+}
+
+export function scopePath(item, target) {
+  const tries = scopeCandidates(item, target);
+  return tries.find((path) => existsSync(path)) ?? tries[0] ?? '';
+}
+
+function gitOut(dir, args) {
+  return execFileSync('git', ['-C', dir, ...args], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+  }).trim();
+}
+
+/**
+ * Where a path missing from the checkout still exists on a remote's default branch
+ * (`refs/remotes/<remote>/HEAD`): `{ ref, path }` relative to its repository, else null.
+ * A checkout that is behind or on another branch must not read as "the file is gone".
+ */
+export function onRemoteDefault(path) {
+  let dir = dirname(path);
+  while (!existsSync(dir) && dirname(dir) !== dir) dir = dirname(dir);
+  try {
+    const root = gitOut(dir, ['rev-parse', '--show-toplevel']);
+    // Compare real paths: the scope may reach the repository through a symlink.
+    const rel = relative(root, join(realpathSync(dir), relative(dir, path)));
+    if (rel.startsWith('..')) return null;
+    const heads = gitOut(root, ['for-each-ref', '--format=%(refname)', 'refs/remotes'])
+      .split('\n')
+      .filter((ref) => ref.endsWith('/HEAD'));
+    for (const ref of heads) {
+      try {
+        gitOut(root, ['cat-file', '-e', `${ref}:${rel}`]);
+        return { ref: ref.replace('refs/remotes/', ''), path: rel };
+      } catch {
+        // Not on this remote's default branch.
+      }
+    }
+  } catch {
+    // Not a repository: unknown.
+  }
+  return null;
 }
 
 /**
