@@ -56,7 +56,8 @@ the repair directly.
    the work are not approval of *what* it changes. Write fixes in English,
    even when the suggestion was not.
 
-   Once approved, commit locally, never push. Add one trailer per item:
+   Once approved, commit locally; push only through step 7. Add one trailer
+   per item:
 
    ```text
    Kaizen-Suggestion: <id>
@@ -77,3 +78,11 @@ the repair directly.
    Batch decisions may use `close --json <file|->` with
    `[{"id":"...","fixed":"<sha>"}]` or a `dropped` reason. The command
    validates the entire batch first; on an error, correct the input and rerun it.
+
+7. Offer the push. If the repository holding the skills tree is on `master`
+   and ahead of its upstream, list `git log --oneline @{u}..` and ask for a
+   one-word go; approval in step 5 does not cover it. On a go, run `git push`
+   as a fast-forward. Never force-push or `pull --rebase`: if the push is
+   rejected because the remote moved, stop and report it for the user to
+   reconcile. Without a go, end by saying the clone is N commits ahead and
+   (for Mario) the session-start hook will keep warning until it is pushed.
