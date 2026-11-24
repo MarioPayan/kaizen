@@ -56,14 +56,8 @@ function cmdStatus() {
   if (loaded.config.cadence?.sessionHook === false && !has('bar')) return;
   if (loaded.errors.length) return console.log(`kaizen: config invalid — ${loaded.errors[0]}`);
   const open = buildState(loaded.config).suggestions.filter((item) => item.status === 'open');
-  const counts = new Map();
-  for (const item of open) counts.set(item.skill, (counts.get(item.skill) ?? 0) + 1);
-  const top = [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0];
-  if (has('bar')) {
-    if (!top) return console.log('\x1b[2m改 ○0\x1b[0m');
-    return console.log(`改 ○${open.length} ▲${top[0]}:${top[1]}`);
-  }
-  console.log(`kaizen: ${open.length} open${top ? ` · top: ${top[0]} (${top[1]})` : ''}`);
+  if (has('bar')) return console.log(open.length ? `改 ○${open.length}` : '\x1b[2m改 ○0\x1b[0m');
+  console.log(`kaizen: ${open.length} open`);
 }
 
 const severityRank = { high: 3, medium: 2, low: 1, '': 0 };
@@ -91,13 +85,21 @@ function listedItem(item) {
 function cmdList() {
   const by = option('by') ?? 'scope';
   if (!['scope', 'skill'].includes(by))
-    fail('usage: kaizen list [--by scope|skill] [--target <name>] [--json|--text]');
+    fail('usage: kaizen list [--by scope|skill] [--target <name>] [--missing-from <file|->] [--json|--text]');
   const target = option('target');
   const state = workState();
   let items = state.suggestions;
   if (target) {
     if (!state.targets.some((candidate) => candidate.name === target)) fail(`unknown target: ${target}`);
     items = items.filter((item) => item.target === target);
+  }
+  const deck = option('missing-from');
+  if (deck) {
+    const text = readFileSync(deck === '-' ? 0 : deck, 'utf8');
+    const missing = items.filter((item) => !text.includes(item.id)).map((item) => item.id);
+    if (has('text')) missing.forEach((id) => console.log(id));
+    else console.log(JSON.stringify({ missing }, null, 2));
+    return exit(missing.length ? 1 : 0);
   }
   const groups = new Map();
   const targets = resolveTargets(requireConfig());
@@ -457,7 +459,7 @@ function cmdMigrate() {
 
 function help() {
   console.log(
-    `usage: kaizen <command>\n\ncommands:\n  status [--bar]\n  list [--by scope|skill] [--target <name>] [--json|--text]\n  capture --check --skill <name> --scope <path> --slug <slug>\n  close <id>... (--fixed <sha> | --dropped <reason>)\n  close --json <file|->\n  doctor\n  aliases [--json|--text]\n  mine [--days N] [--limit N] [--json|--text]\n  prune [--days N] [--dry-run]\n  migrate [--dry-run]`,
+    `usage: kaizen <command>\n\ncommands:\n  status [--bar]\n  list [--by scope|skill] [--target <name>] [--missing-from <file|->] [--json|--text]\n  capture --check --skill <name> --scope <path> --slug <slug>\n  close <id>... (--fixed <sha> | --dropped <reason>)\n  close --json <file|->\n  doctor\n  aliases [--json|--text]\n  mine [--days N] [--limit N] [--json|--text]\n  prune [--days N] [--dry-run]\n  migrate [--dry-run]`,
   );
 }
 

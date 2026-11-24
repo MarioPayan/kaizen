@@ -16,7 +16,7 @@ is treated as `open`.
 
 ```text
 kaizen status [--bar]
-kaizen list [--by scope|skill] [--target <name>] [--json|--text]
+kaizen list [--by scope|skill] [--target <name>] [--missing-from <file|->] [--json|--text]
 kaizen capture --check --skill <name> --scope <path> --slug <slug>
 kaizen close <id>... (--fixed <sha> | --dropped "reason")
 kaizen close --json <file|->
@@ -32,6 +32,10 @@ all-or-nothing for validation: if any id or disposition is invalid, no item is
 changed. JSON close input is an array of objects such as
 `[{"id":"user/demo/2026-01-01-example.md","fixed":"abc123"}]`; use a
 `dropped` string instead to record a reason.
+
+`list --missing-from <file|->` checks that a review covers the backlog: it
+prints the listed ids whose text does not appear in the given file (a deck's
+HTML, or a list of ids) and exits 1 while any is missing.
 
 `list` returns open items plus fixed items that **recurred after their fix**,
 which carry a `recurredAfterFix` object (`fixedOn`, `source`, `dates`); `close`
@@ -117,8 +121,9 @@ a budget path may be a single file (symlinks are followed) or a directory
 (every file under it). `sources` (both optional, defaults shown) is where
 `doctor` reads project memories and `mine` reads transcripts and facets.
 
-The included `SessionStart` hook calls `kaizen status`, which prints the open
-count and the skill holding the most open items.
+The included `SessionStart` hook calls `kaizen status`, which prints only the
+open count (`kaizen: 38 open`; `--bar` prints `改 ○38`). Categories (the
+`skill` field) stay in the data and show in `list` and the review deck.
 
 ## Development
 

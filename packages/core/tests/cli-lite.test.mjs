@@ -106,6 +106,22 @@ describe('kaizen list', () => {
       patch: open.replace(/\.md$/, '.patch'),
     });
   });
+
+  it('--missing-from reports open ids absent from a deck and exits 1 until all are covered', () => {
+    const { root, config } = fixture();
+    card(root, 'in-deck');
+    card(root, 'left-out');
+    card(root, 'closed', { status: 'fixed' });
+    const deck = join(root, 'deck.html');
+    writeFileSync(deck, '<li data-id="user/demo/2026-01-01-in-deck.md">fix</li>');
+    const partial = run(config, 'list', '--missing-from', deck);
+    expect(partial.status).toBe(1);
+    expect(JSON.parse(partial.stdout)).toEqual({ missing: ['user/demo/2026-01-01-left-out.md'] });
+    writeFileSync(deck, 'user/demo/2026-01-01-in-deck.md user/demo/2026-01-01-left-out.md', { flag: 'a' });
+    const complete = run(config, 'list', '--missing-from', deck, '--text');
+    expect(complete.status).toBe(0);
+    expect(complete.stdout).toBe('');
+  });
 });
 
 describe('kaizen close', () => {
@@ -216,13 +232,13 @@ describe('kaizen prune', () => {
 });
 
 describe('kaizen status', () => {
-  it('prints the open count and the skill with the most open items', () => {
+  it('prints only the open count, never a category', () => {
     const { root, config } = fixture();
     card(root, 'one');
     card(root, 'two', { status: 'unknown-old-status' });
     card(root, 'done', { status: 'fixed' });
-    expect(run(config, 'status').stdout.trim()).toBe('kaizen: 2 open · top: demo (2)');
-    expect(run(config, 'status', '--bar').stdout.trim()).toBe('改 ○2 ▲demo:2');
+    expect(run(config, 'status').stdout.trim()).toBe('kaizen: 2 open');
+    expect(run(config, 'status', '--bar').stdout.trim()).toBe('改 ○2');
   });
 });
 
