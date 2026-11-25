@@ -1,137 +1,105 @@
 # kaizen
 
-Kaizen traps concrete problems found while a skill runs and collects them for an
-agent to repair later in one focused session. It is deliberately not a workflow
-engine: there is no server, runner, approval pipeline, or UI.
+Your Claude Code skills, getting better every time they stumble. When a skill hits friction, it
+writes the problem down; one `/kaizen` session later, the fix is committed and the item is closed.
 
-Each finding is a Markdown file at
-`<feedback>/<skill>/<YYYY-MM-DD>-<slug>.md`. Its stable id is
-`<target>/<skill>/<filename>`. A sibling `.patch` may contain an old proposal;
-agents may reuse it only when it still applies.
+![A terminal across Claude Code sessions: a release-notes skill fails to find its changelog, checks kaizen for a duplicate and writes one suggestion file; the next session opens with "kaizen: 1 open"; /kaizen lists the backlog by the file to fix, edits the skill, commits with a Kaizen-Suggestion trailer and closes the item; the session after that opens with "kaizen: 0 open"](docs/images/loop.svg)
 
-Statuses are exactly `open`, `fixed`, and `dropped`. A missing or unknown status
-is treated as `open`.
+## What you are looking at
 
-## Commands
+![A suggestion file, annotated: its path is the feedback folder, the skill and a dated slug, and its id is target, skill and file; the frontmatter holds skill, date, outcome, severity, the scope file the fix lands in, and a status that is only open, fixed or dropped; Context, Suggestion and Evidence sections follow; later a Recurrence section can be appended and kaizen close records the fix sha or the reason it was dropped](docs/images/suggestion.svg)
+
+## Get it
+
+In Claude Code:
 
 ```text
-kaizen status [--bar]
-kaizen list [--by scope|skill] [--target <name>] [--missing-from <file|->] [--json|--text]
-kaizen capture --check --skill <name> --scope <path> --slug <slug>
-kaizen close <id>... (--fixed <sha> | --dropped "reason")
-kaizen close --json <file|->
-kaizen doctor
-kaizen aliases [--json|--text]
-kaizen mine [--days N] [--limit N] [--json|--text]
-kaizen prune [--days N] [--dry-run]
-kaizen migrate [--dry-run]
+/plugin install kaizen --marketplace MarioPayan/kaizen
 ```
 
-`list` emits JSON by default for agents. `--text` is the human view. `close` is
-all-or-nothing for validation: if any id or disposition is invalid, no item is
-changed. JSON close input is an array of objects such as
-`[{"id":"user/demo/2026-01-01-example.md","fixed":"abc123"}]`; use a
-`dropped` string instead to record a reason.
+On a Claude Code older than 2.1.275, add the marketplace first: `/plugin marketplace add MarioPayan/kaizen`,
+then `/plugin install kaizen@kaizen`. From a shell, the same two steps are `claude plugin marketplace add` and
+`claude plugin install`.
 
-`list --missing-from <file|->` checks that a review covers the backlog: it
-prints the listed ids whose text does not appear in the given file (a deck's
-HTML, or a list of ids) and exits 1 while any is missing.
-
-`list` returns open items plus fixed items that **recurred after their fix**,
-which carry a `recurredAfterFix` object (`fixedOn`, `source`, `dates`); `close`
-accepts those again. The fix date is the first of `closed_at`, the leading
-date of `verified_at`, or the committer date of `applied_sha` (else a
-sha-shaped `fixed_by`) in the target's repository. A recurrence counts when the
-date on its `## Recurrence` heading is strictly later; undated recurrences and
-items with no resolvable fix date are never flagged.
-
-`capture --check` looks across every skill and target. Rules, first hit wins:
-same skill and normalized scope; same skill and three shared slug words; any
-skill with the same resolved scope file and three shared content words (slug
-plus `# ` title, stopwords dropped); any skill with three shared content words
-covering 60% of the shorter set. `match` only names open items. When nothing
-open matches, a fixed lookalike is returned as `fixedMatch`: the capture appends
-its `## Recurrence` there, which is what `doctor` and `list` resurface.
-
-`doctor` checks budgets, target roots, orphan feedback folders, incomplete
-open items, missing scope files, and also:
-
-- `scope-stale-checkout` (instead of `scope-file-missing`): the scope is absent
-  from the checkout but exists on a remote's default branch
-  (`refs/remotes/<remote>/HEAD`), so the item is live and the checkout is
-  behind or on another branch;
-- `recurred-after-fix`: the rule above;
-- `memory-path-missing`: a project memory (`<projects>/*/memory/*.md`) names a
-  file that does not exist. Relative paths resolve against the project's own
-  context (its dir, its working directory and repository, the target
-  repository holding it, whose git history also counts, and feedback dirs);
-  a path no base knows is skipped;
-- `retirement-candidate`: a bullet in a budgeted rule file carries
-  `<!-- origin: <slug> -->` but no suggestion in the last 60 days has that
-  slug, or a scope resolving to the rule file plus two shared words. A human
-  decides; kaizen never removes rules.
-
-`aliases` proposes `scopeAliases` for scopes that point at missing files: from
-the git rename history of the target's repository (followed to the newest
-name), else for a `_lib/` path the one tracked file with the same basename
-under `lib/` or `rules/`. It prints the config block and the unresolved scopes;
-it changes nothing.
-
-`mine` is a read-only report of capture candidates; it never files anything.
-It reads `/insights` facets and session transcripts (sidechains skipped) and
-reports capture recall (friction sessions whose transcript wrote into a
-feedback dir), hook blocks per guard and trap ("Blocked by <guard> …" followed
-by `- <trap>` lines), human messages that open like a correction in English or
-Spanish, and per-skill runs (Skill tool calls and slash commands, timed to the
-next human message, with the output tokens in between). Transcript formats are
-not a stable API: missing fields are tolerated and `parse` counts unparsed
-lines, untimed entries, unreadable files and unparsed facets.
-
-`migrate` converts the old lifecycle fields once. Always preview a real corpus
-with `migrate --dry-run` first.
-
-## Configuration
-
-Create `~/.claude/kaizen/config.json` (or set `KAIZEN_CONFIG`):
+That gives you `/kaizen` and the one-line count at session start. Tell it where your skills live in
+`~/.claude/kaizen/config.json`:
 
 ```json
 {
   "version": 1,
-  "targets": [
-    {
-      "name": "user",
-      "skills": "~/.claude/skills",
-      "feedback": "~/.claude/skills-feedback"
-    }
-  ],
-  "scan": { "enabled": false, "roots": [], "depth": 3 },
-  "cadence": { "sessionHook": true },
-  "budgets": [{ "path": "~/.claude/CLAUDE.md", "maxBytes": 12000 }],
-  "sources": { "projects": "~/.claude/projects", "facets": "~/.claude/usage-data/facets" }
+  "targets": [{ "name": "user", "skills": "~/.claude/skills", "feedback": "~/.claude/skills-feedback" }]
 }
 ```
 
-Targets name the skills tree and its feedback directory. A target may add
-`scopeAliases`, a map from old scope paths to new ones (a key ending in `/`
-maps a directory prefix; the longest key wins); it applies wherever a scope is
-resolved: `list` grouping, `doctor`, capture dedupe and retirement matching.
-Optional scan roots only discover project `.claude/skills` directories. Budgets
-let `doctor` flag always-loaded files that have grown past their byte ceiling;
-a budget path may be a single file (symlinks are followed) or a directory
-(every file under it). `sources` (both optional, defaults shown) is where
-`doctor` reads project memories and `mine` reads transcripts and facets.
+and create the feedback folder (`mkdir -p ~/.claude/skills-feedback`). Then let your skills capture: put the
+CLI on your `PATH` and copy the capture contract next to your skills.
 
-The included `SessionStart` hook calls `kaizen status`, which prints only the
-open count (`kaizen: 38 open`; `--bar` prints `改 ○38`). Categories (the
-`skill` field) stay in the data and show in `list` and the review deck.
+```bash
+mkdir -p ~/.local/bin ~/.claude/skills/_lib
+ln -s ~/.claude/plugins/marketplaces/kaizen/scripts/cli.mjs ~/.local/bin/kaizen
+sed 's|node "${CLAUDE_PLUGIN_ROOT}/scripts/cli.mjs"|kaizen|' \
+  ~/.claude/plugins/marketplaces/kaizen/skills/_lib/skill-reflect.md > ~/.claude/skills/_lib/skill-reflect.md
+```
+
+The `sed` swaps the plugin-only path for the `kaizen` command, because `CLAUDE_PLUGIN_ROOT` is set only inside
+the plugin. Last, end each skill you want watched with a step like:
+
+> Apply `~/.claude/skills/_lib/skill-reflect.md` with `SKILL_NAME=release-notes`, `OUTCOME` = `complete`,
+> `partial` or `errored`, and `WHAT_RAN` = one sentence about this run.
+
+**Or ask Claude Code:**
+
+> Install kaizen from github.com/MarioPayan/kaizen and wire it into my skills as its README says
+
+## Why
+
+|                                    |                                                                                                                              |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| **Caught where it happens**        | The skill that stumbled writes it down in its last step, while the evidence is still in context                              |
+| **Hard to forget**                 | A SessionStart hook opens every session with one line, `kaizen: 3 open`. No model call; about 80 ms with 500 items open      |
+| **One problem, one file**          | `capture --check` searches every skill first, so a repeat becomes a dated `## Recurrence` on the original, not a second file |
+| **Fixes that did not hold return** | An item that recurs after its fix commit is listed again, with the dates that prove it                                       |
+| **Repaired by file**               | `/kaizen` groups the backlog by the file the fix lands in, and reaches for a hook or a script before adding more prose       |
+| **You approve**                    | `/kaizen` asks before it commits, closes or pushes, and every commit names its items in a `Kaizen-Suggestion:` trailer       |
+| **Nothing running**                | Markdown files in a folder you choose. No server, daemon, database or UI; no runtime dependencies beyond Node 20             |
+
+The 80 ms is the median of 15 runs of `kaizen status`, the command the session hook runs, over a synthetic
+backlog of 500 open items on Node 24 and Linux; a bare `node -e ''` takes about 40 ms on the same machine. The
+hook is capped at 5 seconds wherever `timeout` exists, and always exits cleanly.
+
+## A `/kaizen` session
+
+1. Lists the backlog grouped by scope, the file each fix lands in, largest and most severe groups first.
+2. Reads each group's suggestions against that file on the default branch, and gives every item one verdict:
+   fix, fixed already, covered, drop, re-scope or defer.
+3. Makes one change per file, at the lowest rung that works: a hook or rule, then a script, then prose.
+4. Runs the target repository's checks and `kaizen doctor`, then shows you every item and diff for approval.
+5. Commits with one `Kaizen-Suggestion:` trailer per item, closes the items with the commit sha, and offers the
+   push separately.
+
+`kaizen doctor` also watches the files your agent always loads: budgets flag a `CLAUDE.md` that has outgrown
+its byte ceiling, and a rule in a budgeted file, tagged `<!-- origin: <slug> -->`, that no capture has
+mentioned in 60 days is offered for retirement. Kaizen never removes a rule itself. For a statusline, `kaizen status --bar`
+prints the count as `改 ○3`.
+
+## More
+
+- [Commands and configuration](docs/reference.md): every command, the duplicate rules, the doctor checks and
+  every config key.
+- [Architecture](docs/ARCHITECTURE.md): the two layers and the core modules.
+- [The capture contract](skills/_lib/skill-reflect.md) and [the `/kaizen` workflow](skills/kaizen/SKILL.md).
 
 ## Development
 
 ```bash
 npm install
-npm run check
+npm run check                    # prettier, eslint and vitest
+python3 tools/readme-images.py   # regenerate docs/images from a real CLI run
 ```
+
+The README images are generated, not drawn: the script runs the CLI against a throwaway skills tree and
+refuses to draw if the capture template, the statuses or the close fields have changed under it.
 
 ## Licence
 
-MIT
+[MIT](LICENSE)
