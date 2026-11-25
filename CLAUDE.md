@@ -1,6 +1,6 @@
 # kaizen — working notes
 
-Read `README.md` and `docs/ARCHITECTURE.md` before non-trivial changes.
+Read `README.md`, `docs/reference.md` and `docs/ARCHITECTURE.md` before non-trivial changes.
 
 - `npm run check` runs formatting, lint, and tests.
 - `node scripts/cli.mjs <command>` runs the CLI.
