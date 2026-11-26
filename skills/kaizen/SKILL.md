@@ -8,16 +8,19 @@ description: Repair captured skill problems in one focused local session
 Use this workflow when invoked as `/kaizen`. Kaizen collects work; you perform
 the repair directly.
 
-1. Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/cli.mjs" list --by scope`. JSON is
-   the default. If the user named a skill, scope, or suggestion, the session's
-   scope is that request; otherwise it is every listed item. Work the largest
-   or most severe groups first. An item with `status: fixed` and a
-   `recurredAfterFix` object is a fix that did not hold: its listed recurrence
-   dates come after the fix date.
-   Treat it as open, find why the earlier fix missed it, and close it again
-   with `--fixed <sha>` once a new commit exists.
+1. Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/cli.mjs" list --by scope --text`
+   as the index: one `<scope key> (<count>)` line per group, then one
+   `[severity] <id>` line per item. If the user named a skill, scope, or
+   suggestion, the session's scope is that request; otherwise it is every
+   listed item. Work the largest or most severe groups first. An item marked
+   `recurred after fix <date>` is a fix that did not hold: its recurrences are
+   dated after that fix. Treat it as open, find why the earlier fix missed it,
+   and close it again with `--fixed <sha>` once a new commit exists.
 
-2. Work one scope group at a time. Read every grouped suggestion and read the
+2. Work one scope group at a time. Read the group with
+   `node "${CLAUDE_PLUGIN_ROOT}/scripts/cli.mjs" show --scope '<scope key>'`,
+   which prints each item's whole file, Recurrence sections included, so do
+   not open the suggestion files again. Read the
    scope file on the target's default branch (`git show origin/HEAD:<path>`
    when the checkout is behind it or on another branch). For each item decide:
 

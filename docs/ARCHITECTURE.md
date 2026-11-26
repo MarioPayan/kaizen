@@ -2,8 +2,9 @@
 
 Kaizen has two layers.
 
-- `skills/_lib/skill-reflect.md` defines the capture contract. Skills write one
-  Markdown file per finding and run the CLI dedupe check before creating it.
+- `skills/_lib/skill-reflect.md` defines the capture contract. Skills hand one
+  finding to `capture --write`, which runs the dedupe check and writes the
+  Markdown file or appends a `## Recurrence` to the duplicate.
 - `packages/core` discovers configured skills and suggestions, parses their flat
   frontmatter and sections, normalizes scopes, resolves paths, and runs the
   small doctor rubric. `scripts/cli.mjs` is the only executable surface.

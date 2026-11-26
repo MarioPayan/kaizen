@@ -18,7 +18,11 @@ is treated as `open`.
 ```text
 kaizen status [--bar]
 kaizen list [--by scope|skill] [--target <name>] [--missing-from <file|->] [--json|--text]
+kaizen show (--scope <key> | --skill <name>) [--target <name>] [--json]
 kaizen capture --check --skill <name> --scope <path> --slug <slug>
+kaizen capture --write --skill <name> --scope <path> --slug <slug>
+  --severity low|medium|high --outcome complete|partial|errored
+  [--context-file <file|->] [--target <name>] [--date YYYY-MM-DD] [--new]
 kaizen close <id>... (--fixed <sha> | --dropped "reason")
 kaizen close --json <file|->
 kaizen doctor
@@ -54,13 +58,34 @@ sha-shaped `fixed_by`) in the target's repository. A recurrence counts when the
 date on its `## Recurrence` heading is strictly later; undated recurrences and
 items with no resolvable fix date are never flagged.
 
-`capture --check` looks across every skill and target. Rules, first hit wins:
+`list --text` is the index `/kaizen` starts from. `show --scope <key>` (a key
+as `list --by scope --text` prints it; `--skill` for a skill group) prints one
+group's items in that order, each as its whole file under a
+`==> <id> [severity] <==` line, Recurrence sections included; `--json` gives
+the `list` item fields plus `text`. An unknown key exits 1.
+
+`capture --check` looks across every skill and target, and names the first
+missing flag in its `reason`. Rules, first hit wins:
 same skill and normalized scope; same skill and three shared slug words; any
 skill with the same resolved scope file and three shared content words (slug
 plus `# ` title, stopwords dropped); any skill with three shared content words
 covering 60% of the shorter set. `match` only names open items. When nothing
 open matches, a fixed lookalike is returned as `fixedMatch`: the capture appends
 its `## Recurrence` there, which is what `doctor` and `list` resurface.
+
+`capture --write` does the check and the write in one call. The body (from
+`--context-file`, else stdin) needs non-empty `## Context`, `## Suggestion` and
+`## Evidence` sections and no frontmatter; `--slug` must be lowercase
+dash-separated words, and every invalid input exits 1 naming the problem. On a
+`match` or `fixedMatch` it appends the body, headings nested to `###`, under
+`## Recurrence — <date>` and prints `Reflection: appended to <path>`.
+Otherwise it writes `<feedback>/<skill>/<date>-<slug>.md` (a `-2` suffix rather
+than overwrite) with the frontmatter `skill`, `date`, `outcome`, `severity`,
+`scope`, `status: open`, and prints `Reflection: <path>`. The feedback dir is
+`--target`'s, else that of the first target whose skills or feedback dir has
+the skill's folder, else the first target's. `--date` defaults to today
+(local); `--new` skips the duplicate check, for a match `capture --check`
+showed to be a different failure.
 
 `doctor` checks budgets, target roots, orphan feedback folders, incomplete
 open items, missing scope files, and also:
