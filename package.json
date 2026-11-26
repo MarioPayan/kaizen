@@ -1,6 +1,6 @@
 {
   "name": "kaizen",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Capture skill problems and collect them for a focused repair session.",
@@ -17,7 +17,8 @@
     "lint": "eslint scripts packages/core/src packages/core/tests",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "check": "npm run format:check && npm run lint && npm run test"
+    "check": "npm run format:check && npm run lint && npm run test && npm run version:check",
+    "version:check": "node scripts/version-check.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

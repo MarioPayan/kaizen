@@ -93,7 +93,7 @@ prints the count as `改 ○3`.
 
 ```bash
 npm install
-npm run check                    # prettier, eslint and vitest
+npm run check                    # prettier, eslint, vitest and the plugin version-bump check
 python3 tools/readme-images.py   # regenerate docs/images from a real CLI run
 ```
 
