@@ -1,7 +1,9 @@
 #!/usr/bin/env node
-import { readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { argv, exit } from 'node:process';
 import {
+  SEVERITIES,
   appendSection,
   buildState,
   discoverSuggestions,
@@ -14,6 +16,7 @@ import {
   scopeKey,
   resolveTargets,
   runDoctor,
+  section,
   writeFrontmatter,
 } from '../packages/core/src/index.mjs';
 
@@ -82,10 +85,9 @@ function listedItem(item) {
   };
 }
 
-function cmdList() {
-  const by = option('by') ?? 'scope';
-  if (!['scope', 'skill'].includes(by))
-    fail('usage: kaizen list [--by scope|skill] [--target <name>] [--missing-from <file|->] [--json|--text]');
+/** The work items (optionally of one `--target`), grouped by scope key or skill, largest group first. */
+function groupedState(by, usage) {
+  if (!['scope', 'skill'].includes(by)) fail(usage);
   const target = option('target');
   const state = workState();
   let items = state.suggestions;
@@ -93,23 +95,15 @@ function cmdList() {
     if (!state.targets.some((candidate) => candidate.name === target)) fail(`unknown target: ${target}`);
     items = items.filter((item) => item.target === target);
   }
-  const deck = option('missing-from');
-  if (deck) {
-    const text = readFileSync(deck === '-' ? 0 : deck, 'utf8');
-    const missing = items.filter((item) => !text.includes(item.id)).map((item) => item.id);
-    if (has('text')) missing.forEach((id) => console.log(id));
-    else console.log(JSON.stringify({ missing }, null, 2));
-    return exit(missing.length ? 1 : 0);
-  }
   const groups = new Map();
-  const targets = resolveTargets(requireConfig());
   for (const item of items) {
-    const key = by === 'skill' ? item.skill : scopeKey(item, targets) || '(no scope)';
+    const key = by === 'skill' ? item.skill : scopeKey(item, state.targets) || '(no scope)';
     if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(listedItem(item));
+    groups.get(key).push(item);
   }
-  const output = {
-    generatedAt: state.generatedAt,
+  return {
+    state,
+    items,
     groups: [...groups]
       .map(([key, members]) => ({
         key,
@@ -122,6 +116,26 @@ function cmdList() {
       }))
       .sort((a, b) => b.items.length - a.items.length || a.key.localeCompare(b.key)),
   };
+}
+
+const listUsage =
+  'usage: kaizen list [--by scope|skill] [--target <name>] [--missing-from <file|->] [--json|--text]';
+const showUsage = 'usage: kaizen show (--scope <key> | --skill <name>) [--target <name>] [--json]';
+
+function cmdList() {
+  const { state, items, groups } = groupedState(option('by') ?? 'scope', listUsage);
+  const deck = option('missing-from');
+  if (deck) {
+    const text = readFileSync(deck === '-' ? 0 : deck, 'utf8');
+    const missing = items.filter((item) => !text.includes(item.id)).map((item) => item.id);
+    if (has('text')) missing.forEach((id) => console.log(id));
+    else console.log(JSON.stringify({ missing }, null, 2));
+    return exit(missing.length ? 1 : 0);
+  }
+  const output = {
+    generatedAt: state.generatedAt,
+    groups: groups.map(({ key, items: members }) => ({ key, items: members.map(listedItem) })),
+  };
   if (!has('text')) return console.log(JSON.stringify(output, null, 2));
   if (!output.groups.length) return console.log('No open suggestions.');
   for (const group of output.groups) {
@@ -132,6 +146,34 @@ function cmdList() {
           item.recurredAfterFix ? ` recurred after fix ${item.recurredAfterFix.fixedOn}` : ''
         }`,
       );
+  }
+}
+
+/** One group's items in full: the whole file, frontmatter and every section, Recurrences included. */
+function cmdShow() {
+  const by = option('scope') !== undefined ? 'scope' : option('skill') !== undefined ? 'skill' : '';
+  if (!by || !option(by)) fail(showUsage);
+  const key = option(by);
+  const { state, groups } = groupedState(by, showUsage);
+  const group = groups.find((candidate) => candidate.key === key);
+  if (!group) fail(`no open group with ${by} key ${key}; keys come from \`kaizen list --by ${by} --text\``);
+  if (has('json'))
+    return console.log(
+      JSON.stringify(
+        {
+          generatedAt: state.generatedAt,
+          key,
+          items: group.items.map((item) => ({ ...listedItem(item), text: readFileSync(item.file, 'utf8') })),
+        },
+        null,
+        2,
+      ),
+    );
+  console.log(`${key} (${group.items.length})`);
+  for (const item of group.items) {
+    const fixed = item.recurredAfterFix ? ` recurred after fix ${item.recurredAfterFix.fixedOn}` : '';
+    console.log(`\n==> ${item.id} [${item.severity || '?'}]${fixed} <==\nfile: ${item.file}\n`);
+    console.log(readFileSync(item.file, 'utf8').trimEnd());
   }
 }
 
@@ -209,18 +251,120 @@ function captureSelfCheck() {
   if (checks.some(([passed]) => !passed)) exit(1);
 }
 
+const checkUsage = 'usage: kaizen capture --check --skill <name> --scope <path> --slug <slug>';
+const writeUsage =
+  'usage: kaizen capture --write --skill <name> --scope <path> --slug <slug> --severity low|medium|high --outcome complete|partial|errored [--context-file <file|->] [--target <name>] [--date YYYY-MM-DD] [--new]';
+const OUTCOMES = ['complete', 'partial', 'errored'];
+const BODY_SECTIONS = ['Context', 'Suggestion', 'Evidence'];
+
+/** The first required flag that is absent or empty, as `--name`, or ''. */
+function missingFlag(...names) {
+  const name = names.find((candidate) => !option(candidate)?.trim());
+  return name ? `--${name}` : '';
+}
+
+function localDate() {
+  const now = new Date();
+  const pad = (value) => String(value).padStart(2, '0');
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
+
+/** Validated inputs for `capture --write`; fails with the first problem it finds. */
+function writeInputs() {
+  const missing = missingFlag('skill', 'scope', 'slug', 'severity', 'outcome');
+  if (missing) fail(`capture --write: missing ${missing}\n${writeUsage}`);
+  const [skill, scope, slug, severity, outcome] = ['skill', 'scope', 'slug', 'severity', 'outcome'].map(
+    (name) => option(name).trim(),
+  );
+  for (const [name, value] of Object.entries({ skill, scope }))
+    if (/[\r\n]/.test(value)) fail(`capture --write: --${name} must be one line`);
+  if (!/^[a-z0-9][a-z0-9_-]*$/i.test(skill)) fail(`capture --write: --skill must be a skill slug: ${skill}`);
+  if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(slug))
+    fail(`capture --write: --slug must be lowercase dash-separated words: ${slug}`);
+  if (!SEVERITIES.includes(severity))
+    fail(`capture --write: --severity must be one of ${SEVERITIES.join(', ')}: ${severity}`);
+  if (!OUTCOMES.includes(outcome))
+    fail(`capture --write: --outcome must be one of ${OUTCOMES.join(', ')}: ${outcome}`);
+  const date = option('date') ?? localDate();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(date)))
+    fail(`capture --write: --date must be YYYY-MM-DD: ${date}`);
+  const source = option('context-file') ?? '-';
+  let body;
+  try {
+    body = readFileSync(source === '-' ? 0 : source, 'utf8').trim();
+  } catch (error) {
+    fail(`capture --write: cannot read ${source === '-' ? 'stdin' : source}: ${error.message}`);
+  }
+  if (/^---\r?\n/.test(body))
+    fail('capture --write: the body must not carry frontmatter; pass fields as flags');
+  const empty = BODY_SECTIONS.filter((heading) => !section(body, heading));
+  if (empty.length)
+    fail(
+      `capture --write: the body needs non-empty ${empty.map((heading) => `## ${heading}`).join(', ')} section(s)`,
+    );
+  return { skill, scope, slug, severity, outcome, date, body };
+}
+
+/** The target a new capture for `skill` belongs to: `--target`, else the one holding the skill, else the first. */
+function captureTarget(targets, skill) {
+  const writable = targets.filter((target) => target.feedback);
+  const named = option('target');
+  if (named) {
+    const target = writable.find((candidate) => candidate.name === named);
+    if (!target) fail(`capture --write: no target named ${named} with a feedback dir`);
+    return target;
+  }
+  const holds = (target) =>
+    existsSync(join(target.skills, skill)) || existsSync(join(target.feedback, skill));
+  const target = writable.find(holds) ?? writable[0];
+  if (!target) fail('capture --write: no target has a feedback dir');
+  return target;
+}
+
+function captureWrite() {
+  const input = writeInputs();
+  const loaded = loadConfig();
+  if (!loaded.exists) fail(`capture --write: no config at ${loaded.path}`);
+  if (loaded.errors.length) fail(`capture --write: config is invalid: ${loaded.errors.join('; ')}`);
+  const targets = resolveTargets(loaded.config);
+  const suggestions = targets.flatMap((target) =>
+    target.feedback ? discoverSuggestions(target.feedback, target.name, target.skills) : [],
+  );
+  const { skill, scope, slug, severity, outcome, date, body } = input;
+  // `--new` is for a match that `capture --check` showed to be a different failure in the same file.
+  const duplicate = has('new') ? {} : captureMatch({ suggestions, skill, scope, slug, targets });
+  const existing = duplicate.match || duplicate.fixedMatch;
+  if (existing) {
+    // Nest the body's headings under the Recurrence (### or deeper), so the original's sections
+    // stay the parsed ones and the Recurrence runs to the end of what was appended.
+    const nested = body.replace(/^(#{1,5})(?=\s)/gm, (marks) => '#'.repeat(Math.max(3, marks.length + 1)));
+    appendSection(existing, `Recurrence — ${date}`, nested);
+    return console.log(`Reflection: appended to ${existing}`);
+  }
+  const dir = join(captureTarget(targets, skill).feedback, skill);
+  let file = join(dir, `${date}-${slug}.md`);
+  for (let n = 2; existsSync(file); n++) file = join(dir, `${date}-${slug}-${n}.md`);
+  const frontmatter = { skill, date, outcome, severity, scope, status: 'open' };
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    file,
+    `---\n${Object.entries(frontmatter)
+      .map(([key, value]) => `${key}: ${value}`)
+      .join('\n')}\n---\n\n${body}\n`,
+    { flag: 'wx' },
+  );
+  console.log(`Reflection: ${file}`);
+}
+
 function cmdCapture() {
   if (has('self-check')) return captureSelfCheck();
+  if (has('write')) return captureWrite();
   const skill = option('skill');
   const scope = option('scope');
   const slug = option('slug');
-  if (!has('check') || !skill || !scope || !slug)
-    return console.log(
-      JSON.stringify({
-        match: null,
-        reason: 'usage: kaizen capture --check --skill <name> --scope <path> --slug <slug>',
-      }),
-    );
+  const missing = has('check') ? missingFlag('skill', 'scope', 'slug') : '--check or --write';
+  if (missing)
+    return console.log(JSON.stringify({ match: null, reason: `missing ${missing}; ${checkUsage}` }));
   const loaded = loadConfig();
   if (!loaded.exists || loaded.errors.length)
     return console.log(
@@ -459,13 +603,14 @@ function cmdMigrate() {
 
 function help() {
   console.log(
-    `usage: kaizen <command>\n\ncommands:\n  status [--bar]\n  list [--by scope|skill] [--target <name>] [--missing-from <file|->] [--json|--text]\n  capture --check --skill <name> --scope <path> --slug <slug>\n  close <id>... (--fixed <sha> | --dropped <reason>)\n  close --json <file|->\n  doctor\n  aliases [--json|--text]\n  mine [--days N] [--limit N] [--json|--text]\n  prune [--days N] [--dry-run]\n  migrate [--dry-run]`,
+    `usage: kaizen <command>\n\ncommands:\n  status [--bar]\n  list [--by scope|skill] [--target <name>] [--missing-from <file|->] [--json|--text]\n  show (--scope <key> | --skill <name>) [--target <name>] [--json]\n  capture --check --skill <name> --scope <path> --slug <slug>\n  capture --write --skill <name> --scope <path> --slug <slug> --severity <level> --outcome <outcome>\n          [--context-file <file|->] [--target <name>] [--date YYYY-MM-DD] [--new]\n  close <id>... (--fixed <sha> | --dropped <reason>)\n  close --json <file|->\n  doctor\n  aliases [--json|--text]\n  mine [--days N] [--limit N] [--json|--text]\n  prune [--days N] [--dry-run]\n  migrate [--dry-run]`,
   );
 }
 
 const commands = {
   status: cmdStatus,
   list: cmdList,
+  show: cmdShow,
   capture: cmdCapture,
   close: cmdClose,
   doctor: cmdDoctor,
